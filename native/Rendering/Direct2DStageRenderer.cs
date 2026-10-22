@@ -683,7 +683,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         LastReference3DWorkspaceStoreMilliseconds = 0;
         ResetReference3DCpuRasterMetrics();
         ApplyReference3DOpticalSurfaceBitmapCacheInvalidation();
-        if (RequiresSoftwareLayerCompositing(stage) || RequiresSoftwareDistortion(stage))
+        if (stage.ShotWorkspacePreviewActive || RequiresSoftwareLayerCompositing(stage) || RequiresSoftwareDistortion(stage))
         {
             stage.Reference3DGpuOpticsEnabled = false;
             ClearBaseFrameCache();
@@ -780,6 +780,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                     DrawGrid(stage);
                     var referenceGridStarted = Stopwatch.GetTimestamp();
                     Draw3DReferenceGrid(stage);
+                    DrawCanvasBackground(stage);
                     LastReference3DGridMilliseconds +=
                         Stopwatch.GetElapsedTime(referenceGridStarted).TotalMilliseconds;
                     var referenceSceneStarted = Stopwatch.GetTimestamp();
@@ -809,6 +810,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                             Stopwatch.GetElapsedTime(workspaceStoreStarted).TotalMilliseconds;
                     }
                 }
+                DrawCanvasFrame(stage);
                 var referenceOverlayStarted = Stopwatch.GetTimestamp();
                 if (!stage.PlaybackActive)
                 {
@@ -830,13 +832,13 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                     DrawMotionTrack(stage);
                     DrawSnapPointOverlay(stage);
                     DrawMarquee(stage);
-                    DrawShotFramingGizmo(stage);
                     if (stage.ReferenceDimension == SceneDimension.ThreeD)
                     {
                         DrawSpatialTransformGizmo(stage);
                         DrawSceneLightGizmo(stage);
                     }
                 }
+                DrawShotFramingGizmo(stage);
                 LastReference3DOverlayMilliseconds +=
                     Stopwatch.GetElapsedTime(referenceOverlayStarted).TotalMilliseconds;
                 LastCommandMilliseconds = Stopwatch.GetElapsedTime(commandStarted).TotalMilliseconds;
@@ -871,6 +873,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 var background = ToD2D(stage.BackColor);
                 _target.Clear(in background);
                 DrawGrid(stage);
+                DrawCanvasBackground(stage);
 
                 var underlayStats = default(RenderStats);
                 var onionSkinStats = default(RenderStats);
@@ -930,6 +933,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 }
             }
 
+            DrawCanvasFrame(stage);
             if (stage.DragPreviewScene is { } dragPreview)
             {
                 stage.Scene = dragPreview;
@@ -972,11 +976,10 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 DrawFillAnimation(stage);
                 DrawGradientOverlay(stage);
                 DrawMarquee(stage);
-                DrawShotFramingGizmo(stage);
                 DrawBrushTipCursor(stage);
                 DrawBrushColorPalette(stage);
-                DrawFillToolCursor(stage);
             }
+            DrawShotFramingGizmo(stage);
 
             LastCommandMilliseconds = Stopwatch.GetElapsedTime(commandStarted).TotalMilliseconds;
             var framePresentStarted = Stopwatch.GetTimestamp();
@@ -4047,36 +4050,6 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             _target.FillGeometry(path, BrushFor(stop.Argb));
             _target.DrawGeometry(path, outline, 1.4f);
         }
-    }
-
-    private void DrawFillToolCursor(StageControl stage)
-    {
-        if (!stage.FillToolCursorVisible) return;
-
-        var x = stage.FillToolCursorScreen.X;
-        var y = stage.FillToolCursorScreen.Y;
-        var points = new[]
-        {
-            new Vector2(x - 10, y - 12),
-            new Vector2(x + 3, y - 12),
-            new Vector2(x + 10, y - 5),
-            new Vector2(x - 3, y - 5)
-        };
-        using var path = _factory!.CreatePathGeometry();
-        using (var sink = path.Open())
-        {
-            sink.BeginFigure(points[0], FigureBegin.Filled);
-            for (var index = 1; index < points.Length; index++) sink.AddLine(points[index]);
-            sink.EndFigure(FigureEnd.Closed);
-            sink.Close();
-        }
-
-        var color = stage.FillToolCursorColor;
-        _target!.FillGeometry(path, BrushFor(GdiColor.FromArgb(150, color).ToArgb()));
-        _target.DrawGeometry(path, BrushFor(GdiColor.FromArgb(235, Theme.Text).ToArgb()), 1.4f);
-        var drop = new Ellipse(new Vector2(x + 6, y + 3), 3, 4);
-        _target.FillEllipse(drop, BrushFor(GdiColor.FromArgb(220, color).ToArgb()));
-        _target.DrawEllipse(drop, BrushFor(GdiColor.FromArgb(235, Theme.Text).ToArgb()), 1f);
     }
 
     private void DrawMarquee(StageControl stage)

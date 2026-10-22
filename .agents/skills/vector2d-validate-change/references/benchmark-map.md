@@ -29,6 +29,7 @@
 | `Benchmark.RegressionHelpers.cs` | shared | assertions, temporary fixtures, reflection, GC preparation and pixel sampling; no standalone entrypoint |
 | `Benchmark.SceneComponents.cs` | `Freehand` | spatial component shortcuts |
 | `Benchmark.SceneOpticsModel.cs` | `Timeline` | scene optical model and persistence |
+| `Benchmark.SceneCanvas.cs` | `Timeline`, `Render` | per-scene canvas/background validation, managed images, snapshots/legacy persistence, proportional image layout and GDI background pixels |
 | `Benchmark.SceneOpticsRender.cs` | `Render` | optical panels, light gizmos and dense lighting rendering |
 | `Benchmark.GpuOptics.cs` | `Render` | GPU/CPU optical pixel parity, alpha, local-light holes, hardware resize/present |
 | `Benchmark.ScenePerformance.cs` | manual `--bench-gpu-optics` with `VECTOR_BENCH_SCENE_PERFORMANCE=1` | 112,000 visible units (56,000 independent line segments + 56,000 closed fills), 1920×1080 real HWND, moving 2D/3D views, explicit GPU, strict average/P95/max 16.667 ms budget; `VECTOR_BENCH_SCENE_DIMENSION=2d` or `3d` selects one view |

@@ -678,8 +678,8 @@ internal sealed partial class MainForm : Form
             {
                 _stage.ClearFillToolCursor();
                 ClearFillHoverPreview();
+                _stage.Cursor = Cursors.Cross;
             }
-            _stage.Cursor = Cursors.Cross;
             return;
         }
 
@@ -832,7 +832,6 @@ internal sealed partial class MainForm : Form
             }
             _stage.SetFillToolCursor(screen, ActiveColor());
             UpdateFillHoverPreview(screen);
-            _stage.Cursor = Cursors.Cross;
             return;
         }
 
@@ -1312,6 +1311,9 @@ internal sealed partial class MainForm : Form
             PersistProjectPlaybackRange();
         };
         _materialEditor.ContinuousEditStarted += (_, _) => BeginMaterialContinuousEdit();
+        // A hand-picked fill/stroke target wins over the inspector's suggestion until the
+        // selection itself changes.
+        _materialEditor.EditingTargetChanged += (_, _) => _materialTargetChosenByUser = true;
         _materialEditor.ContinuousEditCompleted += (_, _) => CompleteMaterialContinuousEdit();
         _materialEditor.ContinuousEditCanceled += (_, _) => CancelMaterialContinuousEdit();
         _materialEditor.LineEndpointStyleChanged += (_, e) => ApplyLineEndpointStyle(e.EndpointStyle, e.StartEndpoint);
@@ -1885,6 +1887,8 @@ internal sealed partial class MainForm : Form
 
     private void MarkProjectDirty()
     {
+        if (!_changingCanvasSettings) _canvasSettingsRedo.Clear();
+        UpdateCanvasWorkspace();
         if (_playing) StopPlaybackCompositionPreload();
         InvalidateSceneCompositionCache();
         SetProjectDirty(true);
@@ -2047,6 +2051,8 @@ internal sealed partial class MainForm : Form
 
     private void ResetUndoHistory()
     {
+        _canvasSettingsUndo.Clear();
+        _canvasSettingsRedo.Clear();
         ResetCanvasUndoHistory();
         _sceneTimelineUndoStack.Clear();
         _sharedAssetUndoStack.Clear();
@@ -2219,6 +2225,8 @@ internal sealed partial class MainForm : Form
             FinishPointerInteractionForContextChange();
         }
 
+        if (_frame < _playbackSettings.StartFrame || _frame >= _playbackSettings.EndFrame)
+            SetFrame(_playbackSettings.StartFrame);
         StartPlaybackCompositionPreload();
         _playing = true;
         BeginPlaybackTimerResolution();
@@ -2234,6 +2242,7 @@ internal sealed partial class MainForm : Form
         // available, but the current frame is already renderable.
         _stage.Invalidate();
         _timeline.IsPlaying = true;
+        UpdateCanvasWorkspace();
         UpdateSpatialTransformPanelState();
         ResetPerformanceRateSample();
         StartPlaybackScheduler();
@@ -2267,6 +2276,7 @@ internal sealed partial class MainForm : Form
         _timer.Interval = IdleTimerIntervalMs;
         _clock.Restart();
         _timeline.IsPlaying = false;
+        UpdateCanvasWorkspace();
         UpdateSpatialTransformPanelState();
         ResetPerformanceRateSample();
         if (restoreComposition && IsSceneBuildingContext())
@@ -2275,6 +2285,7 @@ internal sealed partial class MainForm : Form
         }
         RebuildOnionSkinPreview();
         RefreshStageLayerContentHighlight();
+        RefreshShotPreview(force: true);
     }
 
     private void ResetPerformanceRateSample()
@@ -2406,7 +2417,6 @@ internal sealed partial class MainForm : Form
             _shotDirectorPanel.SetPlayhead(next);
             PushShotDirectorFraming();
             UpdateShotFramingGizmo();
-            RefreshShotPreview();
             TracePlaybackDiagnostic(
                 $"set_frame_apply next={next} changed={frameChanged} scene_building={IsSceneBuildingContext()}");
             if (IsSceneBuildingContext())
@@ -2456,6 +2466,7 @@ internal sealed partial class MainForm : Form
                 _stage.Frame = next;
             }
             TracePlaybackDiagnostic($"set_frame_stage frame={next}");
+            RefreshShotPreview();
             if (_playing && frameChanged) _playbackCompositionPreloader?.NotifyCurrentFrame(next);
             if (IsSceneCompositionContext() && !_playing)
             {
@@ -2530,6 +2541,7 @@ internal sealed partial class MainForm : Form
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if (HandleShotWorkspaceShortcut(keyData)) return true;
         if (HandleInspectorCategoryShortcut(keyData)) return true;
         if (HandleInspectorCategoryKey(keyData)) return true;
         var physicalKeyData = keyData;
@@ -2557,6 +2569,9 @@ internal sealed partial class MainForm : Form
         var focusedEditor = ContainsFocusedEditor(this);
         var interactiveControlFocused = ContainsFocusedInteractiveControl(this);
         var commandButtonFocused = ContainsFocusedButton(this);
+        if (!focusedEditor && _materialEditSession is null
+            && (keyData == (Keys.Control | Keys.Y) || keyData == (Keys.Control | Keys.Shift | Keys.Z))
+            && RedoCanvasSettings()) return true;
         if (keyData == Keys.Escape && ReferenceCameraRightLookSessionActive)
         {
             CancelReferenceCameraRightLook();

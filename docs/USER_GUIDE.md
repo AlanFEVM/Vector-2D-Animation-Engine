@@ -178,6 +178,25 @@ Properties, Timeline and workspace color controls are centered in the first work
 
 镜头与导演工作区中，舞台、相机面板按钮或时间轴获得焦点时，Ctrl+Z 撤销最近的场景／镜头编辑；文字和数值编辑框获得焦点时优先保留控件自身的编辑按键。
 
+### 场景画布与背景 / Scene Canvas And Background
+
+在主菜单 `Project Files → Project settings… / 项目文件 → 项目设置…`，或未选择对象时的文档信息面板点击 **Canvas & background… / 画布与背景…**，设置当前活动场景的画布。每个场景独立保存；基础绘制中的元件仍保持透明，画布设置不改变元件内容或编辑器外围的工作区底色。
+
+空场景尚未设置画布时，场景与动画工作区显示“尚未添加画布与背景”的轻量引导。可以打开设置，也可以点击“直接开始”；放入元件、创建镜头或图层、绘制实际内容或建立有效关键帧后，引导自动消失，删除或撤销内容不会反复弹回。平移、缩放和切换工具不会自动创建画布或背景。提示消失后，文档信息仍准确显示“未添加”，设置入口始终可用。
+
+- **画布**：提供标准 `640 × 480`、高清 `1280 × 720`、全高清 `1920 × 1080`、4K `3840 × 2160`、竖屏 `1080 × 1920` 和方形 `1080 × 1080` 预设，也可输入 1–32768 像素的宽高，锁定比例或交换横竖。改变尺寸以场景原点为中心改变边界，不缩放、移动或删除已有对象，不改动关键帧或镜头位置；镜头“跟随场景”使用所设画布比例，独立画幅预设不变。
+- **背景**：可选无背景、纯色或图片。无背景在编辑器中以棋盘格表示透明；纯色支持自选颜色和不透明度。背景位于内容下方，不参与普通选择、擦除、图层遮罩或场景灯光。需要透视、受光或动画的背景图，应作为普通图片对象放入场景。
+- **图片**：可以选择项目内图片或外部文件。外部文件仅在点击“应用”后导入素材库，随工程保存，不依赖原电脑上的图片路径。完整显示保留整张图片，铺满画布等比裁切超出部分，原始大小按源像素放置。缩放、显示宽高始终等比；偏移使用画布像素，可居中、对齐或让画布匹配图片尺寸。图片背景的留白/透明区域还可设置底色。原图尺寸只读。
+- **编辑与预览**：舞台可以压暗画布外区域，但仍允许在画布外编辑；背景不被误选。2D 前视画布随视图平移缩放，Reference 3D 和非前视参考视图以画面底图显示，不是三维平面。应用后可 `Ctrl+Z` 撤销画布设置，`Ctrl+Y` 或 `Ctrl+Shift+Z` 重做；文字/数值编辑框仍保留自身编辑按键。取消弹窗不修改工程；旧工程不会自动增加白底或画布。
+
+预设卡片显示名称、尺寸和画幅示意；颜色按钮显示色块，透明色使用棋盘格。直角和微圆角界面均保留这些提示。
+
+相机观察窗包含场景背景，透明棋盘格、画布外压暗和边框属于编辑辅助，不烘焙进相机预览。当前元件 SVG 导出仍只导出元件本身，不附带场景画布或背景；本功能不增加新的视频、动画或场景图片导出格式。
+
+Use **Project Files → Project settings…**, or **Canvas & background…** in document information, to configure the active scene. Canvas sizes and transparent/solid/image backgrounds are scene-owned and travel with saved projects. Presets, locked dimensions, proportional image sizing, fit modes, alignment, opacity and canvas-pixel offsets do not rescale artwork or rewrite animation. Applying commits once; Cancel leaves the project unchanged. The empty-scene guide dismisses on actual work or **Start creating**, while settings remain available. Editor checkerboards, outside dimming and borders stay out of camera previews; symbol SVG exports remain transparent and do not acquire scene backgrounds. Canvas settings support undo and redo without taking shortcuts away from text editors.
+
+Preset cards show their names, dimensions and aspect-ratio illustrations. Color buttons include swatches, with a checkerboard for transparency, in both square and subtly rounded interface styles.
+
 ## 4. 视图操作
 
 2D 舞台：
@@ -374,8 +393,8 @@ Distort 控制框：
 - `Ctrl+左键` 点击可编辑曲线可插入锚点；`Ctrl+右键` 点击真实锚点可删除。
 - `Alt+单击` 曲率控制柄可把该段恢复为直线。
 - 调整矩形等填色形状的一条边后，可直接拖动同一形状的另一条未选边继续调整弧度；快速连续操作不会切换为整形移动或连通描边选择。已选边的主体拖动仍保留原有移动/分离行为。
-  填色边界弯曲沿用按下时的两个控制点与抓取位置，根据指针位移调整弧度，不再把两个控制点直接吸到鼠标处；第一帧立即响应，拖回按下位置恢复原边界。分离已选边时也保留从按下开始的完整位移。
-  Fill-boundary bending preserves the original controls and grab offset, responds on the first drag sample and restores the original edge when dragged back. Detaching a selected edge also preserves the full displacement from the press position.
+  填色边界弯曲沿用按下时的两个控制点与抓取位置，根据指针位移调整弧度，不再把两个控制点直接吸到鼠标处；第一帧立即响应，拖回按下位置恢复原边界。拖动填色边界上的锚点（含 `Ctrl` 插入的折点）时，填色区域同样随指针实时更新，取消拖动会恢复原边界。分离已选边时也保留从按下开始的完整位移。
+  Fill-boundary bending preserves the original controls and grab offset, responds on the first drag sample and restores the original edge when dragged back. Dragging a fill-boundary anchor — including the corner Ctrl inserts — reshapes the filled region live as the pointer moves, and cancelling restores the original boundary. Detaching a selected edge also preserves the full displacement from the press position.
   连续弯曲后分离并移动边线时，快速双击不会改选连通描边；松手后线段停止跟随鼠标。分离线被交点物化或再次拆分后仍与原填色独立。弯曲期间失去鼠标捕获会取消该次弯曲并清理操作状态。
   Rapid clicks during edge detachment do not select connected strokes. Detached strokes stop moving on release and remain independent after intersection materialization or splitting. Losing mouse capture cancels an active boundary bend and clears its pointer state.
 
@@ -570,7 +589,33 @@ In Shots or All, right-click a camera row name and choose Delete Layer to remove
 
 The 2D camera rotation input shows only the picture rotation angle, without a Z-axis badge. Experimental 3D restores the axis badge.
 
-默认 2D 相机面板隐藏描述、相机类型、投影模式、焦距、正交尺寸、位置 Z 和旋转 X/Y。只显示名称、画面比例、二维位置、画面旋转和“缩放”；相机列表不再显示透视／正交术语。缩放百分比越大，取景越近。新建、定位、排序、删除、重置及简化相机样式入口保留。已有相机的投影和隐藏参数不变；“缩放”按原投影调整焦距或正交尺寸，不转换旧工程。启用实验性 3D 后恢复完整参数。
+默认 2D 相机面板隐藏描述、相机类型、投影模式、焦距、正交尺寸、位置 Z 和旋转 X/Y。基础参数包括名称、画面比例、二维位置、画面旋转和“缩放”；相机列表不再显示透视／正交术语。打开“高级相机参数”可调整投影模式、位置 Z，以及当前投影对应的焦距或正交尺寸，无需启用实验性 3D；旋转 X/Y 仍不可编辑。缩放百分比越大，取景越近，并与镜头参数同步。新建、定位、排序、删除、重置及简化相机样式入口保留。仅打开高级参数不会改变工程；“缩放”按原投影调整焦距或正交尺寸，不转换旧工程。启用实验性 3D 后恢复完整参数。
+
+The 2D camera inspector keeps basic framing controls visible. Enable **Advanced camera settings** to edit projection, position Z and the applicable focal length or orthographic size without enabling experimental 3D. X/Y rotation stays locked; zoom and lens values stay synchronized. Expanding the settings alone does not change project data.
+
+在舞台、时间轴或相机列表中按 `Enter` 播放／停止时间轴，相机的位置、旋转、缩放及已建立的补间随播放头正常求值，观察窗同步更新。播放遵循现有帧率、播放范围和循环开关；关闭循环时播放到结束帧后停止，已在结束帧时再次播放会从起始帧重新开始。名称、数值和下拉框编辑期间，回车仍用于控件自身操作，不抢占输入。
+
+Press `Enter` from the Stage, timeline or camera list to play/stop the timeline. Camera position, rotation, zoom and existing tweens are evaluated at the playhead, and the monitor follows playback. Playback respects the existing FPS, range and loop setting; with looping off it stops at the end, and starting again from the end restarts at the range start. Editors retain their own Enter behavior.
+
+相机属性顶部的 **预览方式** 提供三种 2D 舞台预览，回车始终只控制播放／停止：
+
+1. **观察相机**：保持编辑视角与场景坐标，相机框按时间轴移动、旋转与变焦；播放期间仍绘制相机框。
+2. **锁定相机**：将切换时的相机框位置、比例与朝向固定在屏幕上，场景按当前相机的逆变换呈现；保留镜头外的内容，方便比较构图。重新切换相机时重新建立锁定基准。
+3. **相机取景**：将相机画幅等比适配到舞台，相机框居中固定，框内场景随运镜变化，框外留黑边。窗口尺寸变化时重新适配，不拉伸画面。
+
+“场景不动”仅表示不受相机运动带动，场景对象自身的动画在三种模式中仍正常播放。锁定相机与相机取景是只读预览：舞台不响应拖动编辑、双击编辑或滚轮导航，仍可通过时间轴拖动播放头、通过相机面板调整参数。切换预览不会修改相机关键帧、对象坐标或原编辑视角；退出相机工作区或选择不适用的相机／3D 参考视图时恢复观察相机。本次模式选择仅保留在当前会话，不写入工程。两种模式统一使用相机变换后的完整软件帧呈现，不混用原编辑视角的快速播放帧；沿用既有渲染预览质量策略，不属于最终渲染导出。
+
+The camera inspector's **Preview mode** selector offers **1 · Observe**, **2 · Locked**, and **3 · Camera**. Observe keeps the editor view while the animated camera frame moves. Locked keeps the camera frame at its switch-time screen position, scale and orientation and presents the scene relative to the animated camera, including content outside the frame. Camera view fits the frame to the Stage without stretching and clips the scene to its picture area. Switching cameras resets the lock anchor. Object animation continues in every mode; Enter always plays/stops the same timeline.
+
+Locked and Camera view are read-only 2D previews: Stage dragging, double-click editing and wheel navigation are disabled, while timeline scrubbing and camera inspector editing remain available. Preview switching does not change object transforms, camera keys or the original editor view. Leaving the camera workspace or selecting an unsupported camera/reference view restores Observe. The choice is session-only. These two modes use existing GDI scene rendering and full-size software-frame presentation, retaining the renderer's existing preview-quality policies, not a screenshot of the current Stage. They do not mix camera-relative presentation with fast playback frames prepared for the original editor view. The planar camera monitor also renders the camera's world-space coverage, so moving the camera outside the editor viewport does not crop away its content. This is preview infrastructure, not a final export/render command.
+
+放大观察窗仅通过相机面板／观察窗标题的预览按钮或双击观察窗图像／标题切换，`Esc` 可还原；放大状态下的 `Enter` 仍用于播放／停止。放大不改变舞台导航、相机参数或关键帧。观察窗按现有刷新节奏更新，并非独立的全帧率输出窗口。
+
+Use the inspector/monitor preview buttons or double-click the monitor image/title to enlarge or restore it; `Esc` also restores it. `Enter` remains play/stop even while enlarged. Enlarging changes no Stage navigation, camera parameters or keys. The monitor uses its existing refresh cadence rather than acting as a separate full-frame-rate output window.
+
+左下观察窗自动避让左侧工具栏（包括换列后的宽度）及展开的 Vault 资源面板，并限制在舞台与时间轴之间的可用区域。调整窗口大小、工具栏位置、资源面板或时间轴显隐后会重新布局；空间不足时暂时隐藏，恢复空间后重新出现并保留首选尺寸。放大预览退出后还原原观察窗尺寸；右下角缩放与失去鼠标捕获后的结束处理均受舞台边界约束。
+
+The lower-left monitor avoids the left tool palette, including wrapped columns, and the open Vault drawer, and stays inside the visible Stage above the timeline. Window, toolbar, drawer and timeline layout changes reposition it; insufficient space temporarily hides it without discarding its preferred size. Leaving enlarged preview restores the monitor size. Grip resizing and capture-loss completion respect Stage bounds.
 
 二维“旋转”使用与“缩放”一致的半栏宽、32 逻辑像素高的单值输入框，不显示 Z 轴徽章，参数之间保留 8 逻辑像素间距。镜头属性区不显示滚动条，保留滚轮与键盘滚动；侧栏高度不足时，可在属性区空白或标签处滚轮浏览下方参数。
 
@@ -1357,6 +1402,12 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:43521/mcp/' -Method Post `
 
 ### 性能或渲染异常
 
+- 填色桶图标绑定到系统鼠标光标，由 Windows 跟随指针显示，不再作为舞台覆盖层逐帧绘制；仅移动填色光标不会触发舞台重绘。光标保留当前填色颜色与原命中点，按颜色、主题和 DPI 缓存；区域悬停预览和填色动画保持不变。填色光标的流畅度与舞台 `Render FPS` 读数分离。
+- The Fill bucket is a Windows cursor rather than a Stage overlay, so moving it alone does not repaint the Stage. It retains the active fill color and original hotspot and is cached by color, theme and DPI. Region hover previews and fill animations are unchanged; cursor smoothness is independent of Stage Render FPS.
+
+- 填色、文本、吸管等工具的悬停反馈也会合并最新指针位置并主动排入 UI 队列，不再仅由 16ms 定时器推进。文本与吸管使用系统光标，其移动频率不等于舞台 `Render FPS`；静态画面不会为提高读数而空转重绘。120 FPS 以上的实际表现仍需在目标场景、输入设备与渲染设备上实测确认。
+- Fill, Text and Eyedropper hover feedback also coalesces the latest pointer position into the UI queue instead of relying only on the 16 ms timer. Text and Eyedropper use system cursors, whose motion rate is not Stage Render FPS. Static content is not continuously repainted to inflate the counter; performance above 120 FPS still requires measurement with the target scene, input device and renderer.
+
 - 线条、贝塞尔边界、选择拖动、二维变换和自由绘制预览会合并连续输入，只处理最新待处理位置，并主动排入 UI 队列，不再仅等待 16ms 预览定时器；定时器仍作为兜底。硬件渲染的交互同步呈现门槛为 5.5ms，不降低曲线采样精度、抗锯齿或最终画质。该门槛不是实测耗时或 180 FPS 保证；底部 `Render FPS` 统计实际完成绘制的频率，静止时不会为提高数字而持续空转重绘。
 - 在全 `Normal` 混合的 2D 绘制中，舞台会把稳定底图保留在 Direct2D GPU 资源中；笔刷预览、填色/线段首移预览、选区、贝塞尔控制柄和工具光标作为实时覆盖层更新。首移只平移缓存几何并复用底图，避免先重建整幅场景再显示位移。
 - Reference 3D 播放会启用有界的工作区帧缓存：已经绘制过的组合帧会保留为当前 Direct2D 目标上的 GPU 位图，后续播放或循环命中时只提交整帧位图，再绘制选区和交互覆盖层。帧缓存不跨窗口、尺寸、相机、灯光或工程编辑复用；这些状态变化会自动清空，缓存达到内存上限时按最早使用顺序淘汰。
@@ -1417,6 +1468,10 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:43521/mcp/' -Method Post `
 右侧分类栏使用导入的矢量图标：列表对应属性、调色板对应颜色、原子对应物理、视频对应镜头、场景图标对应场景。分类栏采用 38 逻辑像素宽的紧凑纯图标布局，不常驻显示名称，也不随语言加宽；完整名称通过悬停提示及无障碍名称提供。颜色跟随主题、选中及禁用状态，物理入口仍禁用。图标已随应用内置，不需要安装图标字体。
 
 The category rail uses the supplied vector icons in a compact, fixed 38-logical-pixel icon-only strip: list for Properties, palette for Color, atom for Physics, video for Camera, and scene for Scene. Full names remain available through hover tips and accessible names; changing language does not widen the rail. Icons follow theme, selection and disabled colors. They are built into the application and require no font installation.
+
+在绘制上下文中，选中新的线条、填色或其他可着色对象时自动切换到颜色页，并按选中部分显示填充或描边。同一选区的刷新不会覆盖手动切换的分类页；取消选择、选中 SVG／位图或场景实例不会自动跳到颜色页，关闭的检查器也不会因此重新打开。
+
+In a drawing context, selecting a different line, fill or other editable material target opens Color and follows the selected fill/stroke target. Refreshing the same selection preserves a manually chosen tab. Clearing selection, selecting SVG/bitmap objects or scene instances does not automatically open Color, and a closed inspector stays closed.
 
 分类页互斥占用检查器正文，不与文档信息、图层设置或其他页上下堆叠。显式选择的页保持打开；点击属性、再次点击当前分类或在分类栏中按 `Esc` 返回上下文检查器。悬停不切换；`↑` / `↓` / `Home` / `End` 只移动焦点，`Enter` / `Space` 确认，跳过禁用项。窄窗口仅隐藏分类栏并释放其留白，不改动已选页；镜头面板打开时分类栏仍可切换其他页。返回基础绘制工作区时，镜头／场景分类恢复为属性。从场景合成中打开颜色会进入基础绘制；正在编辑场景遮罩时保留遮罩上下文。手动进入普通场景合成时，颜色分类返回属性，避免提供无效的着色操作；不支持材质编辑的 SVG／位图选择显示禁用的着色控件。
 

@@ -7,6 +7,7 @@ internal static partial class Benchmark
 {
     public static void RunTimelineRegression()
     {
+        RunSceneCanvasModelRegression();
         RunTimelineParentingRegression();
         RunMotionTrackRegression();
         RunFlashImportRegression();
@@ -5714,6 +5715,7 @@ internal static partial class Benchmark
     private static void RunShotFramingGizmoRegression()
     {
         RunShotCameraHandleUsabilityRegression();
+        RunShotWorkspacePreviewRegression();
         const float canvasWidth = 10000f;
         const float canvasHeight = 5000f;
         var start = new SceneShotSettings(0f, 0f, 1f, 0f);
@@ -6173,6 +6175,104 @@ internal static partial class Benchmark
         var radial = new Vector2(handlePoint.X - bodyPoint.X, handlePoint.Y - bodyPoint.Y);
         return radial.LengthSquared() > 0.0001f ? Vector2.Normalize(radial) : Vector2.UnitX;
     }
+    private static void RunShotWorkspacePreviewRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var scene = project.DrawingObjects[0].Scene;
+        scene.AddObject(0, PointF.Empty, new SizeF(600, 600), 0, 0, Color.Red, 1, ShapeKind.Rectangle);
+        using var stage = new StageControl(scene) { ClientSize = new Size(720, 480) };
+        stage.SetVisibleWorldWidth(10000);
+        var settings = SceneShotSettings.Default with
+        {
+            Kind = SceneShotCameraKind.TwoD,
+            AspectRatio = SceneShotAspectRatio.Landscape16To9,
+            Projection = CameraProjection.Orthographic,
+            OrthographicSize = 4000
+        };
+        stage.SetShotFramingGizmo(settings, "Preview camera");
+        stage.WorldGridOpacity = 0;
+        stage.SetReference3DPlaybackActive(true);
+        using (var observing = new Bitmap(stage.Width, stage.Height))
+        {
+            using (var graphics = Graphics.FromImage(observing))
+                RequireMethod(typeof(StageControl), "DrawGdiFrame").Invoke(stage, [graphics]);
+            AssertTimeline(stage.TryGetShotFramingGizmoGeometry(out var outline)
+                && ShotCameraMarkerPaintCount(observing,
+                    new PointF((outline.TopLeft.X + outline.TopRight.X) * 0.5f, outline.TopLeft.Y),
+                    Theme.Accent, radius: 3) >= 3,
+                "Playback skipped painting the camera frame in Observe mode.");
+        }
+        var originalView = stage.CaptureViewState();
+        stage.SetShotWorkspacePreviewMode(ShotWorkspacePreviewMode.LockCamera);
+        AssertTimeline(stage.TryGetShotWorkspaceFrame(out var locked), "Lock camera did not resolve a frame.");
+        var renderer = (Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!;
+        using (var surface = new Bitmap(stage.Width, stage.Height))
+        using (var graphics = Graphics.FromImage(surface))
+        {
+            AssertTimeline(!renderer.TryRenderReference3DPlaybackGdi(stage, graphics, out _)
+                && renderer.LastReference3DPlaybackGdiStatus == "shot_workspace_preview",
+                "Fast playback bypassed the locked-camera presentation.");
+        }
+        var animated = settings with { X = 900, Y = 600, RotationDegrees = 30, OrthographicSize = 5000 };
+        stage.SetShotFramingGizmo(animated, "Preview camera");
+        AssertTimeline(stage.TryGetShotWorkspaceFrame(out var afterMove)
+            && locked.Zip(afterMove).All(pair => Math.Abs(pair.First.X - pair.Second.X) < 0.01f
+                && Math.Abs(pair.First.Y - pair.Second.Y) < 0.01f),
+            "The locked camera frame moved with the animated camera.");
+
+        stage.SetShotWorkspacePreviewMode(ShotWorkspacePreviewMode.CameraView);
+        AssertTimeline(stage.TryGetShotWorkspaceFrame(out var fitted)
+            && Math.Abs((fitted[1].X - fitted[0].X) / (fitted[3].Y - fitted[0].Y) - 16f / 9f) < 0.001f
+            && fitted.All(point => point.X >= 0 && point.Y >= 0 && point.X <= stage.Width && point.Y <= stage.Height),
+            "Camera view did not fit the requested aspect ratio.");
+        using var before = new Bitmap(stage.Width, stage.Height);
+        using var after = new Bitmap(stage.Width, stage.Height);
+        var drawFrame = RequireMethod(typeof(StageControl), "DrawGdiFrame");
+        stage.SetShotFramingGizmo(settings, "Preview camera");
+        using (var graphics = Graphics.FromImage(before)) drawFrame.Invoke(stage, [graphics]);
+        stage.SetShotFramingGizmo(settings with { X = 900 }, "Preview camera");
+        using (var graphics = Graphics.FromImage(after)) drawFrame.Invoke(stage, [graphics]);
+        AssertTimeline(before.GetPixel(stage.Width / 2, stage.Height / 2).R > 200
+            && before.GetPixel(stage.Width / 2, stage.Height / 2).G < 40
+            && after.GetPixel(stage.Width / 2, stage.Height / 2).R < 100,
+            "The camera-relative scene pixels did not move during camera preview.");
+        AssertTimeline(stage.CaptureViewState() == originalView && scene.X[0] == 0 && scene.Y[0] == 0,
+            "Camera preview changed the saved editor view or authored geometry.");
+
+        scene.AddObject(0, new PointF(100000, 0), new SizeF(600, 600), 0, 0, Color.Red, 1, ShapeKind.Rectangle);
+        AssertTimeline(stage.TryCaptureShotPreview(settings with { X = 100000 }, new Size(320, 180), out var distant),
+            "The camera monitor could not render outside the editor viewport.");
+        using (distant)
+        {
+            AssertTimeline(distant is not null && distant.GetPixel(distant.Width / 2, distant.Height / 2).R > 200
+                && distant.GetPixel(distant.Width / 2, distant.Height / 2).G < 40,
+                "The camera monitor cropped content outside the editor viewport.");
+        }
+        stage.SetSceneCompositionResult(new SceneCompositionResult(
+            Enumerable.Repeat(new SceneCompositionObjectOwner("Preview instance", "Preview symbol"), scene.ObjectCount).ToArray()));
+        stage.SetShotFramingGizmo(settings, "Preview camera");
+        using (var graphics = Graphics.FromImage(before)) drawFrame.Invoke(stage, [graphics]);
+        AssertTimeline(stage.TryCaptureShotPreview(settings with { X = 100000 }, new Size(320, 180), out var spatialMonitor),
+            "The spatial Front view could not capture the camera monitor.");
+        using (spatialMonitor)
+        {
+            AssertTimeline(spatialMonitor is not null && spatialMonitor.GetPixel(spatialMonitor.Width / 2, spatialMonitor.Height / 2).R > 200
+                && spatialMonitor.GetPixel(spatialMonitor.Width / 2, spatialMonitor.Height / 2).G < 40,
+                "The camera monitor reused projected geometry from another view.");
+        }
+        using (var graphics = Graphics.FromImage(after)) drawFrame.Invoke(stage, [graphics]);
+        AssertTimeline(before.GetPixel(stage.Width / 2, stage.Height / 2).ToArgb()
+            == after.GetPixel(stage.Width / 2, stage.Height / 2).ToArgb(),
+            "The monitor changed the Stage projection after capture.");
+        stage.SetShotWorkspacePreviewMode(ShotWorkspacePreviewMode.ObserveCamera);
+        AssertTimeline(!stage.ShotWorkspacePreviewActive && stage.CaptureViewState() == originalView,
+            "Leaving camera preview did not restore the original editor view.");
+        stage.SetShotFramingGizmo(SceneShotSettings.Default, "3D camera");
+        stage.SetShotWorkspacePreviewMode(ShotWorkspacePreviewMode.CameraView);
+        AssertTimeline(!stage.ShotWorkspacePreviewActive, "A nonplanar camera entered a planar preview mode.");
+        Console.WriteLine("shot_workspace_preview=ok,modes=observe_lock_fit,geometry_unchanged=true");
+    }
+
     /// <summary>
     /// Drives a real camera-handle drag through MainForm and asserts the grabbed handle lands under
     /// the pointer. The body and optical handles are free 2D moves, so they must track the cursor

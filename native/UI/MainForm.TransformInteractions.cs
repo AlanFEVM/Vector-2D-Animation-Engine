@@ -3367,7 +3367,11 @@ internal sealed partial class MainForm : Form
     private void QueueHoverFeedback(Point screen)
     {
         _pendingHoverScreen = screen;
-        if (_lineDragPreviewTimer.Enabled) return;
+        if (_lineDragPreviewTimer.Enabled)
+        {
+            PostPendingFrameCoalescedWork();
+            return;
+        }
         ApplyPendingHoverFeedback();
         _lineDragPreviewTimer.Start();
     }

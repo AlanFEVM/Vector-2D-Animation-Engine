@@ -17,6 +17,8 @@ internal sealed class ShotPreviewOverlay : UserControl
     private const int CaptionHeight = 20;
     private const int ChromePadding = 6;
     private const int GripSize = 14;
+    private readonly SvgIconButton _previewButton = new(SvgIconKind.RestoreSize) { TabStop = true };
+    private readonly ToolTip _help = new();
 
     private readonly Label _caption = new()
     {
@@ -64,11 +66,39 @@ internal sealed class ShotPreviewOverlay : UserControl
         Controls.Add(_picture);
         Controls.Add(_placeholder);
         Controls.Add(_caption);
+        Theme.StyleToolbarButton(_previewButton);
+        Theme.StyleToolTip(_help);
+        Controls.Add(_previewButton);
+        _previewButton.Click += (_, _) => PreviewToggleRequested?.Invoke(this, EventArgs.Empty);
+        _picture.DoubleClick += (_, _) => PreviewToggleRequested?.Invoke(this, EventArgs.Empty);
+        _caption.DoubleClick += (_, _) => PreviewToggleRequested?.Invoke(this, EventArgs.Empty);
+        ApplyPreviewButtonText();
         _placeholder.BringToFront();
     }
 
     /// <summary>Raised after the user finishes resizing so the host can re-capture at the new size.</summary>
     internal event EventHandler? PreviewResized;
+    internal event EventHandler? PreviewToggleRequested;
+    internal bool IsResizing => _resizing;
+    private bool _expanded;
+    internal bool Expanded
+    {
+        get => _expanded;
+        set
+        {
+            if (_expanded == value) return;
+            _expanded = value;
+            Cursor = Cursors.Default;
+            ApplyPreviewButtonText();
+            Invalidate();
+        }
+    }
+
+    private void ApplyPreviewButtonText()
+    {
+        _previewButton.AccessibleName = UiLocalization.T(_expanded ? "Restore camera monitor (Esc)" : "Enlarge camera preview");
+        _help.SetToolTip(_previewButton, _previewButton.AccessibleName);
+    }
 
     /// <summary>Caption shown above the monitor. Defaults to the localized "Preview" string.</summary>
     internal string Caption
@@ -124,6 +154,7 @@ internal sealed class ShotPreviewOverlay : UserControl
         _caption.Text = localized;
         _caption.AccessibleName = localized;
         _placeholder.Text = localized;
+        ApplyPreviewButtonText();
     }
 
     private Rectangle GripBounds => new(
@@ -135,7 +166,7 @@ internal sealed class ShotPreviewOverlay : UserControl
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
-        if (e.Button != MouseButtons.Left || !GripBounds.Contains(e.Location)) return;
+        if (_expanded || e.Button != MouseButtons.Left || !GripBounds.Contains(e.Location)) return;
         _resizing = true;
         _resizeOrigin = PointToScreen(e.Location);
         _resizeStartSize = Size;
@@ -148,13 +179,18 @@ internal sealed class ShotPreviewOverlay : UserControl
         if (!_resizing)
         {
             // The grip is the only interactive part; show the resize cursor only over it.
-            Cursor = GripBounds.Contains(e.Location) ? Cursors.SizeNWSE : Cursors.Default;
+            Cursor = !_expanded && GripBounds.Contains(e.Location) ? Cursors.SizeNWSE : Cursors.Default;
             return;
         }
 
         var current = PointToScreen(e.Location);
         var width = Math.Max(MinimumOverlayWidth, _resizeStartSize.Width + (current.X - _resizeOrigin.X));
         var height = Math.Max(MinimumOverlayHeight, _resizeStartSize.Height + (current.Y - _resizeOrigin.Y));
+        if (Parent is { } parent)
+        {
+            width = Math.Min(width, Math.Max(1, parent.ClientSize.Width - Left - OverlayMargin));
+            height = Math.Min(height, Math.Max(1, parent.ClientSize.Height - OverlayMargin * 2));
+        }
         Size = new Size(width, height);
     }
 
@@ -171,13 +207,22 @@ internal sealed class ShotPreviewOverlay : UserControl
     /// <summary>Current size expressed as a ratio of the default, so a host can persist proportions.</summary>
     internal float ResizeScale => Math.Max(0.1f, (float)Width / OverlayWidth);
 
+    protected override void OnMouseCaptureChanged(EventArgs e)
+    {
+        base.OnMouseCaptureChanged(e);
+        if (Capture || !_resizing) return;
+        _resizing = false;
+        PreviewResized?.Invoke(this, EventArgs.Empty);
+    }
+
     protected override void OnLayout(LayoutEventArgs e)
     {
         base.OnLayout(e);
         // Child layout is positioned from the overlay's own size, so a pass raised for a child keeps
         // the same result; re-running it is idempotent and avoids a stale frame after visibility flips.
         var inner = Math.Max(0, Width - ChromePadding * 2);
-        _caption.SetBounds(ChromePadding, ChromePadding, inner, CaptionHeight);
+        _caption.SetBounds(ChromePadding, ChromePadding, Math.Max(0, inner - CaptionHeight - ChromePadding), CaptionHeight);
+        _previewButton.SetBounds(Width - ChromePadding - CaptionHeight, ChromePadding, CaptionHeight, CaptionHeight);
         var bodyTop = ChromePadding + CaptionHeight;
         var bodyHeight = Math.Max(1, Height - bodyTop - ChromePadding);
         _picture.SetBounds(ChromePadding, bodyTop, inner, bodyHeight);
@@ -189,6 +234,7 @@ internal sealed class ShotPreviewOverlay : UserControl
         base.OnPaint(e);
         using var border = new Pen(Theme.Border);
         e.Graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+        if (_expanded) return;
         // Lower-right resize grip: three short diagonal strokes, the conventional desktop affordance.
         var grip = GripBounds;
         using var gripPen = new Pen(Theme.Muted);
@@ -208,6 +254,7 @@ internal sealed class ShotPreviewOverlay : UserControl
     {
         if (disposing)
         {
+            _help.Dispose();
             _picture.Image = null;
             _bitmap?.Dispose();
             _bitmap = null;

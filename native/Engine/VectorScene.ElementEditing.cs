@@ -2812,12 +2812,12 @@ internal sealed partial class VectorScene
             }
 
             _pathBezierLocalContours[objectIndex] = contours;
-            if (handle is EditHandleKind.BezierControl or EditHandleKind.BezierControl2)
-            {
-                // Curvature edits reshape the filled region, so keep the fill
-                // contour in sync with the bent edge.
-                ResamplePathLocalContours(objectIndex, contourIndex);
-            }
+            // Every handle drag reshapes the filled region: curvature handles bend the
+            // edge while anchor handles (including the corner a Ctrl click inserts)
+            // move its endpoints and their neighbouring controls. Resample either way
+            // so the fill follows the pointer instead of freezing until the gesture
+            // commits.
+            ResamplePathLocalContours(objectIndex, contourIndex);
             GeometryRevision++;
             InvalidateDeferredTopologyQueries();
             return true;

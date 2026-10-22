@@ -121,6 +121,22 @@ internal sealed partial class VectorProject
         return scene;
     }
 
+    public bool TrySetSceneCanvas(string sceneId, SceneCanvasSettings? settings)
+    {
+        var scene = FindScene(sceneId);
+        if (scene is null
+            || settings is { IsValid: false }
+            || (settings is { ImageAssetId.Length: > 0 }
+                && FindImageAsset(settings.ImageAssetId) is null)
+            || !scene.TrySetCanvas(settings))
+        {
+            return false;
+        }
+
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
     public DrawingObjectDefinition AddDrawingObject(string? name = null)
     {
         var index = _drawingObjects.Count(item => !item.IsOpenCanvas) + 1;
@@ -1075,6 +1091,8 @@ internal sealed partial class VectorProject
                     Detail = scene.Detail,
                     Dimension = scene.Dimension,
                     Camera = CloneCamera(scene.Camera),
+                    Canvas = scene.Canvas,
+                    CanvasWelcomeDismissed = scene.CanvasWelcomeDismissed,
                     Lights = scene.Lights.Select(CreateLightRestartSnapshot).ToArray(),
                     CreatedAt = scene.CreatedAt,
                     Layers = scene.CreateLayerSnapshot(),
@@ -1172,6 +1190,12 @@ internal sealed partial class VectorProject
                 CreatedAt = item.CreatedAt
             };
             scene.RestoreLights(CreateRestartLights(item), item.Lights is not null);
+            scene.RestoreCanvas(item.Canvas, item.CanvasWelcomeDismissed);
+            if (scene.Canvas is { ImageAssetId.Length: > 0 } canvas
+                && project.FindImageAsset(canvas.ImageAssetId) is null)
+            {
+                throw new InvalidDataException($"Scene '{scene.Id}' references a missing canvas image asset.");
+            }
             scene.RestoreOnionSkinState(new SceneOnionSkinState(
                 item.OnionSkinEnabled,
                 item.OnionSkinPreviousFrames,

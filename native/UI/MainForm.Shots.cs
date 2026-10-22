@@ -12,6 +12,7 @@ internal sealed partial class MainForm
     private readonly ShotDirectorPanel _shotDirectorPanel = new();
     private readonly ShotPreviewOverlay _shotPreviewOverlay = new();
     private Size _shotPreviewPreferredSize = new(ShotPreviewOverlay.OverlayWidth, ShotPreviewOverlay.OverlayHeight);
+    private bool _layingOutShotPreview;
     private readonly Dictionary<string, string> _activeShotBySceneId = new(StringComparer.Ordinal);
     private string _activeShotId = "";
     private int _shotDirectorFingerprint = int.MinValue;
@@ -23,6 +24,7 @@ internal sealed partial class MainForm
     private int _sceneShotEditFrame;
     private bool _sceneShotEditNeedsTimelineRefresh;
     private SceneShotSettings? _shotDirectorFramingPushed;
+    private string _shotPreviewModeCameraId = "";
 
     /// <summary>
     /// The selected workspace presents the scene stage. Shots &amp; Directing shares the scene
@@ -36,6 +38,20 @@ internal sealed partial class MainForm
         _shotDirectorPanel.Dock = DockStyle.Fill;
         _shotDirectorPanel.Visible = false;
         _shotDirectorPanel.NewShotRequested += (_, _) => AddSceneShot();
+        _shotDirectorPanel.CameraPreviewRequested += (_, _) => ToggleShotPreview();
+        _shotDirectorPanel.PreviewModeChanged += (_, _) =>
+        {
+            if (HasActiveCanvasPointerInteraction())
+            {
+                _shotDirectorPanel.SetPreviewMode(_stage.ShotPreviewMode, _stage.CanPreviewPlanarShot);
+                return;
+            }
+            CompleteSceneShotEdit();
+            _stage.SetShotWorkspacePreviewMode(_shotDirectorPanel.PreviewMode);
+            _shotDirectorPanel.SetPreviewMode(_stage.ShotPreviewMode, _stage.CanPreviewPlanarShot);
+            ClearSelection();
+            _stage.Focus();
+        };
         _shotDirectorPanel.SetSimpleCameraStyle(_applicationSettings.SimpleCameraStyleEnabled);
         _shotDirectorPanel.CameraStyleChanged += (_, _) =>
         {
@@ -80,40 +96,116 @@ internal sealed partial class MainForm
         _shotPreviewOverlay.Anchor = AnchorStyles.Left | AnchorStyles.Bottom;
         stagePanel.Controls.Add(_shotPreviewOverlay);
         _shotPreviewOverlay.BringToFront();
+        _shotPreviewOverlay.PreviewToggleRequested += (_, _) => ToggleShotPreview();
+        _shotPreviewOverlay.SizeChanged += (_, _) =>
+        {
+            if (_shotPreviewOverlay.IsResizing) LayoutShotPreviewOverlay();
+        };
         // A completed user resize changes the preferred monitor size and needs a re-capture at the
         // new pixel size, otherwise the frame would be scaled from the previous resolution.
         _shotPreviewOverlay.PreviewResized += (_, _) =>
         {
             _shotPreviewPreferredSize = _shotPreviewOverlay.Size;
+            LayoutShotPreviewOverlay();
             RefreshShotPreview(force: true);
         };
 
-        void LayoutShotPreviewOverlay()
-        {
-            var margin = Math.Max(8, (int)MathF.Round(ShotPreviewOverlay.OverlayMargin * stagePanel.DeviceDpi / 96f));
-            // The operator's chosen size wins. Only the physical stage bounds may shrink it.
-            var preferred = _shotPreviewPreferredSize;
-            var width = Math.Max(
-                ShotPreviewOverlay.MinimumOverlayWidth,
-                Math.Min(preferred.Width, Math.Max(120, stagePanel.ClientSize.Width - margin * 2)));
-            var height = Math.Max(
-                ShotPreviewOverlay.MinimumOverlayHeight,
-                Math.Min(preferred.Height, Math.Max(90, stagePanel.ClientSize.Height - margin * 2)));
-            if (_shotPreviewOverlay.Size != new Size(width, height))
-                _shotPreviewOverlay.Size = new Size(width, height);
-            _shotPreviewOverlay.Left = margin;
-            // The overlay floats in the stage area, whose bottom edge already sits directly above the
-            // timeline panel, so a plain bottom margin keeps the monitor above the timeline strip.
-            _shotPreviewOverlay.Top = Math.Max(
-                metrics.Visible ? metrics.Bottom + margin : margin,
-                stagePanel.ClientSize.Height - height - margin);
-        }
-
         stagePanel.Resize += (_, _) => LayoutShotPreviewOverlay();
+        _stage.LocationChanged += (_, _) => LayoutShotPreviewOverlay();
+        _stage.SizeChanged += (_, _) => LayoutShotPreviewOverlay();
+        _toolPalette.LocationChanged += (_, _) => LayoutShotPreviewOverlay();
+        _toolPalette.SizeChanged += (_, _) => LayoutShotPreviewOverlay();
+        _toolPalette.VisibleChanged += (_, _) => LayoutShotPreviewOverlay();
+        _toolPalette.ParentChanged += (_, _) => LayoutShotPreviewOverlay();
+        if (_vaultDrawer is { } drawer)
+        {
+            drawer.VisibleChanged += (_, _) => LayoutShotPreviewOverlay();
+            drawer.RegionChanged += (_, _) => LayoutShotPreviewOverlay();
+            drawer.SizeChanged += (_, _) => LayoutShotPreviewOverlay();
+            drawer.LocationChanged += (_, _) => LayoutShotPreviewOverlay();
+        }
+        _timeline.LocationChanged += (_, _) => LayoutShotPreviewOverlay();
+        _timeline.VisibleChanged += (_, _) => LayoutShotPreviewOverlay();
+        metrics.LocationChanged += (_, _) => LayoutShotPreviewOverlay();
         metrics.SizeChanged += (_, _) => LayoutShotPreviewOverlay();
         metrics.VisibleChanged += (_, _) => LayoutShotPreviewOverlay();
         _inspectorHost.SizeChanged += (_, _) => LayoutShotPreviewOverlay();
         LayoutShotPreviewOverlay();
+    }
+
+    private void LayoutShotPreviewOverlay()
+    {
+        if (_layingOutShotPreview || _shotPreviewOverlay.Parent is not Control stagePanel) return;
+        _layingOutShotPreview = true;
+        try
+        {
+            var margin = Math.Max(8, (int)MathF.Round(ShotPreviewOverlay.OverlayMargin * stagePanel.DeviceDpi / 96f));
+            var available = Rectangle.Intersect(stagePanel.ClientRectangle, _stage.Bounds);
+            available.Inflate(-margin, -margin);
+            if (_stageMetrics.Visible)
+                available = Rectangle.FromLTRB(available.Left, Math.Max(available.Top, _stageMetrics.Bottom + margin), available.Right, available.Bottom);
+            if (_toolPalette.Visible && ReferenceEquals(_toolPalette.Parent, stagePanel))
+            {
+                var left = Math.Max(available.Left, _toolPalette.Right + margin);
+                available = Rectangle.FromLTRB(left, available.Top, available.Right, available.Bottom);
+            }
+            if (_vaultDrawer is { Visible: true } drawer && ReferenceEquals(drawer.Parent, stagePanel.Parent))
+            {
+                var drawerWidth = Math.Clamp(_vaultDrawerVisibleWidth, 0, drawer.Width);
+                var left = Math.Max(available.Left, drawer.Left + drawerWidth - stagePanel.Left + margin);
+                available = Rectangle.FromLTRB(left, available.Top, available.Right, available.Bottom);
+            }
+            if (_timeline.Visible && ReferenceEquals(_timeline.Parent, this))
+            {
+                var timelineTop = _timeline.Top - (stagePanel.Parent?.Top ?? 0) - stagePanel.Top - margin;
+                available = Rectangle.FromLTRB(available.Left, available.Top, available.Right, Math.Min(available.Bottom, timelineTop));
+            }
+
+            var visible = _shotDirectorVisible && SelectedTimelineShot() is not null
+                && available.Width >= ShotPreviewOverlay.MinimumOverlayWidth
+                && available.Height >= ShotPreviewOverlay.MinimumOverlayHeight;
+            var wasVisible = _shotPreviewOverlay.Visible;
+            _shotPreviewOverlay.Visible = visible;
+            if (!visible) return;
+            var preferred = _shotPreviewOverlay.Expanded ? available.Size
+                : _shotPreviewOverlay.IsResizing ? _shotPreviewOverlay.Size : _shotPreviewPreferredSize;
+            var size = new Size(Math.Min(preferred.Width, available.Width), Math.Min(preferred.Height, available.Height));
+            var resized = _shotPreviewOverlay.Size != size;
+            _shotPreviewOverlay.Bounds = new Rectangle(new Point(available.Left, available.Bottom - size.Height), size);
+            _shotPreviewOverlay.BringToFront();
+            if ((resized || !wasVisible) && !_shotPreviewOverlay.IsResizing) RefreshShotPreview(force: true);
+        }
+        finally
+        {
+            _layingOutShotPreview = false;
+        }
+    }
+
+    private void ToggleShotPreview()
+    {
+        if (!_shotDirectorVisible || SelectedTimelineShot() is null || HasActiveCanvasPointerInteraction()) return;
+        CompleteSceneShotEdit();
+        _shotPreviewOverlay.Expanded = !_shotPreviewOverlay.Expanded;
+        LayoutShotPreviewOverlay();
+        _stage.Focus();
+    }
+
+    private bool HandleShotWorkspaceShortcut(Keys keyData)
+    {
+        if (keyData is not (Keys.Enter or Keys.Escape)) return false;
+        if (!_stage.ContainsFocus && !_timeline.ContainsFocus && !_shotDirectorPanel.CameraListContainsFocus
+            && !_shotPreviewOverlay.ContainsFocus) return false;
+        if (ContainsFocusedEditor(this)) return false;
+        if (keyData == Keys.Escape && _shotPreviewOverlay.Expanded)
+        {
+            ToggleShotPreview();
+            return true;
+        }
+        if (keyData != Keys.Enter || !_shotDirectorVisible
+            || ContainsFocusedButton(this) || HasActiveCanvasPointerInteraction()) return false;
+        CompleteSceneShotEdit();
+        TogglePlayback();
+        return true;
     }
 
     /// <summary>Shows the director content only inside the shot workspace and keeps its width responsive.</summary>
@@ -137,8 +229,8 @@ internal sealed partial class MainForm
         LayoutInspectorCategoryRail();
 
         if (visible) RefreshShotDirectorWidth();
-        _shotPreviewOverlay.Visible = visible && SelectedTimelineShot() is not null;
-        if (visible) _shotPreviewOverlay.BringToFront();
+        if (!visible || SelectedTimelineShot() is null) _shotPreviewOverlay.Expanded = false;
+        LayoutShotPreviewOverlay();
         UpdateShotFramingGizmo();
     }
 

@@ -8,6 +8,8 @@ internal sealed partial class MainForm : Form
 {
     private void UpdateInspector(bool refreshLineEndpointStyles = true)
     {
+        UpdateCanvasWorkspace();
+        FollowInspectorMaterialSelection();
         UpdateDocumentInfoPanel();
         RefreshLayerBlendModePanel();
         UpdateSpatialTransformPanelState();
@@ -39,9 +41,8 @@ internal sealed partial class MainForm : Form
         UpdateImageInspector(validSelection);
         if (_selectedElement.IsValid && (uint)_selectedElement.Key.ObjectIndex < _scene.ObjectCount)
         {
-            _materialEditor.SetGradientPreviewTarget(ShouldPreferStrokeMaterial(
-                _selectedElement.Key.Kind,
-                _scene.ShapeKind[_selectedElement.Key.ObjectIndex]));
+            // A suggestion only: it must never undo a target the user picked by hand.
+            ApplyMaterialTargetPreference(_selectedElement.Key.Kind);
         }
         _materialEditor.SetTextObjectMode(
             IsDrawingInspectorContext()
@@ -184,7 +185,7 @@ internal sealed partial class MainForm : Form
             _materialEditor.SetMaterial(Color.FromArgb(fill.A, fill), stroke, inspectorStrokePoints, materialOpacity);
         }
 
-        _materialEditor.SetGradientPreviewTarget(strokeMaterialTarget);
+        ApplyMaterialTargetPreference(selectedKind);
 
         if (gradientAppliesToTarget)
         {

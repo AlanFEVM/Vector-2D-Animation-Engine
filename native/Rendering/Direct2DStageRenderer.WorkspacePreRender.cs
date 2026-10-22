@@ -61,6 +61,7 @@ internal sealed partial class Direct2DStageRenderer
                 bitmapTarget.Clear(in background);
                 DrawGrid(stage);
                 Draw3DReferenceGrid(stage);
+                DrawCanvasBackground(stage);
                 var stats = DrawReference3DScene(stage);
                 var result = bitmapTarget.EndDraw();
                 drawingStarted = false;

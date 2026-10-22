@@ -156,7 +156,7 @@ internal sealed partial class StageControl
     internal long ShotWireframeBuildCount { get; private set; }
     private void EnsureShotProjectionView()
     {
-        var view = new ShotProjectionView(Scene, Scene.StageWidth, Scene.StageHeight, ClientSize, DeviceDpi,
+        var view = new ShotProjectionView(Scene, CanvasWorldWidth, CanvasWorldHeight, ClientSize, DeviceDpi,
             RendersReferenceProjection, CameraX, CameraY, Zoom, EffectiveReferenceYaw, EffectiveReferencePitch,
             _referenceDistance, _referenceZoomScale, _referenceTargetX, _referenceTargetY, _referenceTargetZ,
             ReferenceProjectionBlend);
@@ -327,8 +327,8 @@ internal sealed partial class StageControl
 
         var world = ResolveShotCameraWireframeWorld(
             settings,
-            scene.StageWidth,
-            scene.StageHeight);
+            CanvasWorldWidth,
+            CanvasWorldHeight);
         var segments = new List<ShotCameraWireframeSegment>(24);
         AppendClosedShotCameraWireframeSegments(
             segments,
@@ -440,8 +440,8 @@ internal sealed partial class StageControl
         if (scene is null || Width <= 0 || Height <= 0) return false;
         var world = ResolveShotCameraWireframeWorld(
             _shotFramingSettings,
-            scene.StageWidth,
-            scene.StageHeight);
+            CanvasWorldWidth,
+            CanvasWorldHeight);
         worldPerPixel = RendersReferenceProjection
             ? ResolveShotCameraReferenceWorldPerPixel(world.CameraPoint)
             : ScreenLengthToWorld(1f);
@@ -467,8 +467,8 @@ internal sealed partial class StageControl
         if (scene is null || Width <= 0 || Height <= 0) return false;
         origin = ResolveShotCameraWireframeWorld(
             _shotFramingSettings,
-            scene.StageWidth,
-            scene.StageHeight).CameraPoint;
+            CanvasWorldWidth,
+            CanvasWorldHeight).CameraPoint;
         return Finite(origin);
     }
 
@@ -1122,7 +1122,7 @@ internal sealed partial class StageControl
         // Project the camera's real world-space framed plane. Falling back to the legacy flat 2D
         // framing would discard X/Y rotation and Z depth, which is exactly what made the shot preview
         // disagree with the Stage.
-        var worldCorners = settings.Normalized().ResolveWorldFrameCorners(scene.StageWidth, scene.StageHeight);
+        var worldCorners = settings.Normalized().ResolveWorldFrameCorners(CanvasWorldWidth, CanvasWorldHeight);
         var projected = new PointF[worldCorners.Length];
         for (var index = 0; index < worldCorners.Length; index++)
         {
@@ -1759,8 +1759,8 @@ internal sealed partial class StageControl
             // so the correction does not depend on which projection happens to be active.
             var (localCorners, _) = ResolveShotFramingLocalCorners(
                 candidate,
-                scene.StageWidth,
-                scene.StageHeight);
+                CanvasWorldWidth,
+                CanvasWorldHeight);
             if (localCorners.Length < 4) return null;
             var frameCenterSettings = new Vector2(candidate.X, candidate.Y);
             if (!TryProjectShotPointToScreen(
@@ -1833,8 +1833,8 @@ internal sealed partial class StageControl
         var normalized = start.Normalized();
         var world = ResolveShotCameraWireframeWorld(
             normalized,
-            scene.StageWidth,
-            scene.StageHeight);
+            CanvasWorldWidth,
+            CanvasWorldHeight);
         if (!TryResolveShotCameraLensSlider(
                 normalized,
                 world,
@@ -2252,7 +2252,7 @@ internal sealed partial class StageControl
 
     /// <summary>Canvas size the framed viewport is resolved against (the composition stage size).</summary>
     internal SizeF ShotFramingCanvasSize =>
-        Scene is { } scene ? new SizeF(scene.StageWidth, scene.StageHeight) : SizeF.Empty;
+        Scene is not null ? new SizeF(CanvasWorldWidth, CanvasWorldHeight) : SizeF.Empty;
 
     private static PointF ToPointF(Vector2 value) => new(value.X, value.Y);
 

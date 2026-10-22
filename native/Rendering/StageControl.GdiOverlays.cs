@@ -929,32 +929,6 @@ internal sealed partial class StageControl : Control
         g.SmoothingMode = oldMode;
     }
 
-    private void DrawFillToolCursor(Graphics g)
-    {
-        if (!_fillToolCursorVisible) return;
-
-        var oldMode = g.SmoothingMode;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var x = _fillToolCursorScreen.X;
-        var y = _fillToolCursorScreen.Y;
-        var bucket = new[]
-        {
-            new PointF(x - 10, y - 12),
-            new PointF(x + 3, y - 12),
-            new PointF(x + 10, y - 5),
-            new PointF(x - 3, y - 5)
-        };
-        using var fill = new SolidBrush(Color.FromArgb(150, _fillToolCursorColor));
-        using var outline = new Pen(Color.FromArgb(235, Theme.Text), 1.4f);
-        using var drop = new SolidBrush(Color.FromArgb(220, _fillToolCursorColor));
-        using var dropOutline = new Pen(Color.FromArgb(235, Theme.Text), 1f);
-        g.FillPolygon(fill, bucket);
-        g.DrawPolygon(outline, bucket);
-        g.FillEllipse(drop, x + 3, y - 1, 6, 8);
-        g.DrawEllipse(dropOutline, x + 3, y - 1, 6, 8);
-        g.SmoothingMode = oldMode;
-    }
-
     private void DrawGradientOverlay(Graphics g)
     {
         if (!_gradientOverlayVisible) return;

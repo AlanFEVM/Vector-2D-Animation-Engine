@@ -388,7 +388,7 @@ internal static class ProjectVaultStore
                 manifest.FormatVersion,
                 out var timelineDecodedBytes);
             decodedTimelineBytesTotal = AddDecodedTimelineBytes(decodedTimelineBytesTotal, timelineDecodedBytes);
-            ValidateSceneTimeline(timeline, entry.Id, manifest.DrawingObjects);
+            ValidateSceneTimeline(timeline, entry.Id, manifest.DrawingObjects, manifest.ImageAssets);
             scenes[index] = new SceneRestartSnapshot
             {
                 Id = entry.Id,
@@ -396,6 +396,8 @@ internal static class ProjectVaultStore
                 Detail = entry.Detail,
                 Dimension = entry.Dimension,
                 Camera = entry.Camera,
+                Canvas = timeline.Canvas,
+                CanvasWelcomeDismissed = timeline.CanvasWelcomeDismissed,
                 Lights = timeline.Lights,
                 CreatedAt = entry.CreatedAt,
                 Layers = timeline.Layers,
@@ -1269,6 +1271,7 @@ internal static class ProjectVaultStore
         var assetTagIds = snapshot.AssetTags.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         var drawingIds = snapshot.DrawingObjects.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         var svgAssetIds = snapshot.ExternalSvgAssets.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        var imageAssetIds = snapshot.ImageAssets.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         if (drawingIds.Overlaps(snapshot.ExternalSvgAssets.Select(item => item.Id))
             || drawingIds.Overlaps(snapshot.ImageAssets.Select(item => item.Id)))
         {
@@ -1301,6 +1304,7 @@ internal static class ProjectVaultStore
                 throw new InvalidDataException("A scene snapshot is invalid.");
             }
             ValidateInstances(scene.Instances, drawingIds, $"scene '{scene.Id}'");
+            ValidateSceneCanvas(scene.Canvas, imageAssetIds, scene.Id);
             var (layerIds, contentLayerIds) = ValidateSceneLayerSnapshot(scene.Layers, scene.Id);
             foreach (var layer in scene.Layers.Layers)
                 if (layer.MaskScene is { } mask) ValidateImportedSvgAssetReferences(mask, svgAssetIds);
@@ -1432,7 +1436,8 @@ internal static class ProjectVaultStore
     private static void ValidateSceneTimeline(
         SceneTimelineDocument document,
         string expectedSceneId,
-        IReadOnlyList<DrawingManifestEntry> drawings)
+        IReadOnlyList<DrawingManifestEntry> drawings,
+        IReadOnlyList<ImageAssetDescriptor> imageAssets)
     {
         if (document is null || document.FormatVersion != TimelineFormatVersion
             || !string.Equals(document.SceneId, expectedSceneId, StringComparison.Ordinal)
@@ -1443,6 +1448,10 @@ internal static class ProjectVaultStore
             throw new InvalidDataException($"The timeline for scene '{expectedSceneId}' is invalid.");
         }
         var (layerIds, contentLayerIds) = ValidateSceneLayerSnapshot(document.Layers, expectedSceneId);
+        ValidateSceneCanvas(
+            document.Canvas,
+            imageAssets.Select(item => item.Id).ToHashSet(StringComparer.Ordinal),
+            expectedSceneId);
         var drawingIds = drawings.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         ValidateInstances(document.Instances, drawingIds, $"scene '{expectedSceneId}'");
         var lightIds = ValidateSceneLights(document.Lights, layerIds, document.Instances, expectedSceneId);
@@ -1452,6 +1461,19 @@ internal static class ProjectVaultStore
         ValidateTimeline(document.Timeline, layerIds.Concat(lightIds).Concat(shotIds));
         ValidateSceneLightTimeline(document.Timeline, document.Lights, expectedSceneId);
         ValidateSceneShotTimeline(document.Timeline, document.Shots, expectedSceneId);
+    }
+
+    private static void ValidateSceneCanvas(
+        SceneCanvasSettings? settings,
+        ISet<string> imageAssetIds,
+        string sceneId)
+    {
+        if (settings is { IsValid: false }
+            || (settings is { ImageAssetId.Length: > 0 }
+                && !imageAssetIds.Contains(settings.ImageAssetId)))
+        {
+            throw new InvalidDataException($"Scene '{sceneId}' has invalid canvas settings or a missing image asset.");
+        }
     }
 
     private static string[] ValidateSceneShots(
@@ -2796,6 +2818,8 @@ internal static class ProjectVaultStore
     {
         public int FormatVersion { get; init; }
         public string SceneId { get; init; } = "";
+        public SceneCanvasSettings? Canvas { get; init; }
+        public bool CanvasWelcomeDismissed { get; init; }
         public SceneLayerSnapshot Layers { get; init; } = new();
         public AnimationTimelineSnapshot Timeline { get; init; } = new();
         public InstanceRestartSnapshot[] Instances { get; init; } = [];
@@ -2809,6 +2833,8 @@ internal static class ProjectVaultStore
         {
             FormatVersion = ProjectVaultStore.TimelineFormatVersion,
             SceneId = scene.Id,
+            Canvas = scene.Canvas,
+            CanvasWelcomeDismissed = scene.CanvasWelcomeDismissed,
             Layers = scene.Layers,
             Timeline = scene.Timeline,
             Instances = scene.Instances,

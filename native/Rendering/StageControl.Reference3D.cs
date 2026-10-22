@@ -335,6 +335,7 @@ internal readonly record struct Reference3DPlaybackPreparationState(
     bool UseGpuOptics)
 {
     public bool Experimental3DEnabled { get; init; } = true;
+    public SceneCanvasPresentation? CanvasPresentation { get; init; }
 }
 
 internal sealed partial class StageControl
@@ -536,7 +537,10 @@ internal sealed partial class StageControl
             Font.Unit,
             _direct2DRenderer.ExplicitGpuDeviceActive
                 && ReferenceDimension == SceneDimension.ThreeD)
-        { Experimental3DEnabled = this.Experimental3DEnabled };
+        {
+            Experimental3DEnabled = this.Experimental3DEnabled,
+            CanvasPresentation = this.CanvasPresentation
+        };
 
     internal void ConfigureReference3DPlaybackPreparation(
         VectorScene scene,
@@ -566,6 +570,7 @@ internal sealed partial class StageControl
         _referenceProjectionBlend = Math.Clamp(state.Camera.ProjectionBlend, 0f, 1f);
         _referenceCameraTransitionActive = false;
         _referenceSceneDefinition = state.SceneDefinition;
+        SetCanvasPresentation(state.CanvasPresentation);
         BackColor = Color.FromArgb(state.BackColorArgb);
         WorldGridOpacity = state.WorldGridOpacity;
         WorldGridType = state.WorldGridType;

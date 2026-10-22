@@ -8254,6 +8254,47 @@ internal static partial class Benchmark
 
     private static void RunInteractivePreviewSchedulingRegression()
     {
+        using (var cursorStage = new StageControl(new VectorScene()))
+        {
+            var presentationRevision = cursorStage.BasePresentationRevision;
+            var selectionRevision = cursorStage.SelectionRenderRevision;
+            cursorStage.SetFillToolCursor(new Point(20, 30), Color.Coral);
+            var systemCursor = cursorStage.Cursor;
+            var cursorSize = Math.Clamp((int)MathF.Round(32f * cursorStage.DeviceDpi / 96f), 32, 128);
+            AssertTimeline(systemCursor != Cursors.Cross
+                && systemCursor.HotSpot == new Point(cursorSize / 2, cursorSize / 2),
+                "Fill did not install a system cursor with its original pointer hotspot.");
+            using (var cursorImage = new Bitmap(cursorSize, cursorSize))
+            using (var graphics = Graphics.FromImage(cursorImage))
+            {
+                foreach (var background in new[] { Color.White, Color.Magenta })
+                {
+                    graphics.Clear(background);
+                    systemCursor.Draw(graphics, new Rectangle(0, 0, cursorSize, cursorSize));
+                    AssertTimeline(cursorImage.GetPixel(0, 0).ToArgb() == background.ToArgb()
+                        && cursorImage.GetPixel(cursorSize - 1, cursorSize - 1).ToArgb() == background.ToArgb(),
+                        "The fill system cursor replaced its transparent background with an opaque rectangle.");
+                    var bucketPixel = cursorImage.GetPixel(cursorSize * 14 / 32, cursorSize * 7 / 32);
+                    AssertTimeline(bucketPixel.ToArgb() != background.ToArgb()
+                        && bucketPixel.R > bucketPixel.G && bucketPixel.R > bucketPixel.B
+                        && bucketPixel.B > Color.Coral.B,
+                        "The fill system cursor lost its colored bucket or alpha-blended interior.");
+                }
+            }
+            cursorStage.SetFillToolCursor(new Point(80, 90), Color.Coral);
+            AssertTimeline(ReferenceEquals(cursorStage.Cursor, systemCursor)
+                && cursorStage.FillToolCursorScreen == new Point(80, 90),
+                "Moving the fill cursor recreated the system cursor or lost its latest position.");
+            cursorStage.SetFillToolCursor(new Point(80, 90), Color.Blue);
+            AssertTimeline(!ReferenceEquals(cursorStage.Cursor, systemCursor)
+                && cursorStage.FillToolCursorColor.ToArgb() == Color.Blue.ToArgb(),
+                "Changing the fill color did not refresh the cached system cursor.");
+            cursorStage.ClearFillToolCursor();
+            AssertTimeline(!cursorStage.FillToolCursorVisible && cursorStage.Cursor == Cursors.Cross
+                && cursorStage.BasePresentationRevision == presentationRevision
+                && cursorStage.SelectionRenderRevision == selectionRevision,
+                "Fill cursor motion, color changes or cleanup invalidated the Stage or retained the custom cursor.");
+        }
         AssertTimeline(
             !StageControl.ShouldSynchronouslyPresentInteractiveFrame(false, false, true, 5.499)
             && StageControl.ShouldSynchronouslyPresentInteractiveFrame(false, false, true, 5.5)
@@ -8299,7 +8340,45 @@ internal static partial class Benchmark
         AssertTimeline(pending.GetValue(form) is null,
             "The current gesture's callback could not consume pending input after cancellation.");
         reset.Invoke(form, null);
-        Console.WriteLine("interactive_preview_scheduling=ok,gate_ms=5.5,latest_input=ok,timer_independent=ok,cancelled_callback=ok");
+        var queueHover = RequireMethod(typeof(MainForm), "QueueHoverFeedback");
+        var pendingHover = RequireField(typeof(MainForm), "_pendingHoverScreen");
+        var tool = RequireField(typeof(MainForm), "_tool");
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        foreach (var mode in new[] { ToolMode.Fill, ToolMode.Text, ToolMode.Eyedropper })
+        {
+            tool.SetValue(form, mode);
+            timer.Start();
+            var hoverGeneration = (int)generation.GetValue(form)!;
+            for (var index = 0; index < 64; index++)
+                queueHover.Invoke(form, [new Point(100 + index, 200 + index)]);
+            AssertTimeline(
+                pendingHover.GetValue(form) is Point latestHover && latestHover == new Point(163, 263)
+                && (int)posted.GetValue(form)! == hoverGeneration,
+                $"{mode} hover did not retain its latest input and post work while the fallback timer was running.");
+            apply.Invoke(form, [hoverGeneration]);
+            AssertTimeline(pendingHover.GetValue(form) is null && (int)posted.GetValue(form)! == -1,
+                $"{mode} hover did not consume its latest input without a timer tick.");
+            if (mode == ToolMode.Fill)
+                AssertTimeline(stage.FillToolCursorScreen == new Point(163, 263) && stage.FillToolCursorVisible,
+                    "Posted fill hover did not move the rendered cursor to the latest position.");
+            queueHover.Invoke(form, [new Point(180, 280)]);
+            reset.Invoke(form, null);
+            AssertTimeline(pendingHover.GetValue(form) is null && !timer.Enabled,
+                $"{mode} reset retained hover feedback or the fallback timer.");
+            timer.Start();
+            var nextHoverGeneration = (int)generation.GetValue(form)!;
+            queueHover.Invoke(form, [new Point(190, 290)]);
+            apply.Invoke(form, [hoverGeneration]);
+            AssertTimeline(
+                pendingHover.GetValue(form) is Point currentHover && currentHover == new Point(190, 290)
+                && (int)posted.GetValue(form)! == nextHoverGeneration,
+                $"{mode} stale hover callback consumed or unregistered newer input.");
+            apply.Invoke(form, [nextHoverGeneration]);
+            AssertTimeline(pendingHover.GetValue(form) is null,
+                $"{mode} hover could not consume newer input after cancellation.");
+            reset.Invoke(form, null);
+        }
+        Console.WriteLine("interactive_preview_scheduling=ok,gate_ms=5.5,latest_input=ok,timer_independent=ok,cancelled_callback=ok,tool_hover=ok");
     }
 
     private static void RunLineToolPreviewCoalescingRegression()

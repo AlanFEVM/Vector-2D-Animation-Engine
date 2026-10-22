@@ -88,8 +88,52 @@ internal static partial class Benchmark
         }
         if (!scene.CompletePathBezierPreview(objectIndex))
             throw new InvalidOperationException("The isolated Bezier preview could not commit.");
+
+        // Dragging an anchor handle — including the corner a Ctrl click inserts into a
+        // fill boundary — reshapes the filled region just like a curvature handle, so
+        // the sampled fill contour must be resampled during the preview instead of
+        // freezing until the gesture commits.
+        var anchorShift = new PointF(70, -55);
+        if (!scene.TryGetPathBezierSegment(objectIndex, 0, out var anchorSegment)
+            || !scene.SetPathBezierSegmentForPreview(
+                objectIndex,
+                0,
+                new PointF(anchorSegment.Start.X + anchorShift.X, anchorSegment.Start.Y + anchorShift.Y),
+                new PointF(anchorSegment.Control1.X + anchorShift.X, anchorSegment.Control1.Y + anchorShift.Y),
+                anchorSegment.Control2,
+                anchorSegment.End,
+                preserveStraightAdjacentSegments: true,
+                handle: EditHandleKind.LineStart)
+            || !scene.TryGetPathBezierWorldContours(objectIndex, out var anchorWorldContours)
+            || !scene.TryGetPathLocalContours(objectIndex, out var anchorSampledContours))
+        {
+            throw new InvalidOperationException("The fill-boundary anchor preview failed.");
+        }
+
+        object?[] anchorArguments = [anchorWorldContours, null, null, null, true];
+        if (prepareContours.Invoke(null, anchorArguments) is not true
+            || anchorArguments[2] is not PointF[][] anchorExpectedWorld)
+        {
+            throw new InvalidOperationException("The fill-boundary anchor sampling reference failed.");
+        }
+
+        var anchorCosine = MathF.Cos(scene.Angle[objectIndex]);
+        var anchorSine = MathF.Sin(scene.Angle[objectIndex]);
+        var anchorExpectedLocal = anchorExpectedWorld[0].Select(point =>
+        {
+            var deltaX = point.X - scene.X[objectIndex];
+            var deltaY = point.Y - scene.Y[objectIndex];
+            return VectorUnits.Quantize(new PointF(
+                deltaX * anchorCosine + deltaY * anchorSine,
+                -deltaX * anchorSine + deltaY * anchorCosine));
+        }).ToArray();
+        if (!anchorSampledContours[0].AsSpan().SequenceEqual(anchorExpectedLocal))
+            throw new InvalidOperationException(
+                "An anchor handle preview did not resample the filled region.");
+        scene.CompletePathBezierPreview(objectIndex);
         Console.WriteLine("bezier_preview_contour_isolation=ok");
         Console.WriteLine("bezier_preview_sampling_parity=ok");
+        Console.WriteLine("bezier_preview_anchor_fill_follow=ok");
     }
 
     private static void RunBoundaryBezierHandleRegression()

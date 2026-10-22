@@ -143,7 +143,9 @@ internal sealed partial class VectorProject
     public bool TryRemoveImageAsset(string imageAssetId, out ImageAssetDefinition? removed)
     {
         removed = FindImageAsset(imageAssetId);
-        if (removed is null || !_imageAssets.Remove(removed))
+        if (removed is null
+            || _scenes.Any(scene => string.Equals(scene.Canvas?.ImageAssetId, imageAssetId, StringComparison.Ordinal))
+            || !_imageAssets.Remove(removed))
         {
             removed = null;
             return false;

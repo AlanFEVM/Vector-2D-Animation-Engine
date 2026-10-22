@@ -127,6 +127,7 @@ internal sealed partial class StageControl
         graphics.Clear(BackColor);
         graphics.SmoothingMode = SmoothingMode.None;
         DrawGrid(graphics);
+        DrawCanvasBackgroundGdi(graphics);
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
         BeginScenePassOrder();

@@ -15,6 +15,7 @@ internal sealed partial class MainForm
         _documentInfoPanel.Visible = false;
         _inspectorHost.Controls.Add(_documentInfoPanel);
         _documentInfoPanel.RenameCommitted += (_, name) => ApplyDocumentInfoRename(name);
+        InitializeCanvasWorkspace();
     }
 
     private void UpdateDocumentInfoPanel()
@@ -50,7 +51,16 @@ internal sealed partial class MainForm
             sceneSummary,
             _scene.FrameCount,
             _project.PlaybackFps,
-            _scene.ObjectCount));
+            _scene.ObjectCount,
+            scene?.Canvas is { } canvas ? $"{canvas.Width} × {canvas.Height} px" : UiLocalization.T("Not added"),
+            scene?.Canvas?.BackgroundKind switch
+            {
+                SceneBackgroundKind.Solid => UiLocalization.T("Solid color"),
+                SceneBackgroundKind.Image => IsSceneWorkspaceSelected && _canvasBackgroundError.Length > 0
+                    ? UiLocalization.T("Image unavailable")
+                    : _project.FindImageAsset(scene.Canvas.ImageAssetId)?.Name ?? UiLocalization.T("Missing project image"),
+                _ => UiLocalization.T("Not added")
+            }));
     }
 
     private void ApplyDocumentInfoRename(string name)

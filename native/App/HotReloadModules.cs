@@ -63,6 +63,8 @@ internal static class HotReloadModuleResolver
         nameof(DashDock),
         nameof(WorkspaceColorFlyout),
         nameof(WorkspaceColorPickerPanel),
+        nameof(SceneCanvasDialog),
+        nameof(CanvasWelcomePanel),
         nameof(LayerBlendModePanel),
         nameof(DrawingObjectInstancePanel),
         nameof(SymbolFiltersPanel),
@@ -186,6 +188,11 @@ internal static class HotReloadModuleResolver
             or nameof(SceneRenderOrderBuffer)
             or nameof(WorldGridLayout)
             or nameof(PolarGridLayout))
+        {
+            return HotReloadModule.Rendering;
+        }
+
+        if (typeName is nameof(SceneCanvasPresentation) or nameof(SceneCanvasCheckerboard))
         {
             return HotReloadModule.Rendering;
         }
@@ -315,6 +322,8 @@ internal static class HotReloadModuleResolver
             or nameof(DashDock)
             or nameof(WorkspaceColorFlyout)
             or nameof(WorkspaceColorPickerPanel)
+            or nameof(SceneCanvasDialog)
+            or nameof(CanvasWelcomePanel)
             or nameof(ReleaseNotesCatalog)
             or nameof(ReleaseNotesDialog)
             or nameof(ReleaseNotesPanel)
@@ -352,6 +361,10 @@ internal static class HotReloadModuleResolver
             or nameof(SymbolShadowFilter)
             or nameof(SymbolFilterValidation)
             or nameof(VectorProject)
+            or nameof(SceneCanvasSettings)
+            or nameof(SceneBackgroundKind)
+            or nameof(CanvasImageFit)
+            or nameof(SceneCanvasLayout)
             or nameof(ProjectAssetFolder)
             or nameof(ProjectAssetTag)
             or nameof(ProjectAssetTagData)

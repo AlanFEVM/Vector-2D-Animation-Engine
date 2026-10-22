@@ -483,6 +483,8 @@ internal sealed partial class StageControl
     {
         bitmap = null;
         if (Scene is null) return false;
+        if (settings.PinsPlanarRotation && CanRenderPlanarShotPreview)
+            return TryCapturePlanarShotPreview(settings, targetSize, out bitmap);
         var surfaceWidth = ClientSize.Width;
         var surfaceHeight = ClientSize.Height;
         if (surfaceWidth <= 8 || surfaceHeight <= 8) return false;
@@ -495,9 +497,9 @@ internal sealed partial class StageControl
 
         // Preset frames fit inside the monitor without stretching. Legacy follow-scene captures
         // retain their existing requested-size contract.
-        if (settings.AspectRatio != SceneShotAspectRatio.FollowScene)
+        if (settings.AspectRatio != SceneShotAspectRatio.FollowScene || CanvasPresentation is not null)
         {
-            var aspect = settings.ResolveAspectRatio(Scene.StageWidth, Scene.StageHeight);
+            var aspect = settings.ResolveAspectRatio(CanvasWorldWidth, CanvasWorldHeight);
             if (width / (float)height > aspect)
                 width = Math.Max(1, (int)MathF.Round(height * aspect));
             else
@@ -507,9 +509,29 @@ internal sealed partial class StageControl
         using var surface = new Bitmap(surfaceWidth, surfaceHeight, PixelFormat.Format32bppPArgb);
         using (var graphics = Graphics.FromImage(surface))
         {
-            graphics.Clear(BackColor);
-            if (RendersReferenceProjection) DrawGdiReferenceBase(graphics);
-            else DrawGdiBase2D(graphics, backgroundAlreadyDrawn: true);
+            var canvas = CanvasPresentation;
+            graphics.Clear(canvas is null ? BackColor : Color.Transparent);
+            if (canvas is null)
+            {
+                if (RendersReferenceProjection) DrawGdiReferenceBase(graphics);
+                else DrawGdiBase2D(graphics, backgroundAlreadyDrawn: true);
+            }
+            else
+            {
+                CanvasPresentation = null;
+                try
+                {
+                    graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                    graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    BeginScenePassOrder();
+                    if (RendersReferenceProjection) DrawReference3DScene(graphics);
+                    else DrawGdiBase2D(graphics, backgroundAlreadyDrawn: true);
+                }
+                finally
+                {
+                    CanvasPresentation = canvas;
+                }
+            }
         }
 
         var corners = geometry.Corners;
@@ -529,7 +551,17 @@ internal sealed partial class StageControl
             {
                 graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                graphics.Clear(BackColor);
+                graphics.Clear(CanvasPresentation is null ? BackColor : Color.Transparent);
+                var renderingOutput = _renderingCanvasOutput;
+                try
+                {
+                    _renderingCanvasOutput = true;
+                    DrawCanvasBackgroundGdi(graphics, new RectangleF(0, 0, width, height));
+                }
+                finally
+                {
+                    _renderingCanvasOutput = renderingOutput;
+                }
                 graphics.SetClip(new Rectangle(0, 0, width, height));
                 graphics.Transform = transform;
                 graphics.DrawImage(surface, 0, 0, surfaceWidth, surfaceHeight);

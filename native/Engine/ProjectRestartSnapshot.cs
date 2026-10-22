@@ -92,6 +92,8 @@ internal sealed class SceneRestartSnapshot
     public string Detail { get; init; } = "Scene composition context";
     public SceneDimension Dimension { get; init; } = SceneDimension.TwoD;
     public SceneCameraDefinition Camera { get; init; } = new();
+    public SceneCanvasSettings? Canvas { get; init; }
+    public bool CanvasWelcomeDismissed { get; init; }
     public SceneLightRestartSnapshot[]? Lights { get; init; }
     public DateTime CreatedAt { get; init; } = DateTime.Now;
     public SceneLayerSnapshot Layers { get; init; } = new();

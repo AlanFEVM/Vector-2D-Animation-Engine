@@ -86,6 +86,9 @@ internal sealed partial class MainForm
             || !IsSceneCompositionContext() || ActiveScene() is not { } scene)
         {
             _stage.ClearShotFramingGizmo();
+            _stage.SetShotWorkspacePreviewMode(ShotWorkspacePreviewMode.ObserveCamera);
+            _shotDirectorPanel.SetPreviewMode(ShotWorkspacePreviewMode.ObserveCamera, enabled: false);
+            _shotPreviewModeCameraId = "";
             return;
         }
         // Blank exposures and out-of-range frames still retain a camera outline.
@@ -97,7 +100,19 @@ internal sealed partial class MainForm
         _stage.SetShotFrameDisplays(frames);
         if (scene.FindShot(_activeShotId) is { } activeShot && IsSceneShotAllowed(activeShot)
             && frames.FirstOrDefault(frame => frame.Selected) is { Selected: true } activeFrame)
+        {
             _stage.SetShotFramingGizmo(activeFrame.Settings, activeShot.Name);
+            var mode = _stage.CanPreviewPlanarShot ? _shotDirectorPanel.PreviewMode : ShotWorkspacePreviewMode.ObserveCamera;
+            _stage.SetShotWorkspacePreviewMode(mode, reanchor: _shotPreviewModeCameraId != activeShot.Id);
+            _shotDirectorPanel.SetPreviewMode(_stage.ShotPreviewMode, _stage.CanPreviewPlanarShot);
+            _shotPreviewModeCameraId = activeShot.Id;
+        }
+        else
+        {
+            _stage.SetShotWorkspacePreviewMode(ShotWorkspacePreviewMode.ObserveCamera);
+            _shotDirectorPanel.SetPreviewMode(ShotWorkspacePreviewMode.ObserveCamera, enabled: false);
+            _shotPreviewModeCameraId = "";
+        }
     }
 
     private static string BuildShotFramingGizmoLabel(
@@ -755,11 +770,12 @@ internal sealed partial class MainForm
             _shotPreviewOverlay.SetPreview(null, UiLocalization.T("3D features are disabled. Enable experimental 3D features in Settings to edit this camera."));
             return;
         }
-        if (scene is null || shot is null || !IsSceneShotAllowed(shot) || _playing || _shotFramingPointerSession is not null)
+        if (scene is null || shot is null || !IsSceneShotAllowed(shot))
         {
             _shotPreviewOverlay.SetPreview(null);
             return;
         }
+        if (_shotFramingPointerSession is not null) return;
 
         _shotPreviewStopwatch.Restart();
         var frame = Math.Max(0, _frame);

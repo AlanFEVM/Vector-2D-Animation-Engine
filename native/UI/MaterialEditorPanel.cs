@@ -217,6 +217,11 @@ internal sealed class MaterialEditorPanel : UserControl
     public event EventHandler? ContinuousEditCanceled;
     public event EventHandler<LineEndpointStyleChangedEventArgs>? LineEndpointStyleChanged;
     public event EventHandler<GradientChangedEventArgs>? GradientChanged;
+    /// <summary>
+    /// Raised when the user picks the fill/stroke target by hand. The host uses it to stop
+    /// re-applying its preferred target on every inspector refresh.
+    /// </summary>
+    internal event EventHandler? EditingTargetChanged;
 
     public Color Fill
     {
@@ -1672,6 +1677,7 @@ internal sealed class MaterialEditorPanel : UserControl
         RefreshGradientPresentation();
         UpdateTargetPresentation();
         UpdateEditorFromColor();
+        EditingTargetChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void SetColorMode(ColorMode mode)

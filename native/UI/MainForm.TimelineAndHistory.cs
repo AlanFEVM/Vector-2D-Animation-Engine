@@ -4124,6 +4124,7 @@ internal sealed partial class MainForm : Form
         foreach (var entry in _undoStack) retained.Add(entry);
         foreach (var entry in _sharedAssetUndoStack) retained.Add(entry);
         foreach (var entry in _sceneTimelineUndoStack) retained.Add(entry);
+        foreach (var entry in _canvasSettingsUndo) retained.Add(entry);
         foreach (var entry in _undoSequenceByEntry.Keys.Where(entry => !retained.Contains(entry)).ToArray())
         {
             _undoSequenceByEntry.Remove(entry);
@@ -4171,6 +4172,11 @@ internal sealed partial class MainForm : Form
             && (!IsSceneMaskEditing()
                 || !canUndoDrawing
                 || UndoSequence(timelineUndo!) >= UndoSequence(drawingUndo!));
+        var latestOtherSequence = Math.Max(canUndoSceneTimeline ? UndoSequence(timelineUndo!) : 0,
+            canUndoDrawing ? UndoSequence(drawingUndo!) : 0);
+        if (_sharedAssetUndoStack.TryPeek(out var latestAssetUndo) && ReferenceEquals(latestAssetUndo.Project, _project))
+            latestOtherSequence = Math.Max(latestOtherSequence, UndoSequence(latestAssetUndo));
+        if (TryUndoCanvasSettings(latestOtherSequence)) return true;
         if (_sharedAssetUndoStack.TryPeek(out var assetUndo)
             && ReferenceEquals(assetUndo.Project, _project)
             && (!canUndoDrawing || UndoSequence(assetUndo) >= UndoSequence(drawingUndo!))

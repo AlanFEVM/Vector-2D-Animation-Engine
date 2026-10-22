@@ -23,6 +23,10 @@ internal sealed partial class Direct2DStageRenderer
         int Width,
         int Height,
         int BackColorArgb,
+        SceneCanvasPresentation? CanvasPresentation,
+        float CameraX,
+        float CameraY,
+        float Zoom,
         float WorldGridOpacity,
         WorldGridType WorldGridType,
         float PlanarWorldGridOpacity,
@@ -570,6 +574,11 @@ internal sealed partial class Direct2DStageRenderer
         out RenderStats stats)
     {
         stats = default;
+        if (stage.ShotWorkspacePreviewActive)
+        {
+            LastReference3DPlaybackGdiStatus = "shot_workspace_preview";
+            return false;
+        }
         if (stage.Reference3DGpuOpticsEnabled)
         {
             LastReference3DPlaybackGdiStatus = "gpu_optics";
@@ -699,6 +708,10 @@ internal sealed partial class Direct2DStageRenderer
             stage.Width,
             stage.Height,
             stage.BackColor.ToArgb(),
+            stage.CanvasPresentation,
+            stage.CameraX,
+            stage.CameraY,
+            stage.Zoom,
             stage.WorldGridOpacity,
             stage.WorldGridType,
             stage.PlanarWorldGridOpacity,

@@ -25,6 +25,34 @@ internal sealed partial class MainForm
     private Padding _inspectorRailBasePadding;
     private bool _layingOutInspectorRail;
     private bool _colorMaterialAvailable = true;
+    private VectorScene? _inspectorSelectionScene;
+    private int[] _inspectorSelectionObjects = [];
+    private DrawingElementKey[] _inspectorSelectionElements = [];
+    private DrawingElementKey _inspectorPrimaryElement = DrawingElementKey.None;
+    private int _inspectorPrimaryObject = -1;
+
+    private void FollowInspectorMaterialSelection()
+    {
+        var objects = _selectedObjects.ToArray();
+        var elements = _selectedElements.Select(hit => hit.Key).ToArray();
+        var primary = _selectedElement.Key;
+        var changed = !ReferenceEquals(_inspectorSelectionScene, _scene)
+            || !_inspectorSelectionObjects.AsSpan().SequenceEqual(objects)
+            || !_inspectorSelectionElements.AsSpan().SequenceEqual(elements)
+            || _inspectorPrimaryElement != primary
+            || _inspectorPrimaryObject != _selectedObject;
+        _inspectorSelectionScene = _scene;
+        _inspectorSelectionObjects = objects;
+        _inspectorSelectionElements = elements;
+        _inspectorPrimaryElement = primary;
+        _inspectorPrimaryObject = _selectedObject;
+        if (!changed || !_inspectorPanelOpen || !IsDrawingInspectorContext()
+            || SelectedSceneInstance() is not null || objects.Length == 0) return;
+        if (objects.Any(index => (uint)index >= (uint)_scene.ObjectCount
+            || IsImportedSvgObject(index) || _scene.ShapeKind[index] == ShapeKind.Bitmap)) return;
+        _inspectorCategory = InspectorCategory.Color;
+        _inspectorTransition?.Cancel();
+    }
     // A category may drag the workspace along (Color needs drawing, Camera/Scene need
     // the scene). Remember where the user came from so Properties can hand it back.
     private WorkspaceView? _workspaceBeforeInspectorCategory;
@@ -149,6 +177,12 @@ internal sealed partial class MainForm
 
     private void ToggleInspectorCategory(InspectorCategory category)
     {
+        // DIAGNOSTIC (temporary): trace every rail click through its guards.
+        _inspectorCategoryButtons.TryGetValue(category, out var probe);
+        AppLog.Info($"[rail] click={category} open={_inspectorPanelOpen} railVisible={_inspectorRail.Visible}"
+            + $" current={_inspectorCategory} enabled={probe?.Enabled} textEdit={IsTextEditActive()}"
+            + $" view={_workspaceTabs.SelectedView} drawingContext={IsDrawingInspectorContext()}"
+            + $" selection={_selectedObjects.Count}/{_selectedElement.IsValid}");
         if (!_inspectorPanelOpen || !_inspectorRail.Visible
             || !_inspectorCategoryButtons.TryGetValue(category, out var button) || !button.Enabled) return;
         if (!CommitTextEdit()) return;
@@ -162,13 +196,17 @@ internal sealed partial class MainForm
             _inspectorCategory = category;
         }
         ApplyInspectorCategoryPresentation();
+        AppLog.Info($"[rail] presented={_inspectorCategory} view={_workspaceTabs.SelectedView}"
+            + $" basic={_basicInspectorPage.Visible} scene={_sceneEditPage.Visible}"
+            + $" color={_colorInspectorPage.Visible} material={_materialEditor.Visible}"
+            + $" materialParent={_materialEditor.Parent?.GetType().Name}");
     }
 
     /// <summary>
     /// Explicit-action entry: when the user does something that belongs to a domain
     /// (pick a fill color, open the shot page, add a light) the matching category comes
-    /// forward instead of quietly editing state the user cannot see. Never called from
-    /// the UpdateInspector refresh chain, so selection alone never jumps the panel.
+    /// forward instead of quietly editing state the user cannot see. Selection changes
+    /// are handled separately without re-entering the inspector refresh chain.
     /// </summary>
     private void RevealInspectorCategory(InspectorCategory category, string reason)
     {
@@ -217,12 +255,13 @@ internal sealed partial class MainForm
         return true;
     }
 
-    // Ctrl+1..5: Properties, Color, Physics, Camera, Scene. Reveals the category (works
-    // even when the rail is closed) and toggles it away when it is already active.
+    // Ctrl+Alt+1..5: Properties, Color, Physics, Camera, Scene. Plain Ctrl+1..9 already
+    // belongs to workspace switching (ShortcutProfiles.GetWorkspaceShortcutIndex), so the
+    // category shortcut must not take it. Reveals the category (works with a closed rail)
+    // and toggles it away when it is already active.
     internal bool HandleInspectorCategoryShortcut(Keys keyData)
     {
-        if ((keyData & Keys.Control) != Keys.Control) return false;
-        if ((keyData & (Keys.Alt | Keys.Shift)) != 0) return false;
+        if ((keyData & Keys.Modifiers) != (Keys.Control | Keys.Alt)) return false;
         var key = keyData & Keys.KeyCode;
         if (key is < Keys.D1 or > Keys.D5) return false;
         var category = (InspectorCategory)(key - Keys.D1);

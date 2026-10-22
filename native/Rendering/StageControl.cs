@@ -1563,6 +1563,11 @@ internal sealed partial class StageControl : Control
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
+        if (ShotWorkspacePreviewActive)
+        {
+            Focus();
+            return;
+        }
         CompleteReferenceCameraTransition();
         BeginInteractiveInput(pointerDown: true);
         try
@@ -1577,6 +1582,11 @@ internal sealed partial class StageControl : Control
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
+        if (ShotWorkspacePreviewActive)
+        {
+            Cursor = Cursors.Default;
+            return;
+        }
         BeginInteractiveInput(pointerDown: false);
         try
         {
@@ -1590,6 +1600,7 @@ internal sealed partial class StageControl : Control
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
+        if (ShotWorkspacePreviewActive) return;
         BeginInteractiveInput(pointerDown: false);
         try
         {
@@ -2087,6 +2098,12 @@ internal sealed partial class StageControl : Control
 
     public void Fit()
     {
+        if (CanvasPresentation is not null && ReferenceDimension == SceneDimension.TwoD
+            && Reference2DViewDirection == ReferenceViewDirection.Front)
+        {
+            FitCanvas();
+            return;
+        }
         if (Width <= 0 || Height <= 0) return;
         _pendingVisibleWorldWidth = null;
         EndZoomLodPreview(invalidate: false);
@@ -2993,6 +3010,8 @@ internal sealed partial class StageControl : Control
         {
             if (_direct2DRenderer.TryRenderReference3DPlaybackGdi(this, e.Graphics, out var fastStats))
             {
+                DrawCanvasFrameGdi(e.Graphics);
+                DrawShotFramingGizmoGdi(e.Graphics);
                 LastStats = fastStats;
                 LastFrameUsedDirect2D = false;
                 _paintFailureLogged = false;
@@ -3118,6 +3137,12 @@ internal sealed partial class StageControl : Control
 
     private void DrawGdiFrame(Graphics graphics)
     {
+        if (ShotWorkspacePreviewActive)
+        {
+            ClearGdiBaseFrameCache();
+            DrawShotWorkspacePreview(graphics);
+            return;
+        }
         ResetLastGdiFrameTelemetry();
         if (ShouldCacheGdiBaseFrame())
         {
@@ -3277,6 +3302,7 @@ internal sealed partial class StageControl : Control
         g.Clear(BackColor);
         g.SmoothingMode = SmoothingMode.None;
         DrawGrid(g);
+        DrawCanvasBackgroundGdi(g);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
         BeginScenePassOrder();
@@ -3291,6 +3317,7 @@ internal sealed partial class StageControl : Control
         g.Clear(BackColor);
         g.SmoothingMode = SmoothingMode.None;
         DrawGrid(g);
+        DrawCanvasBackgroundGdi(g);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
         BeginScenePassOrder();
@@ -3300,7 +3327,12 @@ internal sealed partial class StageControl : Control
 
     private void DrawGdiReferenceDynamic(Graphics g)
     {
-        if (PlaybackActive) return;
+        DrawCanvasFrameGdi(g);
+        if (PlaybackActive)
+        {
+            DrawShotFramingGizmoGdi(g);
+            return;
+        }
 
         if (DragPreviewScene is { } dragPreview)
         {
@@ -3336,6 +3368,7 @@ internal sealed partial class StageControl : Control
             g.Clear(BackColor);
             g.SmoothingMode = SmoothingMode.None;
             DrawGrid(g);
+            DrawCanvasBackgroundGdi(g);
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
             BeginScenePassOrder();
@@ -3390,6 +3423,7 @@ internal sealed partial class StageControl : Control
 
     private void DrawGdiDynamic2D(Graphics g, RenderStats editableStats)
     {
+        DrawCanvasFrameGdi(g);
         var objectDrawLimit = ObjectDrawLimit();
         if (DragPreviewScene is { } dragPreview)
         {
@@ -3422,11 +3456,10 @@ internal sealed partial class StageControl : Control
             DrawFillAnimation(g);
             DrawGradientOverlay(g);
             DrawMarquee(g);
-            DrawShotFramingGizmoGdi(g);
             DrawBrushTipCursor(g);
             DrawBrushColorPalette(g);
-            DrawFillToolCursor(g);
         }
+        DrawShotFramingGizmoGdi(g);
     }
 
     private RenderStats DrawSceneGdi(
@@ -3597,6 +3630,7 @@ internal sealed partial class StageControl : Control
         if (disposing)
         {
             _disposingResources = true;
+            DisposeFillSystemCursor();
             InvalidateReference3DRenderPlanCache();
             ResetFrameSchedulerState();
             ResetFillEdgeBezierOverlay(invalidate: false);
@@ -3986,24 +4020,17 @@ internal sealed partial class StageControl : Control
 
     public void SetFillToolCursor(Point screen, Color color)
     {
-        if (_fillToolCursorVisible
-            && _fillToolCursorScreen == screen
-            && _fillToolCursorColor.ToArgb() == color.ToArgb())
-        {
-            return;
-        }
-
+        ApplyFillSystemCursor(color);
         _fillToolCursorVisible = true;
         _fillToolCursorScreen = screen;
         _fillToolCursorColor = color;
-        InvalidateOverlay();
     }
 
     public void ClearFillToolCursor()
     {
         if (!_fillToolCursorVisible) return;
         _fillToolCursorVisible = false;
-        InvalidateOverlay();
+        if (ReferenceEquals(Cursor, _fillSystemCursor)) Cursor = Cursors.Cross;
     }
 
     public void SetFillEdgeBezierOverlay(

@@ -8419,6 +8419,7 @@ internal static partial class Benchmark
 
     public static void RunStageRendererRegression()
     {
+        RunSceneCanvasRenderingRegression();
         RunMultiLayerSelectionRegression();
         RunUiRefreshStabilityRegression();
         RunCrashDiagnosticsRegression();

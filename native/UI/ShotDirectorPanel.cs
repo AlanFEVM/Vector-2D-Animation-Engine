@@ -134,6 +134,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
     private readonly SvgIconButton _moveUpButton = new(SvgIconKind.ChevronUp) { Width = 26, Height = 26 };
     private readonly SvgIconButton _moveDownButton = new(SvgIconKind.ChevronDown) { Width = 26, Height = 26 };
     private readonly SvgIconButton _removeButton = new(SvgIconKind.Remove) { Width = 26, Height = 26 };
+    private readonly SvgIconButton _previewButton = new(SvgIconKind.Camera) { Width = 26, Height = 26, AccessibleName = "Enlarge camera preview" };
 
     private readonly ListBox _cameraList = new()
     {
@@ -172,6 +173,8 @@ internal sealed partial class ShotDirectorPanel : UserControl
     private readonly ComboBox _kindEditor = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ComboBox _aspectRatioEditor = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ComboBox _projectionEditor = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    private readonly ComboBox _previewModeEditor = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    private bool _updatingPreviewMode;
     private readonly ModernNumericUpDown _positionX = SpatialInput("Camera position X");
     private readonly ModernNumericUpDown _positionY = SpatialInput("Camera position Y");
     private readonly ModernNumericUpDown _positionZ = SpatialInput("Camera position Z");
@@ -208,6 +211,12 @@ internal sealed partial class ShotDirectorPanel : UserControl
     };
 
     private ShotDirectorState _state = new();
+    private readonly ModernToggleSwitch _advancedCameraSettings = new()
+    {
+        Text = "Advanced camera settings",
+        AccessibleName = "Advanced camera settings",
+        AutoSize = false
+    };
     private bool _experimental3DEnabled = true;
 
     internal void SetExperimental3DEnabled(bool enabled)
@@ -247,7 +256,10 @@ internal sealed partial class ShotDirectorPanel : UserControl
         Controls.Add(_toolbar);
         Controls.Add(_title);
         Controls.Add(_summary);
+        Controls.Add(_previewButton);
         Controls.Add(_simpleCameraStyle);
+        _inspector.Content.Controls.Add(_advancedCameraSettings);
+        _advancedCameraSettings.CheckedChanged += (_, _) => PerformLayout();
         _simpleCameraStyle.CheckedChanged += (_, _) =>
         {
             if (!_updatingCameraStyle) CameraStyleChanged?.Invoke(this, EventArgs.Empty);
@@ -260,6 +272,8 @@ internal sealed partial class ShotDirectorPanel : UserControl
     }
 
     public event EventHandler? NewShotRequested;
+    public event EventHandler? CameraPreviewRequested;
+    public event EventHandler? PreviewModeChanged;
     public event EventHandler? CameraStyleChanged;
     public event EventHandler<ShotDirectorEventArgs>? ShotActivated;
     public event EventHandler<ShotDirectorEventArgs>? ShotLocateRequested;
@@ -272,6 +286,25 @@ internal sealed partial class ShotDirectorPanel : UserControl
     public event EventHandler<ShotDirectorEventArgs>? ShotFramingResetRequested;
 
     internal ShotDirectorState State => _state;
+    internal bool CameraListContainsFocus => _cameraList.ContainsFocus;
+    internal ShotWorkspacePreviewMode PreviewMode => (_previewModeEditor.SelectedItem as PreviewModeItem)?.Mode
+        ?? ShotWorkspacePreviewMode.ObserveCamera;
+
+    internal void SetPreviewMode(ShotWorkspacePreviewMode mode, bool enabled)
+    {
+        _updatingPreviewMode = true;
+        try
+        {
+            _previewModeEditor.SelectedIndex = (int)mode;
+            _previewModeEditor.Enabled = enabled;
+            _previewModeEditor.TabStop = enabled;
+        }
+        finally
+        {
+            _updatingPreviewMode = false;
+        }
+    }
+
     internal string SelectedShotId => _state.ActiveShotId;
     internal ShotDirectorItem? SelectedShot => FindShot(_state.ActiveShotId);
 
@@ -382,6 +415,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
         Theme.StyleToolbarButton(_moveUpButton);
         Theme.StyleToolbarButton(_moveDownButton);
         Theme.StyleToolbarButton(_removeButton);
+        Theme.StyleToolbarButton(_previewButton);
         _addShotButton.Margin = new Padding(0, 0, 0, 0);
         _locateButton.Margin = new Padding(6, 0, 0, 0);
         _moveUpButton.Margin = new Padding(6, 0, 0, 0);
@@ -392,6 +426,8 @@ internal sealed partial class ShotDirectorPanel : UserControl
         _toolbar.Controls.Add(_moveUpButton);
         _toolbar.Controls.Add(_moveDownButton);
         _toolbar.Controls.Add(_removeButton);
+        _previewButton.Click += (_, _) => CameraPreviewRequested?.Invoke(this, EventArgs.Empty);
+        _help.SetToolTip(_previewButton, UiLocalization.T("Enlarge camera preview"));
         _addShotButton.Click += (_, _) => NewShotRequested?.Invoke(this, EventArgs.Empty);
         _locateButton.Click += (_, _) => LocateShot(_state.ActiveShotId);
         _moveUpButton.Click += (_, _) => MoveSelectedShot(-1);
@@ -410,8 +446,24 @@ internal sealed partial class ShotDirectorPanel : UserControl
         Theme.StyleComboBox(_kindEditor);
         Theme.StyleComboBox(_projectionEditor);
         Theme.StyleComboBox(_aspectRatioEditor);
-        foreach (var editor in new[] { _kindEditor, _projectionEditor, _aspectRatioEditor })
+        Theme.StyleComboBox(_previewModeEditor);
+        foreach (var editor in new[] { _kindEditor, _projectionEditor, _aspectRatioEditor, _previewModeEditor })
             Theme.StyleComboBoxSelection(editor, Font.Size, Theme.ControlHeight);
+        _previewModeEditor.Items.AddRange(new object[]
+        {
+            new PreviewModeItem(ShotWorkspacePreviewMode.ObserveCamera, "1 · Observe"),
+            new PreviewModeItem(ShotWorkspacePreviewMode.LockCamera, "2 · Locked"),
+            new PreviewModeItem(ShotWorkspacePreviewMode.CameraView, "3 · Camera")
+        });
+        _previewModeEditor.SelectedIndex = 0;
+        _previewModeEditor.Enabled = false;
+        _previewModeEditor.AccessibleName = "Camera preview mode";
+        _previewModeEditor.AccessibleDescription = "Observe the moving camera; lock the camera in the current view; or fit the camera frame to the viewport. Locked and camera views are read-only 2D previews.";
+        _help.SetToolTip(_previewModeEditor, UiLocalization.T(_previewModeEditor.AccessibleDescription));
+        _previewModeEditor.SelectedIndexChanged += (_, _) =>
+        {
+            if (!_updatingPreviewMode) PreviewModeChanged?.Invoke(this, EventArgs.Empty);
+        };
         _aspectRatioEditor.Items.AddRange(new object[]
         {
             new AspectRatioItem(SceneShotAspectRatio.FollowScene, "Follow scene"),
@@ -441,6 +493,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
 
         _inspector.Content.Controls.Add(_inspectorTitle);
         _inspector.Content.Controls.Add(_frameInfo);
+        AddEditor(_previewModeEditor, "Preview mode");
         AddEditor(_nameEditor, "Name");
         AddEditor(_detailEditor, "Description");
         AddEditor(_kindEditor, "Type");
@@ -699,10 +752,14 @@ internal sealed partial class ShotDirectorPanel : UserControl
         _focalLength.Value = (decimal)settings.FocalLength;
         _orthographicSize.Value = (decimal)settings.OrthographicSize;
         var orthographic = settings.Projection == CameraProjection.Orthographic;
+        var projectionIndex = orthographic ? 1 : 0;
+        var projectionChanged = _projectionEditor.SelectedIndex != projectionIndex;
+        _projectionEditor.SelectedIndex = projectionIndex;
         _zoomEditor.Minimum = orthographic ? 2800000m / _orthographicSize.Maximum : _focalLength.Minimum * 2m;
         _zoomEditor.Maximum = orthographic ? 2800000m / _orthographicSize.Minimum : _focalLength.Maximum * 2m;
         var zoomPercent = orthographic ? 2800000m / (decimal)settings.OrthographicSize : (decimal)settings.FocalLength * 2m;
         _zoomEditor.Value = Math.Clamp(zoomPercent, _zoomEditor.Minimum, _zoomEditor.Maximum);
+        if (projectionChanged) PerformLayout();
     }
 
     private void ApplyEditorState()
@@ -737,6 +794,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
         _addShotButton.Enabled = available;
         _locateButton.Enabled = available && hasSelection;
         _removeButton.Enabled = available && hasSelection && ActiveCameraAllowed;
+        _previewButton.Enabled = available && hasSelection && ActiveCameraAllowed;
         _moveUpButton.Enabled = available && selectedIndex > 0 && ActiveCameraAllowed;
         _moveDownButton.Enabled = available && selectedIndex >= 0 && selectedIndex < _state.Shots.Length - 1 && ActiveCameraAllowed;
     }
@@ -842,9 +900,16 @@ internal sealed partial class ShotDirectorPanel : UserControl
             button.Size = new Size(ScaleMetric(26), ScaleMetric(26));
         var titleHeight = ScaleMetric(TitleHeight);
         var toolbarHeight = ScaleMetric(ToolbarHeight);
-        _title.SetBounds(ScaleMetric(4), 0, Math.Max(0, Width - ScaleMetric(12)), ScaleMetric(Theme.InspectorTitleHeight));
+        _title.SetBounds(ScaleMetric(4), 0, Math.Max(0, Width - ScaleMetric(42)), ScaleMetric(Theme.InspectorTitleHeight));
+        _previewButton.SetBounds(Math.Max(0, Width - ScaleMetric(34)), ScaleMetric(3), ScaleMetric(26), ScaleMetric(26));
         _summary.SetBounds(ScaleMetric(108), ScaleMetric(8), Math.Max(0, Width - ScaleMetric(116)), ScaleMetric(24));
         _toolbar.SetBounds(0, titleHeight, Width, toolbarHeight);
+        var compactToolbar = Width < ScaleMetric(254);
+        _toolbar.Padding = new Padding(ScaleMetric(compactToolbar ? 4 : 8), ScaleMetric(3), ScaleMetric(compactToolbar ? 4 : 8), 0);
+        _locateButton.Margin = new Padding(ScaleMetric(compactToolbar ? 4 : 6), 0, 0, 0);
+        _moveUpButton.Margin = _locateButton.Margin;
+        _moveDownButton.Margin = new Padding(ScaleMetric(compactToolbar ? 1 : 2), 0, 0, 0);
+        _removeButton.Margin = _moveDownButton.Margin;
         _simpleCameraStyle.SetBounds(ScaleMetric(8), titleHeight + toolbarHeight,
             Math.Max(0, Width - ScaleMetric(16)), ScaleMetric(32));
         var contentTop = _simpleCameraStyle.Bottom;
@@ -889,15 +954,24 @@ internal sealed partial class ShotDirectorPanel : UserControl
         _inspectorTitle.SetBounds(ScaleMetric(4), y, Math.Max(0, right - ScaleMetric(4)), ScaleMetric(Theme.InspectorTitleHeight));
         y += ScaleMetric(32);
 
+        LayoutSingleEditor(_previewModeEditor, y, right); y += ScaleMetric(RowStep);
         LayoutSingleEditor(_nameEditor, y, right); y += ScaleMetric(RowStep);
         y = LayoutOptionalEditor(_detailEditor, y, right, _experimental3DEnabled);
         y = LayoutOptionalEditor(_kindEditor, y, right, _experimental3DEnabled);
-        y = LayoutOptionalEditor(_projectionEditor, y, right, _experimental3DEnabled);
+        var advanced = _experimental3DEnabled || _advancedCameraSettings.Checked;
+        y = LayoutOptionalEditor(_projectionEditor, y, right, advanced);
         LayoutSingleEditor(_aspectRatioEditor, y, right); y += ScaleMetric(RowStep);
-        LayoutAxisRow(y, right, _positionX, _positionY, _positionZ); y += ScaleMetric(RowHeight * (_experimental3DEnabled ? 3 : 2) + AxisGroupPadding * 2 + AxisRowGap);
+        _advancedCameraSettings.Visible = !_experimental3DEnabled;
+        if (!_experimental3DEnabled)
+        {
+            _advancedCameraSettings.SetBounds(left, y, Math.Max(1, right - left), ScaleMetric(32));
+            y += ScaleMetric(36);
+        }
+        LayoutAxisRow(y, right, _positionX, _positionY, _positionZ); y += ScaleMetric(RowHeight * (advanced ? 3 : 2) + AxisGroupPadding * 2 + AxisRowGap);
         LayoutAxisRow(y, right, _rotationX, _rotationY, _rotationZ); y += ScaleMetric(_experimental3DEnabled ? RowHeight * 3 + AxisGroupPadding * 2 + AxisRowGap : RowStep);
-        y = LayoutOptionalEditor(_focalLength, y, right, _experimental3DEnabled);
-        y = LayoutOptionalEditor(_orthographicSize, y, right, _experimental3DEnabled);
+        var orthographic = (_projectionEditor.SelectedItem as ProjectionItem)?.Projection == CameraProjection.Orthographic;
+        y = LayoutOptionalEditor(_focalLength, y, right, _experimental3DEnabled || advanced && !orthographic);
+        y = LayoutOptionalEditor(_orthographicSize, y, right, _experimental3DEnabled || advanced && orthographic);
         y = LayoutOptionalEditor(_zoomEditor, y, right, !_experimental3DEnabled);
         _resetCameraButton.SetBounds(left, y, Math.Min(right - left, ScaleMetric(112)), ScaleMetric(26));
         y += ScaleMetric(34);
@@ -940,13 +1014,13 @@ internal sealed partial class ShotDirectorPanel : UserControl
         if (group is null) return;
         foreach (var editor in editors)
         {
-            var visible = _experimental3DEnabled || editor != _positionZ && editor != _rotationX && editor != _rotationY;
+            var visible = IsCameraAxisVisible(editor);
             editor.Visible = visible;
             editor.GroupedAppearance = _experimental3DEnabled || editor != _rotationZ;
             var axisLabel = group.Controls.OfType<Label>().FirstOrDefault(label => ReferenceEquals(label.Tag, editor));
             if (axisLabel is not null) axisLabel.Visible = visible && (_experimental3DEnabled || editor != _rotationZ);
         }
-        editors = editors.Where(editor => _experimental3DEnabled || editor != _positionZ && editor != _rotationX && editor != _rotationY).ToArray();
+        editors = editors.Where(IsCameraAxisVisible).ToArray();
         var groupPadding = !_experimental3DEnabled && editors[0] == _rotationZ ? 0 : AxisGroupPadding;
         group.SetBounds(start, y, Math.Max(1, right - start), ScaleMetric(RowHeight * editors.Length + groupPadding * 2));
         if (editors[0].Tag is Label fieldLabel)
@@ -967,6 +1041,10 @@ internal sealed partial class ShotDirectorPanel : UserControl
         }
     }
 
+    private bool IsCameraAxisVisible(ModernNumericUpDown editor)
+        => _experimental3DEnabled || editor == _positionZ && _advancedCameraSettings.Checked
+            || editor != _positionZ && editor != _rotationX && editor != _rotationY;
+
     private int ScaleMetric(int logical) => Math.Max(1, (int)Math.Round(logical * DeviceDpi / 96f));
 
     protected override void OnDpiChangedAfterParent(EventArgs e)
@@ -983,6 +1061,11 @@ internal sealed partial class ShotDirectorPanel : UserControl
     }
 
     private sealed record CameraKindItem(SceneShotCameraKind Kind, string DisplayName)
+    {
+        public override string ToString() => UiLocalization.T(DisplayName);
+    }
+
+    private sealed record PreviewModeItem(ShotWorkspacePreviewMode Mode, string DisplayName)
     {
         public override string ToString() => UiLocalization.T(DisplayName);
     }

@@ -1619,6 +1619,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
         saveProjectAsDevelopment.Click += (_, _) => SaveProjectAsDevelopmentFolder();
         var renameProject = new ToolStripMenuItem("Rename Project");
         renameProject.Click += (_, _) => BeginProjectTitleEdit();
+        var canvasSettings = new ToolStripMenuItem("Project settings…");
+        canvasSettings.Click += (_, _) => ShowCanvasSettings();
         var settings = new ToolStripMenuItem("Settings");
         var acknowledgements = new ToolStripMenuItem("Acknowledgements");
         acknowledgements.Click += (_, _) => ShowAcknowledgements();
@@ -1637,7 +1639,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
         var projectFiles = new ToolStripMenuItem("Project Files") { DropDown = new AnimatedContextMenuStrip() };
         projectFiles.DropDownItems.AddRange(new ToolStripItem[]
         {
-            newProject, openProject, new ToolStripSeparator(), saveProject, saveProjectAs, saveProjectAsDevelopment, renameProject
+            newProject, openProject, new ToolStripSeparator(), saveProject, saveProjectAs, saveProjectAsDevelopment, renameProject,
+            new ToolStripSeparator(), canvasSettings
         });
         var imports = new ToolStripMenuItem("Import") { DropDown = new AnimatedContextMenuStrip() };
         imports.DropDownItems.AddRange(new ToolStripItem[] { importFlash, flashVisualBridge, importSvg, importImage });

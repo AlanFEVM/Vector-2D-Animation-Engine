@@ -11,7 +11,9 @@ internal readonly record struct DocumentInfo(
     string SceneSummary,
     int FrameCount,
     decimal FrameRate,
-    int ObjectCount);
+    int ObjectCount,
+    string? CanvasSummary = null,
+    string? BackgroundSummary = null);
 
 /// <summary>
 /// Read-only document summary shown in the inspector while nothing is selected.
@@ -19,10 +21,10 @@ internal readonly record struct DocumentInfo(
 /// </summary>
 internal sealed class DocumentInfoPanel : UserControl
 {
-    private const int LabelColumnWidth = 64;
+    private const int LabelColumnWidth = 80;
     private const int HintHeight = 34;
     private const int RowHeight = Theme.InspectorMetaRowHeight;
-    private const int VisibleRowCount = 10;
+    private const int VisibleRowCount = 13;
 
     private readonly Label _name = CreateValueLabel();
     private readonly Label _location = CreateValueLabel();
@@ -34,6 +36,8 @@ internal sealed class DocumentInfoPanel : UserControl
     private readonly Label _frames = CreateValueLabel();
     private readonly Label _frameRate = CreateValueLabel();
     private readonly Label _objects = CreateValueLabel();
+    private readonly Label _canvas = CreateValueLabel();
+    private readonly Label _background = CreateValueLabel();
     private readonly Label _hint = new();
     private readonly TextBox _nameEditor = new() { Visible = false, BorderStyle = BorderStyle.FixedSingle };
     private bool _hintVisible;
@@ -68,6 +72,7 @@ internal sealed class DocumentInfoPanel : UserControl
         }
 
         rows.RowStyles.Add(new RowStyle(SizeType.Absolute, HintHeight));
+        rows.RowStyles[12].Height = Theme.ControlHeight;
 
         AddRow(rows, 0, "Name", _name);
         AddRow(rows, 1, "Location", _location);
@@ -79,6 +84,17 @@ internal sealed class DocumentInfoPanel : UserControl
         AddRow(rows, 7, "Frames", _frames);
         AddRow(rows, 8, "Frame rate", _frameRate);
         AddRow(rows, 9, "Objects", _objects);
+        AddRow(rows, 10, "Canvas", _canvas);
+        AddRow(rows, 11, "Background", _background);
+        var canvasSettings = new Button
+        {
+            Text = "Canvas & background…", AccessibleName = "Canvas & background…",
+            Dock = DockStyle.Fill, AutoEllipsis = true, UseMnemonic = false, Margin = Padding.Empty
+        };
+        Theme.StyleStandardButton(canvasSettings);
+        canvasSettings.Click += (_, _) => CanvasSettingsRequested?.Invoke(this, EventArgs.Empty);
+        rows.Controls.Add(canvasSettings, 0, 12);
+        rows.SetColumnSpan(canvasSettings, 2);
 
         _hint.Dock = DockStyle.Fill;
         _hint.BackColor = Theme.Panel;
@@ -120,11 +136,12 @@ internal sealed class DocumentInfoPanel : UserControl
 
     /// <summary>Raised with the trimmed name when the user commits an inline rename.</summary>
     public event EventHandler<string>? RenameCommitted;
+    public event EventHandler? CanvasSettingsRequested;
 
     public int PreferredHeight => Theme.GapXs
         + Theme.InspectorTitleHeight
         + Theme.InspectorContentPaddingTop
-        + RowHeight * VisibleRowCount
+        + RowHeight * (VisibleRowCount - 1) + Theme.ControlHeight
         + (_hintVisible ? HintHeight : 0)
         + Theme.InspectorSectionPaddingVertical;
 
@@ -147,6 +164,8 @@ internal sealed class DocumentInfoPanel : UserControl
             _frames.Text = CompactFormat.Number(info.FrameCount);
             _frameRate.Text = $"{info.FrameRate:0.##} fps";
             _objects.Text = CompactFormat.Number(info.ObjectCount);
+            _canvas.Text = info.CanvasSummary ?? UiLocalization.T("Not added");
+            _background.Text = info.BackgroundSummary ?? UiLocalization.T("Not added");
             _hint.Text = info.ObjectCount == 0
                 ? UiLocalization.T("Nothing here yet. Drag a symbol from the library onto the stage.")
                 : string.Empty;
