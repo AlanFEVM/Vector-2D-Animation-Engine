@@ -153,7 +153,7 @@ internal sealed partial class MainForm
         _materialEditor.Visible = color;
         var camera = _inspectorCategory == InspectorCategory.Camera || automatic && _shotDirectorVisible;
         var scene = _inspectorCategory == InspectorCategory.Scene
-            || automatic && !camera && _workspaceTabs.SelectedView == WorkspaceView.SceneEditor;
+            || automatic && !camera && _workspaceTabs.SelectedView == WorkspaceView.SceneEditor && !IsSymbolEditing;
         _colorInspectorPage.Visible = color;
         _basicInspectorPage.Visible = automatic && !camera && !scene;
         _sceneEditPage.Visible = scene;
@@ -239,6 +239,8 @@ internal sealed partial class MainForm
     {
         if (category is not (InspectorCategory.Color or InspectorCategory.Camera or InspectorCategory.Scene))
             return true;
+        if (IsSymbolEditing && category is InspectorCategory.Camera or InspectorCategory.Scene
+            && !ExitSceneSymbolEditing()) return false;
         var view = _workspaceTabs.SelectedView;
         if (category == InspectorCategory.Color && !IsDrawingInspectorContext())
         {

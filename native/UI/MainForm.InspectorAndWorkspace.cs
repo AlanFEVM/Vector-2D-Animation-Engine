@@ -978,6 +978,7 @@ internal sealed partial class MainForm : Form
         if (openShots) view = WorkspaceView.SceneEditor;
         if (view == WorkspaceView.Animation) view = WorkspaceView.SceneEditor;
         if (!CommitTextEdit()) return;
+        if (IsSymbolEditing && (view != WorkspaceView.SceneEditor || openShots)) ClearSymbolEditingSession();
         if (view == WorkspaceView.BasicDrawing && _inspectorCategory is InspectorCategory.Camera or InspectorCategory.Scene)
             _inspectorCategory = InspectorCategory.None;
         if (view == WorkspaceView.SceneEditor && _inspectorCategory == InspectorCategory.Color && !IsSceneMaskEditing())
@@ -994,8 +995,8 @@ internal sealed partial class MainForm : Form
         HideToolFlyouts();
         _toolTip.HideTip();
         if (view != WorkspaceView.BasicDrawing) HideBrushColorPalette();
-        var basicDrawing = view == WorkspaceView.BasicDrawing;
-        var sceneEdit = view == WorkspaceView.SceneEditor;
+        var basicDrawing = view == WorkspaceView.BasicDrawing || IsSymbolEditing;
+        var sceneEdit = view == WorkspaceView.SceneEditor && !IsSymbolEditing;
         var sceneWorkspace = sceneEdit;
         var inspector = _basicInspectorPage.Parent;
         var animateInspector = false;
@@ -1020,6 +1021,7 @@ internal sealed partial class MainForm : Form
             if (basicDrawing)
             {
                 BindActiveDrawingObjectScene(resetView: false);
+                ApplySymbolEditingReference();
             }
             else if (sceneWorkspace)
             {
@@ -1094,7 +1096,7 @@ internal sealed partial class MainForm : Form
 
     private bool IsDrawingInspectorContext()
     {
-        return _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing
+        return IsDrawingWorkspaceContext
             || IsSceneMaskDrawingInspectorContext();
     }
 
@@ -1126,6 +1128,7 @@ internal sealed partial class MainForm : Form
     {
         if (!_applicationSettings.Experimental3DEnabled && tool == ToolMode.Transform3D) return false;
         var workspace = _workspaceTabs.SelectedView;
+        if (IsSymbolEditing) return tool != ToolMode.Transform3D;
         if (IsShotDirectorContext()) return tool is ToolMode.Select or ToolMode.Transform or ToolMode.Hand;
         if (workspace == WorkspaceView.SceneEditor && IsSceneMaskEditing())
         {
@@ -1315,7 +1318,7 @@ internal sealed partial class MainForm : Form
     {
         var sceneMaskEditing = IsSceneMaskDrawingInspectorContext();
         _drawSettingsPanel.Visible = ShouldShowPencilSettings(
-            _workspaceTabs.SelectedView,
+            EditingWorkspace,
             _tool,
             sceneMaskEditing);
         if (_drawSettingsPanel.Visible && !sceneMaskEditing) ArrangeBasicDrawingInspectorPanels();
@@ -1332,7 +1335,7 @@ internal sealed partial class MainForm : Form
 
         var sceneMaskEditing = IsSceneMaskDrawingInspectorContext();
         _shapeSettingsPanel.Visible = ShouldShowShapeSettings(
-            _workspaceTabs.SelectedView,
+            EditingWorkspace,
             _tool,
             sceneMaskEditing);
         if (sceneMaskEditing) ArrangeSceneMaskInspectorPanels();
@@ -1623,7 +1626,12 @@ internal sealed partial class MainForm : Form
             LayoutHeaderToolPalette(stagePanel);
             return;
         }
-        if (!ReferenceEquals(tools.Parent, stagePanel)) stagePanel.Controls.Add(tools);
+        if (!ReferenceEquals(tools.Parent, stagePanel))
+        {
+            stagePanel.Controls.Add(tools);
+            // Reparenting appends behind the fill-docked Stage; restore the floating toolbar layer.
+            tools.BringToFront();
+        }
         tools.SuspendLayout();
         tools.FlowDirection = FlowDirection.TopDown;
         tools.Padding = new Padding(4);
@@ -1641,7 +1649,8 @@ internal sealed partial class MainForm : Form
         tools.AutoScroll = false;
         tools.AutoScrollPosition = Point.Empty;
         _stageMetrics.Height = 34;
-        tools.Location = new Point(6, _stageMetrics.Bottom + 6);
+        tools.Top = _stageMetrics.Bottom + 6;
+        PositionVaultToolStrip();
         tools.Width = Theme.IconButtonSize + tools.Padding.Horizontal;
         tools.ResumeLayout(true);
 

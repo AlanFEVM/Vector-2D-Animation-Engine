@@ -41,10 +41,10 @@ scripts\publish-release-manager.ps1
 
 ## 管理鸣谢
 
-`Acknowledgements` 页编辑程序菜单 `Acknowledgements` 打开的鸣谢内容，与版本无关，因此更换或删除版本时不受影响。可用控件：
+`Acknowledgements` 页编辑程序菜单 `Acknowledgements` 打开的鸣谢内容，与版本无关，因此更换或删除版本时不受影响。公告编辑、鸣谢编辑和预览的初始语言跟随软件的界面语言设置；可分别切换 `English / 简体中文` 查看对应语言内容。可用控件：
 
 - `Include acknowledgements`：关闭时保存的清单不再包含 `acknowledgements` 节点，程序回退到内置默认鸣谢；重新开启会以默认鸣谢内容重建。
-- `English / 简体中文`：分别编辑标题、摘要、分组标题和名单，每个分组条目为一行一个人名。
+- `English / 简体中文`：分别编辑标题、摘要和分组标题；鸣谢名单中英文共用，每行一个人名，在任一语言下修改名单都会同步到另一语言。
 - `Add / Remove / Move` 图标：添加、删除和调整分组顺序；添加分组时同时为中英文各建一个分组，删除时同时删除两语言同一位置的分组。至少保留一个分组，若要完全隐藏鸣谢请关闭 `Include acknowledgements`。
 
 鸣谢位于 `release/release-notes.json` 顶层的 `acknowledgements` 节点，与版本公告同样要求中英文分组数和条目数一致；保存前会做这项校验，若外部文件缺少该节点也能正常打开并使用默认鸣谢。改动与版本内容共用同一份草稿状态，同样只在 `Save Version` 时写入源码。

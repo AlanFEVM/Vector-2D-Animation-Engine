@@ -225,7 +225,8 @@ internal sealed partial class LibraryVaultPanel : UserControl
                 HidePreview(clearContent: true);
                 return;
             }
-            _projectRowsDirty = true;
+            // Reopening alone does not invalidate rows. External files may change while hidden.
+            if (!_projectRowsDirty && ProjectAssetAvailabilityChanged()) _projectRowsDirty = true;
             RefreshProjectObjects();
         };
         UiLocalization.Watch(this);
@@ -1262,10 +1263,25 @@ internal sealed partial class LibraryVaultPanel : UserControl
         }
     }
 
+    private bool ProjectAssetAvailabilityChanged()
+    {
+        if (_activeAssetCategory is not (AssetCategory.ExternalSvg or AssetCategory.Images)) return false;
+        foreach (var node in EnumerateProjectNodes())
+        {
+            if (node.Tag is not VaultRow row) continue;
+            if (row.ExternalSvgAsset is { } svg && row.ExternalSvgMissing != ExternalSvgAssetIsMissing(svg))
+                return true;
+            if (row.ImageAsset is { } image && row.ImageAssetMissing != ImageAssetIsMissing(image))
+                return true;
+        }
+        return false;
+    }
+
     private ProjectRowsFingerprint CreateProjectRowsFingerprint()
     {
         if (_project is null) return default;
         var hash = new HashCode();
+        hash.Add(UiLocalization.CurrentLanguage);
         foreach (var drawingObject in _project.DrawingObjects)
         {
             hash.Add(drawingObject.Id, StringComparer.Ordinal);

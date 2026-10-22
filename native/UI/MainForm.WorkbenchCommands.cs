@@ -1871,6 +1871,11 @@ internal sealed partial class MainForm : Form
     private void AssignProjectDocument(VectorProject project, string manifestPath, bool dirty)
     {
         ArgumentNullException.ThrowIfNull(project);
+        if (IsSymbolEditing)
+        {
+            ClearSymbolEditingSession();
+            _workspaceTabs.SelectedView = WorkspaceView.BasicDrawing;
+        }
         InvalidateSceneCompositionCache();
         _project.Changed -= ProjectChanged;
         _project = project;
@@ -2786,6 +2791,7 @@ internal sealed partial class MainForm : Form
             }
             if (keyData == Keys.Escape && CancelTraditionalPenPath()) return true;
             if (keyData == Keys.Escape && CancelPenCurve()) return true;
+            if (keyData == Keys.Escape && IsSymbolEditing) return ExitSceneSymbolEditing();
             if (!(commandButtonFocused && physicalKeyData == Keys.Enter) && HandleTimelineShortcut(keyData)) return true;
             if (TryActivateConfiguredToolShortcut(physicalKeyData)) return true;
             if (keyData == Keys.OemOpenBrackets && AdjustFreehandWidth(increase: false)) return true;

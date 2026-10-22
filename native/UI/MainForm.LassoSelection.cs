@@ -44,7 +44,7 @@ internal sealed partial class MainForm : Form
     private bool CanUseLassoInCurrentContext()
     {
         if (!IsLassoTool(_tool) || IsScene3DView()) return false;
-        return _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing
+        return IsDrawingWorkspaceContext
             || IsSceneMaskEditing()
             || IsSceneCompositionContext() && IsScene2DFrontView();
     }

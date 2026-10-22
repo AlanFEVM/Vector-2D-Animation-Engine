@@ -1346,6 +1346,7 @@ internal sealed partial class StageControl : Control
         ResetFillEdgeBezierOverlay(invalidate: false);
         _direct2DRenderer.ReloadRuntimeResources();
         ClearGdiBaseFrameCache();
+        ReleaseShotPreviewResources();
         _layerBlendCompositor?.Dispose();
         _layerBlendCompositor = null;
         _mixingBrushRasterCache.Clear();
@@ -1624,6 +1625,7 @@ internal sealed partial class StageControl : Control
         FillEdgeBezierPointerEditing = false;
         ClearReference3DStateForSceneBinding();
         Scene = scene;
+        SetSymbolEditingReference(null);
         UnderlayScene = null;
         OnionSkinScene = null;
         DragPreviewScene = null;
@@ -3374,6 +3376,7 @@ internal sealed partial class StageControl : Control
             BeginScenePassOrder();
         }
 
+        DrawSymbolEditingReferenceGdi(g);
         var editableScene = Scene;
         var objectDrawLimit = ObjectDrawLimit();
         var underlayStats = default(RenderStats);
@@ -3616,6 +3619,7 @@ internal sealed partial class StageControl : Control
         {
             _direct2DRenderer.ReleaseTarget();
             ClearGdiBaseFrameCache();
+            ReleaseShotPreviewResources();
             ClearCollisionTerrainOverlayPath();
         }
         catch (Exception ex)
@@ -3643,6 +3647,7 @@ internal sealed partial class StageControl : Control
             DisposeSpatialTransformGizmoMotion();
             _direct2DRenderer.Dispose();
             ClearGdiBaseFrameCache();
+            ReleaseShotPreviewResources();
             ClearCollisionTerrainOverlayPath();
             _layerBlendCompositor?.Dispose();
             _layerBlendCompositor = null;

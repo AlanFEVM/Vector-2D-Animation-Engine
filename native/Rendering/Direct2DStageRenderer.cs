@@ -875,6 +875,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 DrawGrid(stage);
                 DrawCanvasBackground(stage);
 
+                DrawSymbolEditingReference(stage);
+
                 var underlayStats = default(RenderStats);
                 var onionSkinStats = default(RenderStats);
                 var underlay = stage.UnderlayScene;

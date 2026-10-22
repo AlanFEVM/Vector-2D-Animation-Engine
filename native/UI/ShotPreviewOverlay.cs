@@ -74,6 +74,7 @@ internal sealed class ShotPreviewOverlay : UserControl
         _caption.DoubleClick += (_, _) => PreviewToggleRequested?.Invoke(this, EventArgs.Empty);
         ApplyPreviewButtonText();
         _placeholder.BringToFront();
+        ApplyCaption();
     }
 
     /// <summary>Raised after the user finishes resizing so the host can re-capture at the new size.</summary>
@@ -132,6 +133,15 @@ internal sealed class ShotPreviewOverlay : UserControl
     /// </summary>
     internal void SetPreview(Bitmap? bitmap, string caption = "")
     {
+        caption ??= "";
+        var imageChanged = !ReferenceEquals(_bitmap, bitmap);
+        var captionChanged = !string.Equals(_captionText, caption, StringComparison.Ordinal);
+        if (!imageChanged && !captionChanged)
+        {
+            ApplyCaption();
+            return;
+        }
+        var visibilityChanged = (_bitmap is null) != (bitmap is null);
         if (!ReferenceEquals(_bitmap, bitmap))
         {
             _bitmap?.Dispose();
@@ -139,12 +149,12 @@ internal sealed class ShotPreviewOverlay : UserControl
             _picture.Image = bitmap;
         }
 
-        _captionText = caption ?? "";
+        _captionText = caption;
         ApplyCaption();
         _picture.Visible = _bitmap is not null;
         _placeholder.Visible = _bitmap is null;
-        PerformLayout();
-        Invalidate();
+        if (visibilityChanged) PerformLayout();
+        _picture.Invalidate();
     }
 
     private void ApplyCaption()

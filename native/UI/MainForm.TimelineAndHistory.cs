@@ -1364,7 +1364,7 @@ internal sealed partial class MainForm : Form
             && target.SceneDefinition is not null
             && !IsSceneMaskEditing();
         var drawingTween = resolved
-            && _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing
+            && IsDrawingWorkspaceContext
             && target.DrawingScene is not null;
         var visible = shotTween || sceneTween || drawingTween;
         var visibilityChanged = _tweenCurveEditorPanel.Visible != visible;

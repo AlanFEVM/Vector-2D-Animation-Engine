@@ -146,7 +146,7 @@ internal sealed partial class StageControl
     private ShotFramingHandleHit _shotFramingHoveredHandle = ShotFramingHandleHit.None;
     private ShotFramingHandleHit _shotFramingActiveHandle = ShotFramingHandleHit.None;
 
-    private readonly record struct ShotProjectionView(
+    internal readonly record struct ShotProjectionView(
         VectorScene Scene, float StageWidth, float StageHeight, Size Size, int Dpi, bool Reference,
         float CameraX, float CameraY, float Zoom, float Yaw, float Pitch, float Distance,
         float ReferenceZoom, float TargetX, float TargetY, float TargetZ, float Blend);

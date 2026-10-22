@@ -29,7 +29,7 @@ internal sealed partial class MainForm : Form
             EndTransientViewNavigation(restoreFeedback: false);
             if (_tool != ToolMode.PressureBrush
                 || !AllowsPressureBrushPointerInput(
-                    _workspaceTabs.SelectedView,
+                    EditingWorkspace,
                     IsSceneMaskEditing())
                 || DrawingToolsBlocked()
                 || _spacePanHeld

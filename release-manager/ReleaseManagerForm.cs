@@ -63,9 +63,9 @@ internal sealed class ReleaseManagerForm : Form
     private ReleaseNotesManifestDocument _document = new();
     private ReleaseNotesManifestRelease? _selectedRelease;
     private Version _sourceVersion = new();
-    private UiLanguage _editorLanguage = UiLanguage.English;
-    private UiLanguage _acknowledgementLanguage = UiLanguage.English;
-    private UiLanguage _previewLanguage = UiLanguage.English;
+    private UiLanguage _editorLanguage = UiLocalization.CurrentLanguage;
+    private UiLanguage _acknowledgementLanguage = UiLocalization.CurrentLanguage;
+    private UiLanguage _previewLanguage = UiLocalization.CurrentLanguage;
     private bool _updating;
     private bool _dirty;
     private bool _publishing;
@@ -787,7 +787,7 @@ internal sealed class ReleaseManagerForm : Form
             if (args.ListItem is ReleaseNotesManifestSection section) args.Value = DisplaySectionHeading(section);
         };
         _acknowledgementSectionHeadingBox.TextChanged += (_, _) => UpdateAcknowledgementSection();
-        _acknowledgementSectionItemsBox.TextChanged += (_, _) => UpdateAcknowledgementSection();
+        _acknowledgementSectionItemsBox.TextChanged += (_, _) => UpdateAcknowledgementSection(synchronizeItems: true);
         _addAcknowledgementSectionButton.Click += (_, _) => AddAcknowledgementSection();
         _removeAcknowledgementSectionButton.Click += (_, _) => RemoveAcknowledgementSection();
         _moveAcknowledgementSectionUpButton.Click += (_, _) => MoveAcknowledgementSection(-1);
@@ -1273,7 +1273,7 @@ internal sealed class ReleaseManagerForm : Form
         }
     }
 
-    private void UpdateAcknowledgementSection()
+    private void UpdateAcknowledgementSection(bool synchronizeItems = false)
     {
         if (_updating || _acknowledgementSectionList.SelectedItem is not ReleaseNotesManifestSection section) return;
         section.Heading = _acknowledgementSectionHeadingBox.Text;
@@ -1281,6 +1281,17 @@ internal sealed class ReleaseManagerForm : Form
             .Select(line => line.Trim())
             .Where(line => line.Length > 0)
             .ToList();
+        if (synchronizeItems && _document.Acknowledgements is { } acknowledgements)
+        {
+            var otherLocale = _acknowledgementLanguage == UiLanguage.SimplifiedChinese
+                ? acknowledgements.Locales.English
+                : acknowledgements.Locales.SimplifiedChinese;
+            var sectionIndex = _acknowledgementSectionList.SelectedIndex;
+            if (sectionIndex >= 0 && sectionIndex < otherLocale.Sections.Count)
+            {
+                otherLocale.Sections[sectionIndex].Items = section.Items.ToList();
+            }
+        }
         _acknowledgementSectionList.Refresh();
         SetDirty(true);
     }
@@ -1289,15 +1300,16 @@ internal sealed class ReleaseManagerForm : Form
     {
         var locales = _document.Acknowledgements?.Locales;
         if (locales is null) return;
+        var contributorName = T("Contributor name", "贡献者姓名");
         var englishSection = new ReleaseNotesManifestSection
         {
             Heading = "Contributors",
-            Items = ["Contributor name"]
+            Items = [contributorName]
         };
         var chineseSection = new ReleaseNotesManifestSection
         {
             Heading = "贡献者",
-            Items = ["贡献者姓名"]
+            Items = [contributorName]
         };
         locales.English.Sections.Add(englishSection);
         locales.SimplifiedChinese.Sections.Add(chineseSection);

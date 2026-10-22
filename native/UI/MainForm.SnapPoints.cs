@@ -68,7 +68,7 @@ internal sealed partial class MainForm
     private void BeginSnapPointPointer(MouseEventArgs e)
     {
         var drawingObject = ActiveDrawingObject();
-        if (_workspaceTabs.SelectedView != WorkspaceView.BasicDrawing
+        if (!IsDrawingWorkspaceContext
             || drawingObject is null
             || DrawingToolsBlocked())
         {
@@ -314,7 +314,7 @@ internal sealed partial class MainForm
     {
         var drawingObject = ActiveDrawingObject();
         if (_tool != ToolMode.SnapPoint
-            || _workspaceTabs.SelectedView != WorkspaceView.BasicDrawing
+            || !IsDrawingWorkspaceContext
             || drawingObject is null)
         {
             ClearSnapPointPresentation();

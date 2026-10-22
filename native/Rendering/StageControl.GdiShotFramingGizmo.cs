@@ -3,9 +3,32 @@ using System.Drawing.Imaging;
 
 namespace VectorAnimationEngine;
 
+internal readonly record struct ShotPreviewSourceState(
+    Reference3DBaseFrameRenderState Content, StageControl.ShotProjectionView View,
+    int BackgroundArgb, float GridOpacity, WorldGridType GridType, bool Playback,
+    SceneCanvasPresentation? Canvas);
+
 // GDI overlay of the shot framing gizmo plus the offscreen capture used for shot previews.
 internal sealed partial class StageControl
 {
+    private Bitmap? _shotPreviewSourceBitmap;
+    private ShotPreviewSourceState? _shotPreviewSourceState;
+    internal long ShotPreviewSourceBuildCount { get; private set; }
+
+    internal ShotPreviewSourceState CreateShotPreviewSourceState()
+    {
+        EnsureShotProjectionView();
+        return new(CreateReference3DBaseFrameRenderState(), _shotProjectionView,
+            BackColor.ToArgb(), WorldGridOpacity, WorldGridType, PlaybackActive, CanvasPresentation);
+    }
+
+    internal void ReleaseShotPreviewResources()
+    {
+        _shotPreviewSourceBitmap?.Dispose();
+        _shotPreviewSourceBitmap = null;
+        _shotPreviewSourceState = null;
+    }
+
     private static readonly Color ShotFramingAccent = Color.FromArgb(248, 255, 196, 96);
     private static readonly Color ShotFramingAccentSoft = Color.FromArgb(120, 255, 196, 96);
     private static readonly Color ShotFramingLabelBackground = Color.FromArgb(214, 18, 20, 26);
@@ -506,34 +529,6 @@ internal sealed partial class StageControl
                 height = Math.Max(1, (int)MathF.Round(width / aspect));
         }
 
-        using var surface = new Bitmap(surfaceWidth, surfaceHeight, PixelFormat.Format32bppPArgb);
-        using (var graphics = Graphics.FromImage(surface))
-        {
-            var canvas = CanvasPresentation;
-            graphics.Clear(canvas is null ? BackColor : Color.Transparent);
-            if (canvas is null)
-            {
-                if (RendersReferenceProjection) DrawGdiReferenceBase(graphics);
-                else DrawGdiBase2D(graphics, backgroundAlreadyDrawn: true);
-            }
-            else
-            {
-                CanvasPresentation = null;
-                try
-                {
-                    graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                    graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                    BeginScenePassOrder();
-                    if (RendersReferenceProjection) DrawReference3DScene(graphics);
-                    else DrawGdiBase2D(graphics, backgroundAlreadyDrawn: true);
-                }
-                finally
-                {
-                    CanvasPresentation = canvas;
-                }
-            }
-        }
-
         var corners = geometry.Corners;
         var destination = new PointF[]
         {
@@ -542,7 +537,53 @@ internal sealed partial class StageControl
             new(0f, height)
         };
         var source = new[] { corners[0], corners[1], corners[3] };
-        if (!TryCreateQuadTransform(source, destination, out var transform)) return false;
+        if (!TryCreateQuadTransform(source, destination, out var transform))
+        {
+            transform.Dispose();
+            return false;
+        }
+        using var captureTransform = transform;
+
+        // Camera-only edits change the crop, not the composition. Keep one full-resolution source
+        // until the content/view/lighting state changes, and reuse its storage across animation frames.
+        var sourceState = CreateShotPreviewSourceState();
+        if (_shotPreviewSourceBitmap is null || _shotPreviewSourceBitmap.Size != ClientSize)
+        {
+            ReleaseShotPreviewResources();
+            _shotPreviewSourceBitmap = new Bitmap(surfaceWidth, surfaceHeight, PixelFormat.Format32bppPArgb);
+        }
+        if (_shotPreviewSourceState != sourceState)
+        {
+            _shotPreviewSourceState = null;
+            var previousStats = LastStats;
+            try
+            {
+                using var graphics = Graphics.FromImage(_shotPreviewSourceBitmap);
+                var canvas = CanvasPresentation;
+                graphics.Clear(canvas is null ? BackColor : Color.Transparent);
+                if (canvas is null)
+                {
+                    if (RendersReferenceProjection) DrawGdiReferenceBase(graphics);
+                    else DrawGdiBase2D(graphics, backgroundAlreadyDrawn: true);
+                }
+                else
+                {
+                    CanvasPresentation = null;
+                    try
+                    {
+                        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                        BeginScenePassOrder();
+                        if (RendersReferenceProjection) DrawReference3DScene(graphics);
+                        else DrawGdiBase2D(graphics, backgroundAlreadyDrawn: true);
+                    }
+                    finally { CanvasPresentation = canvas; }
+                }
+                _shotPreviewSourceState = sourceState;
+                ShotPreviewSourceBuildCount++;
+            }
+            finally { LastStats = previousStats; }
+        }
 
         var result = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
         try
@@ -564,7 +605,7 @@ internal sealed partial class StageControl
                 }
                 graphics.SetClip(new Rectangle(0, 0, width, height));
                 graphics.Transform = transform;
-                graphics.DrawImage(surface, 0, 0, surfaceWidth, surfaceHeight);
+                graphics.DrawImage(_shotPreviewSourceBitmap, 0, 0, surfaceWidth, surfaceHeight);
             }
 
             bitmap = result;
@@ -598,6 +639,7 @@ internal sealed partial class StageControl
         var m22 = (ax * cby - bx * cay) / determinant;
         var dx = destination[0].X - (m11 * source[0].X + m21 * source[0].Y);
         var dy = destination[0].Y - (m12 * source[0].X + m22 * source[0].Y);
+        transform.Dispose();
         transform = new Matrix(m11, m12, m21, m22, dx, dy);
         return true;
     }

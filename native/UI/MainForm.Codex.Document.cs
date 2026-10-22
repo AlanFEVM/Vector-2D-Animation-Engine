@@ -88,7 +88,7 @@ internal sealed partial class MainForm
             _ => throw new ArgumentException("workspace must be BasicDrawing, SceneEditor or ShotDirector.")
         };
 
-        var changed = _workspaceTabs.SelectedView != view;
+        var changed = _workspaceTabs.SelectedView != view || IsSymbolEditing;
         if (!changed)
         {
             return new
@@ -100,6 +100,7 @@ internal sealed partial class MainForm
         }
 
         CodexDocumentPrepareWrite();
+        if (IsSymbolEditing && view == WorkspaceView.SceneEditor) ExitSceneSymbolEditing();
         _workspaceTabs.SelectedView = view;
         return new
         {
@@ -111,7 +112,7 @@ internal sealed partial class MainForm
 
     private object CodexDocumentGetLayers()
     {
-        if (_workspaceTabs.SelectedView == WorkspaceView.BasicDrawing)
+        if (IsDrawingWorkspaceContext)
         {
             var drawingObject = CodexDocumentActiveDrawingObject();
             var scene = drawingObject.Scene;
@@ -162,7 +163,7 @@ internal sealed partial class MainForm
     private object CodexDocumentCreateLayer(JsonElement arguments)
     {
         var name = CodexDocumentOptionalName(arguments, "name");
-        if (_workspaceTabs.SelectedView == WorkspaceView.BasicDrawing)
+        if (IsDrawingWorkspaceContext)
         {
             var drawingObject = CodexDocumentActiveDrawingObject();
             var scene = drawingObject.Scene;
@@ -205,7 +206,7 @@ internal sealed partial class MainForm
         var hasOpacity = arguments.TryGetProperty("opacity", out var opacityElement);
         var opacity = hasOpacity ? CodexDocumentNumber(opacityElement, "opacity", 0, 1) : 0;
 
-        if (_workspaceTabs.SelectedView == WorkspaceView.BasicDrawing)
+        if (IsDrawingWorkspaceContext)
         {
             var drawingObject = CodexDocumentActiveDrawingObject();
             var scene = drawingObject.Scene;
@@ -261,7 +262,7 @@ internal sealed partial class MainForm
     {
         var layerId = CodexDocumentRequiredString(arguments, "layerId");
         var destinationIndex = CodexDocumentInteger(arguments, "index", 0, int.MaxValue);
-        if (_workspaceTabs.SelectedView == WorkspaceView.BasicDrawing)
+        if (IsDrawingWorkspaceContext)
         {
             var drawingObject = CodexDocumentActiveDrawingObject();
             var scene = drawingObject.Scene;
@@ -312,7 +313,7 @@ internal sealed partial class MainForm
     private object CodexDocumentRemoveLayer(JsonElement arguments)
     {
         var layerId = CodexDocumentRequiredString(arguments, "layerId");
-        if (_workspaceTabs.SelectedView == WorkspaceView.BasicDrawing)
+        if (IsDrawingWorkspaceContext)
         {
             var drawingObject = CodexDocumentActiveDrawingObject();
             var scene = drawingObject.Scene;
@@ -356,11 +357,11 @@ internal sealed partial class MainForm
     private object CodexDocumentSetActiveLayer(JsonElement arguments)
     {
         var layerId = CodexDocumentRequiredString(arguments, "layerId");
-        var sceneDefinition = _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing
+        var sceneDefinition = IsDrawingWorkspaceContext
             ? null
             : CodexDocumentRequireSceneEditorContext();
         var currentId = CodexDocumentCurrentLayerId();
-        var exists = _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing
+        var exists = IsDrawingWorkspaceContext
             ? CodexDocumentActiveDrawingObject().Scene.LayerIds.Contains(layerId, StringComparer.Ordinal)
             : sceneDefinition!.FindLayer(layerId) is not null;
         if (!exists) throw new ArgumentException("The layer was not found in the active workspace context.");
@@ -374,7 +375,7 @@ internal sealed partial class MainForm
         }
         CodexDocumentPrepareWrite();
         CodexDocumentRefreshLayers(
-            sceneContext: _workspaceTabs.SelectedView != WorkspaceView.BasicDrawing,
+            sceneContext: !IsDrawingWorkspaceContext,
             selectModelActive: false);
         return new { changed = true, layerId, layers = CodexDocumentGetLayers() };
     }
@@ -454,8 +455,9 @@ internal sealed partial class MainForm
         var symbolId = CodexDocumentRequiredString(arguments, "symbolId");
         var index = CodexDocumentDrawingObjectIndex(symbolId);
         if (_drawingObjects.Count <= 1) throw new InvalidOperationException("A project must retain at least one symbol.");
-        var wasSceneBuildingContext = IsSceneBuildingContext();
         CodexDocumentPrepareWrite();
+        if (IsSymbolEditing) ExitSceneSymbolEditing();
+        var wasSceneBuildingContext = IsSceneBuildingContext();
         if (!_project.TryRemoveDrawingObject(symbolId, out _))
         {
             throw new InvalidOperationException("The symbol could not be removed.");
@@ -521,6 +523,7 @@ internal sealed partial class MainForm
         var removedIndex = CodexDocumentSceneIndex(sceneId);
         var activeSceneId = ActiveScene()?.Id;
         CodexDocumentPrepareWrite();
+        if (IsSymbolEditing) ExitSceneSymbolEditing();
         if (!_project.TryRemoveScene(sceneId, out _))
         {
             throw new InvalidOperationException("The scene could not be removed.");
@@ -535,7 +538,7 @@ internal sealed partial class MainForm
         ResetEditHistory();
         ClearSelection();
         BuildDrawingObjectTabs();
-        if (_workspaceTabs.SelectedView == WorkspaceView.BasicDrawing)
+        if (IsDrawingWorkspaceContext)
         {
             BindActiveDrawingObjectScene(resetView: false);
         }
@@ -768,7 +771,7 @@ internal sealed partial class MainForm
 
     private string? CodexDocumentCurrentLayerId()
     {
-        if (_workspaceTabs.SelectedView == WorkspaceView.BasicDrawing)
+        if (IsDrawingWorkspaceContext)
         {
             var scene = CodexDocumentActiveDrawingObject().Scene;
             return (uint)scene.ActiveLayer < (uint)scene.LayerCount ? scene.LayerIds[scene.ActiveLayer] : null;

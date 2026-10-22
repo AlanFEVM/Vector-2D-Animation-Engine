@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
 
@@ -9,9 +8,6 @@ namespace VectorAnimationEngine;
 // expect from a camera object in a director workspace.
 internal sealed partial class MainForm
 {
-    private const int ShotPreviewRefreshIntervalMilliseconds = 150;
-
-    private readonly Stopwatch _shotPreviewStopwatch = Stopwatch.StartNew();
     private ShotFramingPointerSession? _shotFramingPointerSession;
     private bool _shotFramingHintVisible;
     /// <summary>
@@ -756,30 +752,36 @@ internal sealed partial class MainForm
     }
 
     /// <summary>
-    /// Renders the selected shot's framed viewport into the director panel preview. Throttled because
-    /// the capture renders the composition offscreen, and skipped while playing or dragging.
+    /// Requests a capture on the display clock, after frame/composition updates have completed.
     /// </summary>
     private void RefreshShotPreview(bool force = false)
     {
-        if (!_shotDirectorInitialized || !_shotPreviewOverlay.Visible) return;
-        if (!force && _shotPreviewStopwatch.ElapsedMilliseconds < ShotPreviewRefreshIntervalMilliseconds) return;
+        if (force) _shotPreviewFrameKey = null;
+        UpdateShotPreviewScheduler();
+    }
+
+    private void RenderShotPreviewFrame()
+    {
+        if (_syncingFrame || !_shotDirectorInitialized || !_shotPreviewOverlay.Visible) return;
         var scene = IsSceneBuildingContext() ? ActiveScene() : null;
         var shot = scene is not null && _activeShotId.Length > 0 ? scene.FindShot(_activeShotId) : null;
         if (shot is not null && !IsSceneShotAllowed(shot))
         {
+            _shotPreviewFrameKey = null;
             _shotPreviewOverlay.SetPreview(null, UiLocalization.T("3D features are disabled. Enable experimental 3D features in Settings to edit this camera."));
             return;
         }
-        if (scene is null || shot is null || !IsSceneShotAllowed(shot))
+        if (scene is null || shot is null)
         {
+            _shotPreviewFrameKey = null;
             _shotPreviewOverlay.SetPreview(null);
             return;
         }
-        if (_shotFramingPointerSession is not null) return;
 
-        _shotPreviewStopwatch.Restart();
         var frame = Math.Max(0, _frame);
-        var settings = scene.TryEvaluateShotSettings(shot.Id, frame, out var evaluated)
+        var settings = _shotFramingPointerSession is { } session && session.ShotId == shot.Id
+            ? session.LastSettings
+            : scene.TryEvaluateShotSettings(shot.Id, frame, out var evaluated)
             ? evaluated
             : shot.Settings;
         var caption = string.Format(
@@ -787,12 +789,17 @@ internal sealed partial class MainForm
             UiLocalization.T("Shot preview of {0} at frame {1}"),
             shot.Name,
             frame);
-        if (_stage.TryCaptureShotPreview(settings, _shotPreviewOverlay.PreviewPixelSize, out var bitmap))
+        var size = _shotPreviewOverlay.PreviewPixelSize;
+        var key = new ShotPreviewFrameKey(_stage.CreateShotPreviewSourceState(), settings, size, caption);
+        if (_shotPreviewFrameKey == key && _shotPreviewOverlay.HasPreview) return;
+        if (_stage.TryCaptureShotPreview(settings, size, out var bitmap))
         {
             _shotPreviewOverlay.SetPreview(bitmap, caption);
+            _shotPreviewFrameKey = key;
             return;
         }
 
+        _shotPreviewFrameKey = null;
         _shotPreviewOverlay.SetPreview(null);
     }
 

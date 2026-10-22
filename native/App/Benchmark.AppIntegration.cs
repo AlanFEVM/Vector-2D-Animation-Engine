@@ -12,6 +12,7 @@ internal static partial class Benchmark
         RunUiCompositionRegression();
         RunInspectorCompositionWorkspaceRegression();
         RunUiDiscoverabilityRegression();
+        RunVaultPresentationRegression();
         using (var form = new MainForm())
         {
             var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
@@ -98,6 +99,117 @@ internal static partial class Benchmark
                 "Incremental light refresh retained removed rows.");
         }
         Console.WriteLine("ui_refresh_stability=ok,symbol_refreshes=100,light_refreshes=100");
+    }
+
+    private static void RunVaultPresentationRegression()
+    {
+        using (var host = new Form
+        {
+            ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30000, -30000), ClientSize = new Size(306, 600)
+        })
+        using (var panel = new LibraryVaultPanel { Dock = DockStyle.Fill })
+        {
+            host.Controls.Add(panel);
+            var project = VectorProject.CreateEmpty();
+            var symbol = project.AddDrawingObject("Vault reopen fixture");
+            for (var index = 0; index < 128; index++) project.AddDrawingObject("Asset " + index);
+            panel.BindProject(project);
+            panel.SetActiveDrawingObject(symbol.Id);
+            host.Show();
+            var tree = (TreeView)RequireField(typeof(LibraryVaultPanel), "_projectObjects").GetValue(panel)!;
+            var rows = tree.Nodes.Cast<TreeNode>().ToArray();
+            var selected = tree.SelectedNode;
+            for (var iteration = 0; iteration < 8; iteration++)
+            {
+                host.Hide();
+                host.Show();
+                AssertTimeline(tree.Nodes.Count == rows.Length && ReferenceEquals(tree.SelectedNode, selected)
+                    && rows.Where((row, index) => !ReferenceEquals(row, tree.Nodes[index])).Count() == 0,
+                    "Reopening unchanged Vault rebuilt asset rows or lost selection.");
+            }
+            host.Hide();
+            AssertTimeline(project.TryRenameDrawingObject(symbol.Id, "Renamed while hidden"),
+                "Vault fixture could not rename its hidden asset.");
+            host.Show();
+            AssertTimeline(tree.SelectedNode?.Text == "Renamed while hidden",
+                "Reopening Vault retained stale asset metadata from the hidden project.");
+
+            var directory = CreateTemporaryDirectory("vault-reopen");
+            try
+            {
+                var source = Path.Combine(directory, "asset.svg");
+                File.WriteAllText(source, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\"/>");
+                AssertTimeline(project.TryAddExternalSvgAsset("Linked asset", source, "",
+                    BitmapImageRasterizer.ComputeSha256(source), out _), "Vault SVG fixture failed.");
+                var available = true;
+                panel.SetExternalSvgAssetAvailabilityProvider(_ => available);
+                var categoryType = typeof(LibraryVaultPanel).GetNestedType("AssetCategory", PrivateInstanceFlags)!;
+                RequireMethod(typeof(LibraryVaultPanel), "SelectAssetCategory")
+                    .Invoke(panel, [Enum.Parse(categoryType, "ExternalSvg"), true]);
+                var svgRow = tree.Nodes[0];
+                host.Hide();
+                host.Show();
+                AssertTimeline(ReferenceEquals(tree.Nodes[0], svgRow),
+                    "Unchanged SVG availability needlessly rebuilt the Vault list.");
+                host.Hide();
+                available = false;
+                host.Show();
+                AssertTimeline(tree.Nodes[0].Tag is ITreeNodeLeadingIconSource { LeadingIcon: SvgIconKind.Warning },
+                    "Reusing Vault rows concealed a file that became unavailable while hidden.");
+                host.Hide();
+                available = true;
+                host.Show();
+                AssertTimeline(tree.Nodes[0].Tag is ITreeNodeLeadingIconSource { LeadingIcon: SvgIconKind.AssetSvg },
+                    "Reopening Vault did not clear a recovered file's missing warning.");
+            }
+            finally
+            {
+                DeleteTemporaryDirectory(directory);
+            }
+        }
+
+        using (var form = new MainForm())
+        {
+            var drawer = (Panel)RequireField(typeof(MainForm), "_vaultDrawer").GetValue(form)!;
+            var width = (int)RequireField(typeof(MainForm), "_vaultDrawerExpandedWidth").GetValue(form)!;
+            var visibleWidth = RequireField(typeof(MainForm), "_vaultDrawerVisibleWidth");
+            var applyClip = RequireMethod(typeof(MainForm), "ApplyVaultDrawerClip");
+            visibleWidth.SetValue(form, width / 2);
+            applyClip.Invoke(form, null);
+            var clip = drawer.Region;
+            var regionChanges = 0;
+            drawer.RegionChanged += (_, _) => regionChanges++;
+            for (var iteration = 0; iteration < 32; iteration++) applyClip.Invoke(form, null);
+            AssertTimeline(clip is not null && ReferenceEquals(clip, drawer.Region) && regionChanges == 0,
+                "Unchanged Vault animation positions replaced the native clipping region.");
+            drawer.Height += 17;
+            applyClip.Invoke(form, null);
+            AssertTimeline(regionChanges == 1 && !ReferenceEquals(clip, drawer.Region),
+                "Vault clipping did not invalidate when the drawer height changed.");
+
+            var open = RequireField(typeof(MainForm), "_vaultDrawerOpen");
+            var from = RequireField(typeof(MainForm), "_vaultDrawerAnimationFromWidth");
+            var to = RequireField(typeof(MainForm), "_vaultDrawerAnimationToWidth");
+            var started = RequireField(typeof(MainForm), "_vaultDrawerAnimationStartedTimestamp");
+            var duration = RequireField(typeof(MainForm), "_vaultDrawerAnimationDurationMilliseconds");
+            var tick = RequireMethod(typeof(MainForm), "TickVaultDrawer");
+            foreach (var opening in new[] { true, false })
+            {
+                open.SetValue(form, opening);
+                visibleWidth.SetValue(form, opening ? 0 : width);
+                from.SetValue(form, opening ? 0 : width);
+                to.SetValue(form, opening ? width : 0);
+                duration.SetValue(form, 160d);
+                started.SetValue(form, Stopwatch.GetTimestamp() - Stopwatch.Frequency);
+                tick.Invoke(form, null);
+                var timer = (System.Windows.Forms.Timer)RequireField(typeof(MainForm), "_vaultDrawerTimer").GetValue(form)!;
+                AssertTimeline((int)visibleWidth.GetValue(form)! == (opening ? width : 0)
+                    && drawer.Region is null && !timer.Enabled,
+                    "A delayed Vault tick extended a finished animation or retained its clipping region.");
+            }
+        }
+        Console.WriteLine("vault_presentation=ok,reopen_rows=reused,hidden_changes=checked,clip_updates=coalesced,delayed_tick=completed");
     }
 
     private static void RunImmediateColorEditingRegression()

@@ -49,7 +49,7 @@ internal sealed partial class MainForm
 
     private bool CanOfferRandomFractureCollisionTerrain()
     {
-        return _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing
+        return IsDrawingWorkspaceContext
             && !IsSceneCompositionContext()
             && _timeline.Context is DrawingObjectDefinition or VectorScene
             && _scene.LayerCount > 0;

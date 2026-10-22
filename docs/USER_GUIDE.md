@@ -635,7 +635,9 @@ Only 2D workflows are enabled by default. Use **Settings → General → Experim
 
 在 `Scene & Animation` 的时间轴中点击“镜头”，管理同一场景中的独立相机。默认仅启用 2D；实验性 3D 开关保持原有行为。相机面板替换右侧场景检查器，舞台继续显示完整场景；选择相机时只操作相机框和手柄，不直接修改场景物体。切到“全部”可同时查看相机和场景动画，相机始终置顶。点击时间轴添加按钮或面板“新建相机”均可在镜头分组中新建相机。
 
-当前相机的取景预览显示为舞台左下角的浮动监视器，位于时间轴面板正上方。它是真正的相机视图：按相机的实际 3D 位置、三轴旋转、投影模式和焦距/正交尺寸渲染，Z 轴推拉会改变取景覆盖范围。可以拖动监视器右下角的斜纹手柄调整大小，松开后按新尺寸重新取景；尺寸会一直保持，除非舞台空间不足。预览随相机选择、播放头和参数变化刷新，不占据右侧检查器空间。预览在播放中或拖动取景手柄时暂时隐藏，停止后恢复。右侧检查器只保留相机列表和相机参数。
+当前相机的取景预览显示为舞台左下角的浮动监视器，位于时间轴面板正上方。它是真正的相机视图：按相机的实际 3D 位置、三轴旋转、投影模式和焦距/正交尺寸渲染，Z 轴推拉会改变取景覆盖范围。可以拖动监视器右下角的斜纹手柄调整大小，松开后按新尺寸重新取景；尺寸会一直保持，除非舞台空间不足。预览随相机选择、播放头和参数变化刷新，不占据右侧检查器空间。预览在播放和拖动取景手柄期间持续更新，以监视器所在屏幕的刷新信号调度；移到另一屏幕时自动跟随。静止画面复用缓存，隐藏预览或最小化窗口后停止调度。实际帧率受场景渲染耗时限制，动画内容仍按工程设定的动画帧率变化。右侧检查器只保留相机列表和相机参数。
+
+The floating shot monitor continues updating during playback and camera drags, paced by the refresh signal of its current display. Moving the window between displays changes the pacing source. Unchanged images reuse cached content; hiding the monitor or minimizing the window stops scheduling. Achievable preview FPS depends on scene render cost; animation still advances at the project's animation FPS.
 
 #### 相机类型
 
@@ -893,7 +895,11 @@ SVG 位图会复用同一内容、宽高比相容且分辨率足够的已有缓�
 - 可见性、Alpha 和色调。
 - 独立 FPS、循环、仅播放一次或停留帧。
 
-双击场景实例可进入其源元件。返回 Scene & Animation 时，同一场景、帧和帧率且工程未发生编辑会直接复用已有组合预览；源几何、实例、时间轴或场景设置发生变化后，缓存会自动失效并重新构建。右侧场景和实例列表采用增量刷新，切换工作区或帧时不会重复清空列表。
+在 `Scene & Animation` 的二维正面视图中双击实例，会留在当前工作区就地编辑其源元件。左侧绘画工具和快捷键重新启用，时间轴切到元件自身的图层与帧；编辑直接更新共享源元件，因此返回后所有引用它的实例都会更新。场景其余内容以进入时的画面加半透明白色遮罩作参考，不可选中或绘改，也不会保存为实际蒙版图层。参考图随编辑画布平移和缩放；实例的旋转、缩放或倾斜会换算到元件局部坐标，元件按自身坐标编辑。参考范围为进入时的可见画面。
+
+点击元件名称前的 `返回场景 / Back to scene`，或在没有未完成绘画操作时按 `Esc`，恢复原场景帧、视图和实例选择。切换到基础绘制会退出就地编辑。空间旋转或非线性变形实例沿用独立元件编辑入口，三维和非正面参考视图不提供该就地绘画入口。普通场景模式仍只允许实例操作。右侧场景和实例列表采用增量刷新，切换工作区或帧时不会重复清空列表。
+
+Double-click a placement in the 2D Front view of Scene & Animation to edit its shared source symbol in place. Drawing tools and shortcuts are enabled, and the timeline shows the symbol's own layers and frames. The surrounding scene is a frozen reference of the viewport at entry, faded with a translucent white veil; it is neither selectable nor saved as a mask layer. The reference follows canvas pan and zoom in symbol-local coordinates. Use Back to scene or Esc after finishing a drawing gesture to restore the scene frame, view and placement selection. All placements of the shared symbol reflect source edits. Spatially rotated or warped placements retain the independent symbol editor; 3D and other reference directions do not offer in-place drawing.
 
 机制：实例只保存“引用 + 变换 + 播放/外观状态”。多个实例可以引用同一个源对象；源对象也可嵌套其他对象，但软件会拒绝自身引用和循环引用。
 
@@ -926,6 +932,14 @@ SVG 位图会复用同一内容、宽高比相容且分辨率足够的已有缓�
 
 左侧工具栏的 Vault 打开项目素材列表，抽屉与上方面板交接的顶边采用柔和分界线颜色。面板使用小号弱化标题、统一分类按钮和紧凑的主题搜索／标签筛选框；右侧标签图标用于管理选中素材的标签。导入、打开、文件夹、标签及素材列表图标采用统一的圆润线性风格，右上角操作图标保持一致的轮廓尺寸与圆角，新建文件夹使用与时间轴相同的文件夹图标。输入框、下拉框和按钮随主题及直角／微圆角偏好变化，搜索与列表之间保留清晰间距。
 The Vault panel uses a muted heading, consistent category buttons and compact themed search/tag filters. The tag icon manages tags for the selected asset; controls follow the theme and corner preference.
+
+工具栏位于左侧时，会随素材库抽屉的开合移到可见边缘右侧；刷新工具状态或调整窗口大小后也保持可见，关闭素材库后回到左边缘。顶部工具栏不随抽屉横向移动。
+
+The left toolbar follows the Vault drawer's visible edge while it opens or closes, stays accessible after tool refreshes and window resizing, and returns to the left edge when the drawer closes. The top toolbar keeps its horizontal position.
+
+素材库重新打开时复用未变化的素材列表，仍检查项目变化与当前列表中的文件失效状态。开合动画按实际经过时间推进，重复位置不触发裁剪更新；动画中再次点击可从当前位置反向开合。
+
+Reopening Vault reuses unchanged asset rows while checking project changes and file availability in the current list. The drawer animation follows elapsed time, skips unchanged clipping positions, and reverses from its current position when toggled again.
 
 项目素材列表的操作：
 
@@ -1185,9 +1199,9 @@ Project Folder/
 
 **工具栏位置 / Toolbar position**：在操作偏好中选择 **左侧 / Left**（默认）或 **顶部 / Top**，点击 `OK` 返回设置，再点击 `Save` 即时应用并保存，下次启动仍保留。左侧沿用紧凑纵向工具栏；顶部仅使用元件页签右侧、吸附设置左侧的原有顶部空白，显示适度大小的图标及下方名称，不新增功能区高度、不压缩画布。工具按钮随可用宽度缩排，空间仍不足时可横向滚动；极窄窗口回退到原有视图操作行中的紧凑图标布局。选择、形状、线条、笔刷、填色等折叠工具组向下展开为带图标与名称的网格，点击工具后收起。取消子面板或设置窗口不改变已保存的位置。
 
-顶部工具栏不绘制容器外框，下方名称保持 8pt 字体；图标在原有图标槽内缩小显示，文字位置、按钮点击区域及整体布局保持不变。选中状态及键盘焦点提示保留，左侧工具栏、右侧分类栏和展开网格的图标不受影响。
+顶部工具栏不绘制容器外框，下方名称保持 8pt 字体；图标在原有图标槽内缩小显示，文字位置、按钮点击区域及整体布局保持不变。选中状态及键盘焦点提示保留，左侧工具栏、右侧分类栏和展开网格的图标不受影响。从顶部切回左侧时，工具栏立即显示在画布上方，无需重启。
 
-In **Settings → General → Operation preferences**, choose **Toolbar position → Left** (default) or **Top**, confirm with `OK`, then `Save`. Top uses only the existing header space between the symbol tabs and snapping controls, with smaller icons centered in their existing slots and unchanged 8pt labels underneath, without a container border; selection and keyboard focus cues remain visible. It adds no header height and takes no extra canvas space. Buttons adapt to the available width, with horizontal scrolling when needed and compact icons in the existing view-action row for very narrow windows. Grouped tools open below as a labeled grid and close after selection. The position persists across restarts; canceling either dialog leaves the saved position unchanged.
+In **Settings → General → Operation preferences**, choose **Toolbar position → Left** (default) or **Top**, confirm with `OK`, then `Save`. Top uses only the existing header space between the symbol tabs and snapping controls, with smaller icons centered in their existing slots and unchanged 8pt labels underneath, without a container border; selection and keyboard focus cues remain visible. It adds no header height and takes no extra canvas space. Buttons adapt to the available width, with horizontal scrolling when needed and compact icons in the existing view-action row for very narrow windows. Grouped tools open below as a labeled grid and close after selection. Switching from Top back to Left immediately restores the toolbar above the canvas without restarting. The position persists across restarts; canceling either dialog leaves the saved position unchanged.
 
 点击 `Settings → General → Operation preferences... / 操作偏好...` 打开独立面板，调整与具体工具操作相关的开关。点击 `OK` 返回设置，再点击 `Save` 后写入 `settings.json`，重新打开软件仍然生效；取消子面板或设置窗口不会改变已保存值。
 
@@ -1457,7 +1471,7 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:43521/mcp/' -Method Post `
 
 ## 17. 源码发布管理器
 
-源码维护者可运行 `scripts\run-release-manager.ps1` 打开独立 Release Manager；需要独立应用文件时运行 `scripts\publish-release-manager.ps1`，默认输出 `artifacts\release-manager-exe\ReleaseManager.exe`。它可以创建严格三段式版本号、管理中英文结构化 Release Notes、控制各版本是否在程序内显示、编辑中英文鸣谢、使用正式公告面板预览（含鸣谢），并调用唯一的单 EXE 发布流程。
+源码维护者可运行 `scripts\run-release-manager.ps1` 打开独立 Release Manager；需要独立应用文件时运行 `scripts\publish-release-manager.ps1`，默认输出 `artifacts\release-manager-exe\ReleaseManager.exe`。它可以创建严格三段式版本号、管理中英文结构化 Release Notes、控制各版本是否在程序内显示、编辑中英文鸣谢、使用正式公告面板预览（含鸣谢），并调用唯一的单 EXE 发布流程。公告编辑、鸣谢编辑和预览的初始语言跟随软件界面语言设置，仍可分别切换 `English / 简体中文`。
 
 点击 `Save Version` 会把所选版本设为当前源码版本，并同步 `Directory.Build.props` 中的四个版本属性；中英文分区的增删移动和条目数量会保持对齐。鸣谢在 `Acknowledgements` 页编辑，同样支持中英文标题、摘要、分组与名单，并可整体关闭以回退到内置默认鸣谢。新建版本的占位说明可以先保存，但替换前不会允许正式发布。工具会在保存和发布前检查源码文件是否被外部修改；发布取消采用协作式提交边界，正式文件替换开始后会完成校验再返回。`Preview` 直接读取内存草稿，编辑后无需先保存即可查看最终效果。正式输出仍只能位于 `artifacts\release` 或明确选择的空目录，仓库根目录开发启动器不会被替换。完整工作流和数据职责见 [Release Manager](RELEASE_MANAGER.md)。
 
@@ -1489,7 +1503,7 @@ The right-side tabs are direct entries to existing inspectors, not additional pl
 
 按钮和菜单命令不再添加表示后续弹窗的固定省略号；仅在文本实际超长时显示截断省略号，加载状态、搜索提示及更多入口保留各自语义。
 
-主菜单的设置与鸣谢入口使用纯文字。鸣谢入口打开主题对话框，按当前界面语言显示鸣谢标题、摘要与分组名单；名单来自 `release/release-notes.json` 中的双语 `acknowledgements` 内容，由 Release Manager 编辑，清单缺少该内容时回退到内置默认名单（聪明尼）。
+主菜单的设置与鸣谢入口使用纯文字。鸣谢入口打开主题对话框，按当前界面语言显示鸣谢标题、摘要与分组名单；中英文共用同一份鸣谢名单，Release Manager 中任一语言下的名单修改会同步到另一语言。名单来自 `release/release-notes.json` 中的 `acknowledgements` 内容，由 Release Manager 编辑，清单缺少该内容时回退到内置默认名单（聪明尼）。
 
 
 颜色与渐变预设弹窗按按钮右侧对齐向左展开，并限制在屏幕工作区内；下方空间不足时向上展开。内容高度覆盖全部固定行与内边距，标题复用模块标题样式并接入本地化，边框使用主题分界线色。

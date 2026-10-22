@@ -129,7 +129,6 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private const float DefaultTextAreaWidthPixels = 320f;
     private const float DefaultTextAreaHeightPixels = 64f;
     private const int VaultDrawerExpandedWidth = 306;
-    private const int VaultDrawerMaximumPixelsPerTick = 64;
     private const double VaultDrawerAnimationMilliseconds = 160;
     private const int InspectorPanelExpandedWidth = 372;
     /// <summary>
@@ -566,6 +565,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private float _freehandSmoothedSpeed = float.NaN;
     private bool _vaultDrawerOpen;
     private int _vaultDrawerVisibleWidth;
+    private Rectangle? _vaultDrawerAppliedClip;
     private int _vaultDrawerAnimationFromWidth;
     private int _vaultDrawerAnimationToWidth;
     private long _vaultDrawerAnimationStartedTimestamp;
@@ -1065,7 +1065,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
             var drawingTargets = SelectedActiveDrawingObjectIndices();
             var selectedInstances = SelectedSceneInstances();
-            var breakApartWorkspace = _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing;
+            var breakApartWorkspace = IsDrawingWorkspaceContext;
             var hasBreakApartTarget = selectedInstances.Count > 0 || drawingTargets.Length > 0;
             var canBreakInstances = breakApartWorkspace
                 && !DrawingToolsBlocked()
@@ -1590,7 +1590,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private void UpdateEraserOptionsPresentation()
     {
         var visible = _tool == ToolMode.Eraser
-            && (_workspaceTabs.SelectedView == WorkspaceView.BasicDrawing || IsSceneMaskEditing());
+            && (IsDrawingWorkspaceContext || IsSceneMaskEditing());
         _eraserOptionsStrip.Visible = visible;
         if (visible) _eraserOptionsStrip.BringToFront();
         SyncEraserOptions();
@@ -1688,7 +1688,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private bool CanImportSvg()
     {
         var layer = _scene.ActiveLayer;
-        var editableDrawingSurface = _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing
+        var editableDrawingSurface = IsDrawingWorkspaceContext
             || IsSceneMaskEditing();
         return editableDrawingSurface
             && !DrawingToolsBlocked()
@@ -1754,7 +1754,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
                 imported = ImportedSvgRasterizer.Load(managedPath);
                 size = ImportedSvgInitialSize(imported.IntrinsicSize, viewport);
             }
-            var drawingObject = _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing
+            var drawingObject = IsDrawingWorkspaceContext
                 ? ActiveDrawingObject()
                 : null;
             var renameDrawingObject = ShouldRenameEmptyDrawingObjectForSvgImport(drawingObject);
@@ -2260,8 +2260,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
         {
             if (!_vaultDrawer.Visible) _vaultDrawerVisibleWidth = 0;
             ApplyVaultDrawerClip();
-            _libraryVaultPanel.RefreshProjectObjects();
-            _vaultDrawer.Visible = true;
+            // Becoming visible refreshes the panel once; reversals keep it visible.
+            if (_vaultDrawer.Visible) _libraryVaultPanel.RefreshProjectObjects();
+            else _vaultDrawer.Visible = true;
             _vaultDrawer.BringToFront();
             if (_vaultButton is not null) UpdateToolbarTogglePresentation(_vaultButton, active: true, name: "Vault");
         }
@@ -2301,36 +2302,34 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
         var elapsed = Stopwatch.GetElapsedTime(_vaultDrawerAnimationStartedTimestamp).TotalMilliseconds;
         var progress = Math.Clamp(elapsed / _vaultDrawerAnimationDurationMilliseconds, 0, 1);
-        var eased = 1 - Math.Pow(1 - progress, 3);
-        var desiredVisibleWidth = (int)Math.Round(
-            _vaultDrawerAnimationFromWidth
-            + (_vaultDrawerAnimationToWidth - _vaultDrawerAnimationFromWidth) * eased);
-        var visibleWidth = _vaultDrawerVisibleWidth + Math.Clamp(
-            desiredVisibleWidth - _vaultDrawerVisibleWidth,
-            -VaultDrawerMaximumPixelsPerTick,
-            VaultDrawerMaximumPixelsPerTick);
-        if (_vaultDrawerVisibleWidth != visibleWidth) _vaultDrawerVisibleWidth = visibleWidth;
-        ApplyVaultDrawerClip();
-        PositionVaultToolStrip();
-        if (progress >= 1 && _vaultDrawerVisibleWidth == _vaultDrawerAnimationToWidth)
+        if (progress >= 1)
         {
             CompleteVaultDrawerAnimation();
+            return;
         }
+
+        var visibleWidth = ResolveWorkspacePanelAnimationValue(
+            _vaultDrawerAnimationFromWidth, _vaultDrawerAnimationToWidth, progress);
+        if (_vaultDrawerVisibleWidth == visibleWidth) return;
+        _vaultDrawerVisibleWidth = visibleWidth;
+        ApplyVaultDrawerClip();
+        PositionVaultToolStrip();
     }
 
     private void CompleteVaultDrawerAnimation()
     {
         if (_vaultDrawer is null) return;
         _vaultDrawerVisibleWidth = _vaultDrawerOpen ? _vaultDrawerExpandedWidth : 0;
-        ApplyVaultDrawerClip();
-        PositionVaultToolStrip();
-        if (!_vaultDrawerOpen)
+        if (_vaultDrawerOpen) ApplyVaultDrawerClip();
+        else
         {
             _vaultDrawer.Visible = false;
             var previousRegion = _vaultDrawer.Region;
-            _vaultDrawer.Region = null;
+            if (previousRegion is not null) _vaultDrawer.Region = null;
+            _vaultDrawerAppliedClip = null;
             previousRegion?.Dispose();
         }
+        PositionVaultToolStrip();
         _vaultDrawerTimer.Stop();
     }
 
@@ -2338,29 +2337,33 @@ internal sealed partial class MainForm : Form, IMessageFilter
     {
         if (_vaultDrawer is null) return;
         var visibleWidth = Math.Clamp(_vaultDrawerVisibleWidth, 0, _vaultDrawerExpandedWidth);
-        Region? nextRegion = null;
-        if (visibleWidth < _vaultDrawerExpandedWidth)
-        {
-            nextRegion = new Region();
-            nextRegion.MakeEmpty();
-            if (visibleWidth > 0)
-            {
-                nextRegion.Union(new Rectangle(0, 0, visibleWidth, _vaultDrawer.ClientSize.Height));
-            }
-        }
+        Rectangle? clip = visibleWidth < _vaultDrawerExpandedWidth
+            ? new Rectangle(0, 0, visibleWidth, _vaultDrawer.ClientSize.Height)
+            : null;
+        if (_vaultDrawerAppliedClip == clip
+            && (_vaultDrawer.Region is not null) == clip.HasValue) return;
 
+        var nextRegion = clip is { } bounds ? new Region(bounds) : null;
         var previousRegion = _vaultDrawer.Region;
         _vaultDrawer.Region = nextRegion;
+        _vaultDrawerAppliedClip = clip;
         previousRegion?.Dispose();
     }
 
     private void PositionVaultToolStrip()
     {
-        if (_vaultButton?.Parent is not Control tools) return;
-        var visibleWidth = _vaultDrawer is { Visible: true }
-            ? Math.Clamp(_vaultDrawerVisibleWidth, 0, _vaultDrawerExpandedWidth)
-            : 0;
-        var left = visibleWidth + 8;
+        if (_applicationSettings.ToolbarPosition != ToolbarPosition.Left
+            || _toolPalette.Parent is not Control host
+            || !ReferenceEquals(host, _stageMetrics.Parent)) return;
+
+        var tools = _toolPalette;
+        var left = 6;
+        if (_vaultDrawer is { Visible: true } drawer)
+        {
+            var visibleWidth = Math.Clamp(_vaultDrawerVisibleWidth, 0, _vaultDrawerExpandedWidth);
+            var drawerEdge = host.PointToClient(drawer.PointToScreen(new Point(visibleWidth, 0)));
+            left = Math.Max(left, drawerEdge.X + 6);
+        }
         if (tools.Left != left) tools.Left = left;
     }
 
@@ -2451,6 +2454,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
             }
 
             CancelRandomFracturePreview();
+            ClearSymbolEditingSession();
+            StopShotPreviewScheduler();
             StopPlaybackCompositionPreload();
             PersistTimelineFrameWidth();
             PersistTimelineFrameHeight();
@@ -2678,6 +2683,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
                     _drawingObjectTabs.Controls.SetChildIndex(button, 0);
             }
             if (_addDrawingObjectTabButton is null) AddNewDrawingObjectButton();
+            UpdateSymbolEditingBreadcrumb();
         }
         finally
         {
@@ -2756,6 +2762,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     {
         if (index < 0 || index >= _scenes.Count) return;
         if (!CommitTextEdit()) return;
+        if (IsSymbolEditing && !ExitSceneSymbolEditing()) return;
         if (_activeSceneIndex != index) ResetUndoHistory();
         _activeSceneIndex = index;
         _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects);
@@ -3146,6 +3153,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             return;
         }
 
+        if (IsSymbolEditing && !ExitSceneSymbolEditing()) return;
         var wasSceneBuildingContext = IsSceneBuildingContext();
         if (!_project.TryRemoveDrawingObject(drawingObjectId, out _)) return;
 
@@ -3196,11 +3204,15 @@ internal sealed partial class MainForm : Form, IMessageFilter
         }
 
         var nextScene = drawingObject.Scene;
+        if (_symbolEditingSession is { } session
+            && (session.SymbolId != drawingObject.Id || ActiveScene()?.Id != session.SceneId))
+            ClearSymbolEditingSession();
         if (!ReferenceEquals(_scene, nextScene)) ResetUndoHistory();
         _scene = nextScene;
         if (_scene.LayerCount <= 0) _scene.CreateEmpty();
         _stage.BindScene(_scene);
         _stage.ConfigureReferenceView(null);
+        ApplySymbolEditingReference();
         _timeline.BindContext(drawingObject);
         _libraryVaultPanel.BindScene(_scene, () => _selectedObject);
         _libraryVaultPanel.SetActiveDrawingObject(drawingObject.Id);
@@ -3216,6 +3228,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
     private void BindSceneEditStage(bool resetView)
     {
+        if (IsSymbolEditing) ClearSymbolEditingSession();
         CompleteFillEdgeBezierSessionForContextChange();
         CancelTraditionalPenPath();
         CancelPenCurve();
@@ -3495,6 +3508,11 @@ internal sealed partial class MainForm : Form, IMessageFilter
     {
         if (index < 0 || index >= _drawingObjects.Count) return;
         if (!CommitTextEdit()) return;
+        if (IsSymbolEditing)
+        {
+            OpenDrawingObjectEditor(_drawingObjects[index].Id);
+            return;
+        }
         if (!_drawingObjects[index].IsOpenCanvas)
             _currentScopeDrawingObjectId = _drawingObjects[index].Id;
         _activeDrawingObjectIndex = index;
@@ -3508,6 +3526,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private bool OpenDrawingObjectEditor(string drawingObjectId)
     {
         if (!CommitTextEdit()) return false;
+        if (IsSymbolEditing) ClearSymbolEditingSession();
         var index = -1;
         for (var i = 0; i < _drawingObjects.Count; i++)
         {

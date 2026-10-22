@@ -621,7 +621,7 @@ internal sealed partial class MainForm : Form
     private bool ConvertSelectedDrawingObjectsToSymbol()
     {
         if (IsOpenDrawingScope) return AddOpenCanvasSelectionToSymbol();
-        if (_workspaceTabs.SelectedView != WorkspaceView.BasicDrawing
+        if (!IsDrawingWorkspaceContext
             || DrawingToolsBlocked()
             || IsSceneCompositionContext()
             || SelectedSceneInstances().Count > 0)
@@ -2148,7 +2148,7 @@ internal sealed partial class MainForm : Form
 
     private void BreakApartStageSelection()
     {
-        if (_workspaceTabs.SelectedView != WorkspaceView.BasicDrawing
+        if (!IsDrawingWorkspaceContext
             || DrawingToolsBlocked()
             || IsSceneCompositionContext())
         {

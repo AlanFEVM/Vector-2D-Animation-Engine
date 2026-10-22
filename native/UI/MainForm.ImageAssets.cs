@@ -781,7 +781,7 @@ internal sealed partial class MainForm
     /// </summary>
     private string? ImagePlacementBlockedReason()
     {
-        if (_workspaceTabs.SelectedView != WorkspaceView.BasicDrawing && !IsSceneMaskEditing())
+        if (!IsDrawingWorkspaceContext && !IsSceneMaskEditing())
         {
             return UiLocalization.T("Open a Basic Drawing or scene mask drawing layer before placing an image.");
         }

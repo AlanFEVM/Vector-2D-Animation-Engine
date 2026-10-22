@@ -6130,6 +6130,7 @@ internal static partial class Benchmark
             && portraitPreview is { Width: 51, Height: 90 },
             "Portrait shot preview was stretched to the monitor dimensions.");
         portraitPreview?.Dispose();
+        RunShotPreviewSourceCacheRegression(stage);
 
         using var preview = new Bitmap(24, 14);
         using var overlay = new ShotPreviewOverlay();
@@ -6158,6 +6159,48 @@ internal static partial class Benchmark
         RunShotCameraHandleTrackingRegression();
 
         Console.WriteLine("shot_framing_gizmo_regression=ok");
+    }
+
+    private static void RunShotPreviewSourceCacheRegression(StageControl stage)
+    {
+        var settings = SceneShotSettings.Default;
+        var size = new Size(160, 90);
+        Bitmap Capture(SceneShotSettings camera)
+        {
+            AssertTimeline(stage.TryCaptureShotPreview(camera, size, out var image) && image is not null,
+                "The shot preview source-cache fixture could not capture its camera.");
+            return image!;
+        }
+
+        using var initial = Capture(settings);
+        var builds = stage.ShotPreviewSourceBuildCount;
+        using var repeated = Capture(settings);
+        using var reframed = Capture(settings with { X = 240, RotationDegrees = 12 });
+        AssertTimeline(stage.ShotPreviewSourceBuildCount == builds,
+            "Repeated captures and camera-only edits re-rendered the unchanged composition.");
+
+        stage.Scene.AddObject(0, PointF.Empty, new SizeF(2000, 1000), 0, 0,
+            Color.Coral, Color.Transparent, 0, ShapeKind.Rectangle);
+        using var edited = Capture(settings);
+        AssertTimeline(stage.ShotPreviewSourceBuildCount == builds + 1,
+            "Editing scene geometry reused a stale shot preview source.");
+        stage.ReleaseShotPreviewResources();
+        using var cold = Capture(settings);
+        for (var y = 0; y < edited.Height; y++)
+        for (var x = 0; x < edited.Width; x++)
+            AssertTimeline(edited.GetPixel(x, y) == cold.GetPixel(x, y),
+                "The cached shot preview differed from a fresh full-resolution capture.");
+
+        builds = stage.ShotPreviewSourceBuildCount;
+        stage.RestoreViewState(stage.CaptureViewState() with { CameraX = stage.CameraX + 100 });
+        using var navigated = Capture(settings);
+        AssertTimeline(stage.ShotPreviewSourceBuildCount == builds + 1,
+            "Navigating the Stage reused a stale shot preview source.");
+        stage.SetBounds(0, 0, 360, 200);
+        using var resized = Capture(settings);
+        AssertTimeline(stage.ShotPreviewSourceBuildCount == builds + 2,
+            "Resizing the Stage reused a shot preview source of the old size.");
+        Console.WriteLine("shot_preview_source_cache_regression=ok");
     }
 
     /// <summary>

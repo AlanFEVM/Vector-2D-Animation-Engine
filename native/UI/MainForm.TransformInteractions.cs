@@ -55,16 +55,19 @@ internal sealed partial class MainForm : Form
         var hit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
         if (IsSceneCompositionContext())
         {
-            if (hit.IsValid && _sceneCompositionResult.TryGetOwner(hit.Key.ObjectIndex, out var owner))
+            var objectIndex = hit.IsValid ? hit.Key.ObjectIndex : -1;
+            if (_stage.RendersReferenceProjection)
+                _stage.TryHitTestProjectedObject(e.Location, 5, out objectIndex);
+            if (_sceneCompositionResult.TryGetOwner(objectIndex, out var owner))
             {
-                OpenDrawingObjectEditor(owner.DrawingObjectId);
+                if (!BeginSceneSymbolEditing(owner)) OpenDrawingObjectEditor(owner.DrawingObjectId);
             }
 
             return;
         }
 
         if (_tool is ToolMode.Select or ToolMode.Transform or ToolMode.Distort
-            && (_workspaceTabs.SelectedView == WorkspaceView.BasicDrawing || IsSceneMaskEditing())
+            && (IsDrawingWorkspaceContext || IsSceneMaskEditing())
             && !DrawingToolsBlocked()
             && hit.IsValid
             && (uint)hit.Key.ObjectIndex < _scene.ObjectCount

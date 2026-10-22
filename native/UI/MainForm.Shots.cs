@@ -31,7 +31,7 @@ internal sealed partial class MainForm
     /// presentation with Scene & Animation and replaces the right inspector with the camera surface.
     /// </summary>
     private bool IsSceneWorkspaceSelected =>
-        _workspaceTabs.SelectedView is WorkspaceView.SceneEditor or WorkspaceView.ShotDirector;
+        !IsSymbolEditing && _workspaceTabs.SelectedView is WorkspaceView.SceneEditor or WorkspaceView.ShotDirector;
 
     private void InitializeShotDirector()
     {
@@ -101,6 +101,11 @@ internal sealed partial class MainForm
         {
             if (_shotPreviewOverlay.IsResizing) LayoutShotPreviewOverlay();
         };
+        _shotPreviewOverlay.VisibleChanged += (_, _) => UpdateShotPreviewScheduler();
+        VisibleChanged += (_, _) => UpdateShotPreviewScheduler();
+        Resize += (_, _) => UpdateShotPreviewScheduler();
+        HandleCreated += (_, _) => UpdateShotPreviewScheduler();
+        HandleDestroyed += (_, _) => StopShotPreviewScheduler();
         // A completed user resize changes the preferred monitor size and needs a re-capture at the
         // new pixel size, otherwise the frame would be scaled from the previous resolution.
         _shotPreviewOverlay.PreviewResized += (_, _) =>
@@ -223,7 +228,7 @@ internal sealed partial class MainForm
             // stage preview reclaims or releases the panel width immediately.
             _shotDirectorPanel.Parent?.PerformLayout(_shotDirectorPanel, "Visible");
         }
-        _sceneEditPage.Visible = view == WorkspaceView.SceneEditor && !visible;
+        _sceneEditPage.Visible = view == WorkspaceView.SceneEditor && !visible && !IsSymbolEditing;
         _layerBlendModePanel.Visible = !visible;
         if (visible) _shotDirectorPanel.BringToFront();
         LayoutInspectorCategoryRail();

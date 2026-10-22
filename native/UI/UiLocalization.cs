@@ -459,6 +459,7 @@ internal static class UiLocalization
             ["Line"] = "线条",
             ["Transform"] = "变换",
             ["Symbol"] = "元件",
+            ["Back to scene"] = "返回场景",
             ["Fracture"] = "破碎",
             ["Random Fracture"] = "随机破碎",
             ["Random Fracture parameters"] = "随机破碎参数",

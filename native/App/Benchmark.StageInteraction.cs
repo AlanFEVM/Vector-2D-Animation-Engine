@@ -6,6 +6,7 @@ internal static partial class Benchmark
 {
     private static void RunSceneToolPaletteVisibilityRegression()
     {
+        RunSceneSymbolEditingRegression();
         RunReferenceCameraKeyboardNavigationFixtureRegression();
         RunReferenceCameraRightLookPointerRegression();
         RunSpatialTransformMathRegression();
@@ -1115,6 +1116,96 @@ internal static partial class Benchmark
             projectDirtyField.SetValue(form, false);
             form.Hide();
         }
+    }
+
+    private static void RunSceneSymbolEditingRegression()
+    {
+        using var form = new MainForm
+        {
+            ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30_000, -30_000), Size = new Size(1280, 800)
+        };
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        var timeline = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        var symbol = project.AddDrawingObject("In-place editing fixture");
+        symbol.Scene.AddObject(0, PointF.Empty, new SizeF(400, 400), 0, 0, Color.Red, 4, ShapeKind.Rectangle);
+        var scene = project.Scenes[0];
+        AssertTimeline(project.TryAddSceneInstance(scene.Id, symbol.Id, new PointF(-700, 0), 0, out var selected)
+            && project.TryAddSceneInstance(scene.Id, symbol.Id, new PointF(700, 0), 0, out _),
+            "In-place editing fixture could not place two shared instances.");
+        selected!.RotationZ = 30;
+        selected.ScaleX = selected.ScaleY = 1.3f;
+        form.Show();
+        tabs.SelectedView = WorkspaceView.SceneEditor;
+        Application.DoEvents();
+        RequireMethod(typeof(MainForm), "SetFrame").Invoke(form, [3, true, true, false]);
+        var parentView = stage.CaptureViewState();
+        var parentFrame = stage.Frame;
+        AssertTimeline(stage.TryProjectScenePosition(new System.Numerics.Vector3(-700, 0, 0), out var activePoint, out _)
+            && stage.TryProjectScenePosition(new System.Numerics.Vector3(700, 0, 0), out _, out _),
+            "In-place editing fixture could not project scene instances.");
+        stage.TryProjectScenePosition(new System.Numerics.Vector3(700, 0, 0), out var otherPoint, out _);
+        var sourceCount = symbol.Scene.ObjectCount;
+        var sourceLayers = symbol.Scene.LayerCount;
+        var visibleLayers = symbol.Scene.LayerVisible.ToArray();
+        RequireMethod(typeof(MainForm), "StageMouseDoubleClick").Invoke(form,
+            [stage, new MouseEventArgs(MouseButtons.Left, 2, (int)activePoint.X, (int)activePoint.Y, 0)]);
+        AssertTimeline(tabs.SelectedView == WorkspaceView.SceneEditor
+            && ReferenceEquals(stage.Scene, symbol.Scene) && ReferenceEquals(timeline.Context, symbol)
+            && stage.SymbolEditingReference is not null,
+            "Double-click did not bind the shared source symbol and timeline inside Scene & Animation.");
+        var reference = stage.SymbolEditingReference!;
+        var hiddenPixel = reference.GetPixel((int)activePoint.X, (int)activePoint.Y);
+        var otherPixel = reference.GetPixel((int)otherPoint.X, (int)otherPoint.Y);
+        AssertTimeline(!(hiddenPixel.R > 230 && hiddenPixel.G < 50)
+            && otherPixel.R > 230 && otherPixel.G < 50
+            && symbol.Scene.LayerVisible.SequenceEqual(visibleLayers) && symbol.Scene.LayerCount == sourceLayers,
+            "Scene reference hid another placement, retained the edited placement, or modified source layers.");
+        var mapped = System.Numerics.Vector2.Transform(new(activePoint.X, activePoint.Y), stage.SymbolReferenceToScreen());
+        var localOrigin = stage.WorldToScreen(0, 0);
+        AssertTimeline(System.Numerics.Vector2.Distance(mapped, new(localOrigin.X, localOrigin.Y)) < 1,
+            "Rotated/scaled instance reference did not align with symbol-local editing coordinates.");
+        var toolVisible = RequireMethod(typeof(MainForm), "IsToolVisibleForCurrentContext");
+        AssertTimeline(Enum.GetValues<ToolMode>().Where(tool => tool != ToolMode.Transform3D)
+            .All(tool => toolVisible.Invoke(form, [tool]) is true),
+            "In-place symbol editing did not restore all drawing tools.");
+        var activate = RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]);
+        var down = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var move = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var up = RequireMethod(typeof(MainForm), "StageMouseUp");
+        void DrawRectangle()
+        {
+            activate.Invoke(form, [ToolMode.Rectangle]);
+            var start = Point.Round(stage.WorldToScreen(-550, -400));
+            var end = Point.Round(stage.WorldToScreen(-250, -100));
+            down.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, start.X, start.Y, 0)]);
+            move.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, end.X, end.Y, 0)]);
+            up.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, end.X, end.Y, 0)]);
+        }
+        DrawRectangle();
+        AssertTimeline(symbol.Scene.ObjectCount > sourceCount && ReferenceEquals(stage.SymbolEditingReference, reference),
+            "In-place drawing did not edit the source or lost its scene reference.");
+        RequireMethod(typeof(MainForm), "UndoLastEdit").Invoke(form, null);
+        AssertTimeline(symbol.Scene.ObjectCount == sourceCount && ReferenceEquals(stage.SymbolEditingReference, reference),
+            "Undo did not restore source geometry while preserving the scene reference.");
+        DrawRectangle();
+        var editedCount = symbol.Scene.ObjectCount;
+        AssertTimeline(RequireMethod(typeof(MainForm), "ExitSceneSymbolEditing").Invoke(form, null) is true
+            && ReferenceEquals(timeline.Context, scene) && stage.SymbolEditingReference is null
+            && stage.Frame == parentFrame && stage.CaptureViewState() == parentView
+            && stage.Scene.ObjectCount == editedCount * 2,
+            "Returning to scene did not restore the frame/view or rebuild both shared placements.");
+        AssertTimeline(toolVisible.Invoke(form, [ToolMode.Rectangle]) is false,
+            "Returning to scene left drawing tools active on instance composition.");
+        var owner = new SceneCompositionObjectOwner(selected.Id, symbol.Id, selected.Id);
+        AssertTimeline(RequireMethod(typeof(MainForm), "BeginSceneSymbolEditing").Invoke(form, [owner]) is true,
+            "A second in-place session could not start.");
+        RequireMethod(typeof(MainForm), "SelectScene").Invoke(form, [0]);
+        AssertTimeline(ReferenceEquals(timeline.Context, scene) && stage.SymbolEditingReference is null,
+            "Scene selection retained an obsolete in-place reference or symbol timeline.");
+        Console.WriteLine("scene_symbol_editing=ok,shared_source=ok,reference_isolation=ok,local_transform=ok,drawing_undo=ok,return_context=ok");
     }
 
     private static void RunReferenceCameraRightLookPointerRegression()
