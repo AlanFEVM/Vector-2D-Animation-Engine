@@ -112,7 +112,8 @@ internal sealed partial class StageControl : Control
     private RenderStats DrawCollectedObjects(Graphics g, int drawLimit)
     {
         var scene = Scene;
-        if (scene.RequiresIsolatedLayerCompositing)
+        if (scene.RequiresIsolatedLayerCompositing
+            || IsUnderlayHostScene(scene) && UnderlayScene?.RequiresIsolatedLayerCompositing == true)
         {
             return DrawCollectedObjectsComposited(g, scene, drawLimit);
         }
@@ -120,11 +121,15 @@ internal sealed partial class StageControl : Control
         var drawn = _renderOrder.DrawLayers(
             scene,
             drawLimit,
-            (layer, objects, start) => DrawLayerObjects(g, scene, layer, objects, start));
+            (layer, objects, start) => DrawLayerObjects(g, scene, layer, objects, start),
+            includeEmptyLayers: IsUnderlayHostScene(scene),
+            firstLayer: _underlayDrawingRange?.Start ?? 0,
+            endLayer: _underlayDrawingRange is { } range ? range.Start + range.Count : int.MaxValue);
         return new RenderStats(_renderOrder.VisibleCount, drawn, _renderOrder.VisibleAtoms, 0, _renderOrder.ScannedCount, false);
     }
 
-    private RenderStats DrawCollectedObjectsComposited(Graphics graphics, VectorScene scene, int drawLimit)
+    private RenderStats DrawCollectedObjectsComposited(Graphics graphics, VectorScene scene, int drawLimit,
+        Bitmap? destinationSurface = null, LayerBlendCompositor? destinationCompositor = null)
     {
         var starts = new int[scene.LayerCount];
         var skip = Math.Max(0, _renderOrder.VisibleCount - drawLimit);
@@ -135,19 +140,28 @@ internal sealed partial class StageControl : Control
             var start = Math.Min(skip, objects.Count);
             starts[layer] = start;
             skip -= start;
-            drawn += objects.Count - start;
+            if (_underlayDrawingRange is not { } range || layer >= range.Start && layer < range.Start + range.Count)
+                drawn += objects.Count - start;
         }
 
-        var compositor = LayerCompositor();
-        compositor.CompositeTo(graphics, scene, (layerGraphics, layer) =>
+        var compositor = destinationCompositor ?? LayerCompositor();
+        void DrawLayer(Graphics layerGraphics, int layer)
         {
+            if (_underlayDrawingRange is { } range && (layer < range.Start || layer >= range.Start + range.Count)) return;
             DrawLayerObjects(
                 layerGraphics,
                 scene,
                 layer,
                 _renderOrder.GetLayerObjects(layer),
                 starts[layer]);
-        });
+        }
+        if (destinationSurface is not null && _underlayDrawingRange is { } selectedRange)
+        {
+            graphics.Flush(FlushIntention.Sync);
+            using var clip = graphics.Clip;
+            compositor.CompositeRangeOnto(destinationSurface, scene, selectedRange.Start, selectedRange.Count, clip, DrawLayer);
+        }
+        else compositor.CompositeTo(graphics, scene, DrawLayer);
         return new RenderStats(_renderOrder.VisibleCount, drawn, _renderOrder.VisibleAtoms, 0, _renderOrder.ScannedCount, false);
     }
 
@@ -155,6 +169,12 @@ internal sealed partial class StageControl : Control
     {
         var size = new Size(Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height));
         var padding = LayerFilterBounds.GetPadding(Scene, ActiveViewZoom);
+        if (IsUnderlayHostScene(Scene) && UnderlayScene is { } underlay)
+        {
+            var childPadding = LayerFilterBounds.GetPadding(underlay, ActiveViewZoom);
+            padding = new SymbolFilterPadding(padding.Left + childPadding.Left, padding.Top + childPadding.Top,
+                padding.Right + childPadding.Right, padding.Bottom + childPadding.Bottom);
+        }
         if (_layerBlendCompositor is not null && _layerBlendCompositor.Size == size
             && _layerBlendCompositor.Padding == padding
             && _layerBlendCompositor.FilterPixelScale == ActiveViewZoom) return _layerBlendCompositor;
@@ -352,12 +372,12 @@ internal sealed partial class StageControl : Control
         if (!scene.ShouldRenderLayerContent(layer)) return;
         if (layerKind == DrawingLayerKind.Mask)
         {
-            DrawLayerObjectsUnmasked(graphics, scene, layer, objects, start);
+            DrawLayerContents(graphics, scene, layer, objects, start);
             return;
         }
         if (!scene.TryGetMaskLayerIndex(layer, out var maskLayer))
         {
-            DrawLayerObjectsUnmasked(graphics, scene, layer, objects, start);
+            DrawLayerContents(graphics, scene, layer, objects, start);
             return;
         }
 
@@ -369,11 +389,40 @@ internal sealed partial class StageControl : Control
         try
         {
             graphics.SetClip(maskPath, CombineMode.Intersect);
-            DrawLayerObjectsUnmasked(graphics, scene, layer, objects, start);
+            DrawLayerContents(graphics, scene, layer, objects, start);
         }
         finally
         {
             graphics.Restore(state);
+        }
+    }
+
+    private void DrawLayerContents(Graphics graphics, VectorScene scene, int layer, IReadOnlyList<int> objects, int start)
+    {
+        DrawLayerObjectsUnmasked(graphics, scene, layer, objects, start);
+        if (!TryGetUnderlayLayerRange(scene, layer, out var range) || UnderlayScene is not { } underlay) return;
+        var renderOrder = _renderOrder;
+        var compositor = _layerBlendCompositor;
+        var destinationSurface = compositor?.CurrentLayerSurface;
+        Scene = underlay;
+        _renderOrder = _underlayRenderOrder;
+        _layerBlendCompositor = _underlayLayerBlendCompositor;
+        _underlayDrawingRange = range;
+        try
+        {
+            // Use the same collected child geometry inside the host's mask and
+            // compositing surface, after its local fill/stroke passes.
+            _underlayDrawnObjects += destinationSurface is not null && underlay.RequiresIsolatedLayerCompositing
+                ? DrawCollectedObjectsComposited(graphics, underlay, _underlayDrawLimit, destinationSurface, compositor).DrawnObjects
+                : DrawCollectedObjects(graphics, _underlayDrawLimit).DrawnObjects;
+        }
+        finally
+        {
+            _underlayDrawingRange = null;
+            _underlayLayerBlendCompositor = _layerBlendCompositor;
+            _layerBlendCompositor = compositor;
+            _renderOrder = renderOrder;
+            Scene = scene;
         }
     }
 

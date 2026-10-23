@@ -684,7 +684,14 @@ internal sealed partial class StageControl : Control
     private readonly System.Windows.Forms.Timer _selectionSweepTimer = new() { Interval = 16 };
     private readonly System.Windows.Forms.Timer _zoomLodPreviewTimer = new() { Interval = ZoomLodPreviewIdleMilliseconds };
     private readonly Direct2DStageRenderer _direct2DRenderer = new();
-    private readonly SceneRenderOrderBuffer _renderOrder = new();
+    private SceneRenderOrderBuffer _renderOrder = new();
+    private readonly SceneRenderOrderBuffer _underlayRenderOrder = new();
+    private VectorScene? _underlayHostScene;
+    private IReadOnlyDictionary<int, (int Start, int Count)>? _underlayHostLayerRanges;
+    private int _underlayDrawLimit;
+    private int _underlayDrawnObjects;
+    private (int Start, int Count)? _underlayDrawingRange;
+    private LayerBlendCompositor? _underlayLayerBlendCompositor;
     private readonly MixingBrushRegionRasterCache _mixingBrushRasterCache = new();
     private readonly Dictionary<DistortRasterCacheKey, Bitmap> _distortRasterCache = new();
     private readonly Dictionary<(VectorScene Scene, int ObjectIndex), DistortedVectorGeometryCacheEntry>
@@ -1349,6 +1356,8 @@ internal sealed partial class StageControl : Control
         ReleaseShotPreviewResources();
         _layerBlendCompositor?.Dispose();
         _layerBlendCompositor = null;
+        _underlayLayerBlendCompositor?.Dispose();
+        _underlayLayerBlendCompositor = null;
         _mixingBrushRasterCache.Clear();
         ClearDistortPreviewCore(invalidate: false);
         _distortedVectorGeometryCache.Clear();
@@ -1627,6 +1636,8 @@ internal sealed partial class StageControl : Control
         Scene = scene;
         SetSymbolEditingReference(null);
         UnderlayScene = null;
+        _underlayHostScene = null;
+        _underlayHostLayerRanges = null;
         OnionSkinScene = null;
         DragPreviewScene = null;
         _dragPreviewSourceScene = null;
@@ -1653,12 +1664,26 @@ internal sealed partial class StageControl : Control
         RaiseViewChanged();
     }
 
-    public void BindUnderlayScene(VectorScene? scene)
+    public void BindUnderlayScene(VectorScene? scene,
+        IReadOnlyDictionary<int, (int Start, int Count)>? hostLayerRanges = null)
     {
         var next = scene is { ObjectCount: > 0 } ? scene : null;
-        if (ReferenceEquals(UnderlayScene, next)) return;
+        if (ReferenceEquals(UnderlayScene, next) && ReferenceEquals(_underlayHostLayerRanges, hostLayerRanges)) return;
         UnderlayScene = next;
+        _underlayHostScene = next is not null && hostLayerRanges is { Count: > 0 } ? Scene : null;
+        _underlayHostLayerRanges = next is not null ? hostLayerRanges : null;
         Invalidate();
+    }
+
+    internal bool HasLayeredUnderlay => UnderlayScene is not null && _underlayHostScene is not null;
+
+    internal bool IsUnderlayHostScene(VectorScene scene) => HasLayeredUnderlay && ReferenceEquals(scene, _underlayHostScene);
+
+    internal bool TryGetUnderlayLayerRange(VectorScene scene, int layer, out (int Start, int Count) range)
+    {
+        range = default;
+        return IsUnderlayHostScene(scene) && _underlayHostLayerRanges is not null
+            && _underlayHostLayerRanges.TryGetValue(layer, out range);
     }
 
     public void BindOnionSkinScene(VectorScene? scene)
@@ -3382,6 +3407,7 @@ internal sealed partial class StageControl : Control
         var underlayStats = default(RenderStats);
         var onionSkinStats = default(RenderStats);
         var underlay = UnderlayScene;
+        var layeredUnderlay = IsUnderlayHostScene(editableScene);
         var underlayLimit = objectDrawLimit;
         var forceEditableObjectRenderer = SelectionFillDragFrontActive
             || FillEdgeBezierPointerEditing && UsesObjectRenderer(editableScene)
@@ -3407,7 +3433,21 @@ internal sealed partial class StageControl : Control
             onionSkinStats = DrawSceneGdi(g, onionSkin, onionSkinLimit);
         }
 
-        if (underlay is not null)
+        if (underlay is not null && layeredUnderlay)
+        {
+            var bounds = VisibleWorldBounds();
+            var padding = LayerFilterBounds.GetPadding(underlay, ActiveViewZoom);
+            bounds.Inflate(Math.Max(padding.Left, padding.Right) / WorldLengthToScreen(1),
+                Math.Max(padding.Top, padding.Bottom) / WorldLengthToScreen(1));
+            _underlayRenderOrder.Collect(underlay, bounds, Frame);
+            _underlayDrawLimit = underlay.HasSymbolFilters ? int.MaxValue : underlayLimit;
+            _underlayDrawnObjects = 0;
+            RecordUnderlayScenePass();
+            underlayStats = new RenderStats(_underlayRenderOrder.VisibleCount,
+                Math.Min(_underlayDrawLimit, _underlayRenderOrder.VisibleCount), _underlayRenderOrder.VisibleAtoms,
+                0, _underlayRenderOrder.ScannedCount, false);
+        }
+        else if (underlay is not null)
         {
             RecordUnderlayScenePass();
             underlayStats = DrawSceneGdi(g, underlay, underlayLimit);
@@ -3420,6 +3460,7 @@ internal sealed partial class StageControl : Control
             editableScene,
             editableLimit,
             forceObjectRenderer: forceEditableObjectRenderer);
+        if (layeredUnderlay) underlayStats = underlayStats with { DrawnObjects = _underlayDrawnObjects };
         LastStats = RenderStats.Combine(RenderStats.Combine(onionSkinStats, underlayStats), editableStats);
         return editableStats;
     }
@@ -3476,6 +3517,8 @@ internal sealed partial class StageControl : Control
         try
         {
             var pixelZoom = EffectivePixelZoom();
+            if (IsUnderlayHostScene(scene))
+                return DrawObjects(graphics, forceObjectRenderer || scene.HasSymbolFilters ? int.MaxValue : objectDrawLimit);
             if (forceObjectRenderer || scene.HasSymbolFilters)
             {
                 return DrawObjects(graphics, int.MaxValue);
@@ -3651,6 +3694,8 @@ internal sealed partial class StageControl : Control
             ClearCollisionTerrainOverlayPath();
             _layerBlendCompositor?.Dispose();
             _layerBlendCompositor = null;
+            _underlayLayerBlendCompositor?.Dispose();
+            _underlayLayerBlendCompositor = null;
             _mixingBrushRasterCache.Dispose();
             ClearDistortPreviewCore(invalidate: false);
             ImportedSvgRasterizer.ClearCache();

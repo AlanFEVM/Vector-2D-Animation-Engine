@@ -2791,7 +2791,7 @@ internal sealed partial class MainForm : Form
             }
             if (keyData == Keys.Escape && CancelTraditionalPenPath()) return true;
             if (keyData == Keys.Escape && CancelPenCurve()) return true;
-            if (keyData == Keys.Escape && IsSymbolEditing) return ExitSceneSymbolEditing();
+            if (keyData == Keys.Escape && IsSymbolEditing) return ExitParentSymbolEditing();
             if (!(commandButtonFocused && physicalKeyData == Keys.Enter) && HandleTimelineShortcut(keyData)) return true;
             if (TryActivateConfiguredToolShortcut(physicalKeyData)) return true;
             if (keyData == Keys.OemOpenBrackets && AdjustFreehandWidth(increase: false)) return true;

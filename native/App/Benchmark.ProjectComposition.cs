@@ -100,6 +100,12 @@ internal static partial class Benchmark
             initialNestedRootIds.SequenceEqual([firstToSecond!.Id, firstToThird!.Id])
             && FrontRootInstanceId(initialNestedStackScene, initialNestedStack) == firstToSecond.Id,
             $"Nested drawing-object composition did not expose its initial same-layer stack order: {string.Join(',', initialNestedRootIds)}.");
+        var frontNestedHit = initialNestedStackScene.HitTestElement(PointF.Empty, 0, 0);
+        AssertTimeline(
+            frontNestedHit.IsValid
+            && initialNestedStack.TryGetOwner(frontNestedHit.Key.ObjectIndex, out var frontNestedOwner)
+            && frontNestedOwner.DrawingObjectId == third.Id,
+            "A symbol's local drawing covered a nested instance on the same layer.");
         AssertTimeline(
             !project.CanMoveDrawingObjectInstancesInLayer(first.Id, [firstToSecond.Id], 1)
             && !project.TryMoveDrawingObjectInstancesInLayer(first.Id, [firstToSecond.Id], 1)

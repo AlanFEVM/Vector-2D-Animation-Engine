@@ -1013,7 +1013,7 @@ internal sealed partial class MainForm : Form
         try
         {
             PlaceDrawingObjectInstancePanel(sceneWorkspace);
-            _workspaceHeader.Height = ScaleResponsive(74, DeviceDpi / 96d);
+            _workspaceHeader.Height = ScaleResponsive(IsSymbolEditing ? 92 : 74, DeviceDpi / 96d);
             _drawingObjectRow.Visible = basicDrawing;
             _sceneDimensionButton.Visible = sceneWorkspace && _applicationSettings.Experimental3DEnabled;
             _timeline.Visible = true;

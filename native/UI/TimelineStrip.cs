@@ -1408,6 +1408,7 @@ internal sealed partial class TimelineStrip : Control
                     if (IsTrackEditableInCurrentPresentation(trackIndex))
                     {
                         SelectLayerTrack(trackIndex, ModifierKeys);
+                        SetFrameSelection([], null);
                     }
 
                     return;
@@ -1447,6 +1448,9 @@ internal sealed partial class TimelineStrip : Control
                 else
                 {
                     SelectLayerTrack(trackIndex, ModifierKeys);
+                    // Layer-name clicks resume editing this row at the playhead; an old frame
+                    // selection would otherwise keep the editing highlight on another layer.
+                    SetFrameSelection([], null);
                     if (IsTrackLayer(trackIndex) && (ModifierKeys & (Keys.Control | Keys.Shift)) == Keys.None)
                     {
                         BeginLayerDrag(trackIndex, e.Y, layout);

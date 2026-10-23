@@ -66,6 +66,14 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (TryResolveSceneInstanceAt(world, out var nestedInstance))
+        {
+            var owner = new SceneCompositionObjectOwner(nestedInstance.Id,
+                nestedInstance.DrawingObjectId, nestedInstance.Id);
+            if (IsSymbolEditing && BeginSceneSymbolEditing(owner)) return;
+            if (OpenDrawingObjectEditor(owner.DrawingObjectId)) return;
+        }
+
         if (_tool is ToolMode.Select or ToolMode.Transform or ToolMode.Distort
             && (IsDrawingWorkspaceContext || IsSceneMaskEditing())
             && !DrawingToolsBlocked()
@@ -84,17 +92,6 @@ internal sealed partial class MainForm : Form
             ActivateTool(ToolMode.Text);
             BeginExistingTextEdit(textObject);
             return;
-        }
-
-        if (!hit.IsValid && _stage.UnderlayScene is { } underlay)
-        {
-            var underlayHit = underlay.HitTestElement(world, 0, SelectionToleranceWorld());
-            if (underlayHit.IsValid
-                && _drawingObjectUnderlayResult.TryGetOwner(underlayHit.Key.ObjectIndex, out var owner)
-                && OpenDrawingObjectEditor(owner.DrawingObjectId))
-            {
-                return;
-            }
         }
 
         if (_tool != ToolMode.Select) return;
@@ -578,9 +575,12 @@ internal sealed partial class MainForm : Form
             return true;
         }
 
-        var localHit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
-        if (localHit.IsValid && _scene.IsObjectSelectable(localHit.Key.ObjectIndex, _frame)) return false;
-        if (!TryResolveSceneInstanceAt(world, out _) && !IsPointerInsideSelectedSceneInstance(world)) return false;
+        if (!TryResolveSceneInstanceAt(world, out _))
+        {
+            var localHit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
+            if (localHit.IsValid && _scene.IsObjectSelectable(localHit.Key.ObjectIndex, _frame)) return false;
+            if (!IsPointerInsideSelectedSceneInstance(world)) return false;
+        }
 
         BeginSceneCompositionPointer(e);
         return true;

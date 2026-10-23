@@ -59,7 +59,11 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private readonly Dictionary<ImportedSvgRasterKey, CachedImportedSvgBitmap> _importedSvgBitmapCache = new();
     private readonly Dictionary<(BitmapImageRasterKey Key, int Level), CachedImportedSvgBitmap> _bitmapObjectCache = new();
     private long _bitmapObjectCacheBytes;
-    private readonly SceneRenderOrderBuffer _renderOrder = new();
+    private SceneRenderOrderBuffer _renderOrder = new();
+    private readonly SceneRenderOrderBuffer _underlayRenderOrder = new();
+    private int _underlayDrawLimit;
+    private int _underlayDrawnObjects;
+    private (int Start, int Count)? _underlayDrawingRange;
     private ID2D1Factory1? _factory;
     private ID2D1RenderTarget? _target;
     private StageGpuDevice? _gpuDevice;
@@ -880,6 +884,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 var underlayStats = default(RenderStats);
                 var onionSkinStats = default(RenderStats);
                 var underlay = stage.UnderlayScene;
+                var layeredUnderlay = stage.IsUnderlayHostScene(editableScene);
                 var underlayLimit = objectDrawLimit;
                 var forceEditableObjectRenderer = stage.SelectionFillDragFrontActive
                     || stage.FillEdgeBezierPointerEditing
@@ -907,7 +912,17 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                     onionSkinStats = DrawScene(stage, onionSkinLimit);
                 }
 
-                if (underlay is not null)
+                if (underlay is not null && layeredUnderlay)
+                {
+                    _underlayRenderOrder.Collect(underlay, stage.VisibleWorldBounds(), stage.Frame);
+                    _underlayDrawLimit = underlayLimit;
+                    _underlayDrawnObjects = 0;
+                    stage.RecordUnderlayScenePass();
+                    underlayStats = new RenderStats(_underlayRenderOrder.VisibleCount,
+                        Math.Min(underlayLimit, _underlayRenderOrder.VisibleCount), _underlayRenderOrder.VisibleAtoms,
+                        0, _underlayRenderOrder.ScannedCount, false);
+                }
+                else if (underlay is not null)
                 {
                     stage.Scene = underlay;
                     stage.RecordUnderlayScenePass();
@@ -921,6 +936,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                     stage,
                     editableLimit,
                     forceObjectRenderer: forceEditableObjectRenderer);
+                if (layeredUnderlay) underlayStats = underlayStats with { DrawnObjects = _underlayDrawnObjects };
                 stats = RenderStats.Combine(RenderStats.Combine(onionSkinStats, underlayStats), editableStats);
                 if (stage.PlaybackActive)
                 {
@@ -1467,6 +1483,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         bool forceObjectRenderer = false)
     {
         var pixelZoom = EffectivePixelZoom(stage.Zoom);
+        if (stage.IsUnderlayHostScene(stage.Scene))
+            return DrawObjects(stage, forceObjectRenderer ? int.MaxValue : objectDrawLimit);
         if (forceObjectRenderer)
         {
             return DrawObjects(stage, int.MaxValue);
@@ -1694,7 +1712,10 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         var drawn = _renderOrder.DrawLayers(
             scene,
             drawLimit,
-            (layer, objects, start) => DrawLayerObjects(stage, scene, layer, objects, start));
+            (layer, objects, start) => DrawLayerObjects(stage, scene, layer, objects, start),
+            includeEmptyLayers: stage.IsUnderlayHostScene(scene),
+            firstLayer: _underlayDrawingRange?.Start ?? 0,
+            endLayer: _underlayDrawingRange is { } range ? range.Start + range.Count : int.MaxValue);
         DiagnosticObjectDrawMilliseconds += Stopwatch.GetElapsedTime(drawStarted).TotalMilliseconds;
         return new RenderStats(_renderOrder.VisibleCount, drawn, _renderOrder.VisibleAtoms, 0, _renderOrder.ScannedCount, false);
     }
@@ -1866,12 +1887,12 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         if (!scene.ShouldRenderLayerContent(layer)) return;
         if (layerKind == DrawingLayerKind.Mask)
         {
-            DrawLayerObjectsUnmasked(stage, scene, layer, objects, start);
+            DrawLayerContents(stage, scene, layer, objects, start);
             return;
         }
         if (!scene.TryGetMaskLayerIndex(layer, out var maskLayer))
         {
-            DrawLayerObjectsUnmasked(stage, scene, layer, objects, start);
+            DrawLayerContents(stage, scene, layer, objects, start);
             return;
         }
 
@@ -1893,11 +1914,31 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         _target.PushLayer(parameters, targetLayer);
         try
         {
-            DrawLayerObjectsUnmasked(stage, scene, layer, objects, start);
+            DrawLayerContents(stage, scene, layer, objects, start);
         }
         finally
         {
             _target.PopLayer();
+        }
+    }
+
+    private void DrawLayerContents(StageControl stage, VectorScene scene, int layer, IReadOnlyList<int> objects, int start)
+    {
+        DrawLayerObjectsUnmasked(stage, scene, layer, objects, start);
+        if (!stage.TryGetUnderlayLayerRange(scene, layer, out var range) || stage.UnderlayScene is not { } underlay) return;
+        var renderOrder = _renderOrder;
+        stage.Scene = underlay;
+        _renderOrder = _underlayRenderOrder;
+        _underlayDrawingRange = range;
+        try
+        {
+            _underlayDrawnObjects += DrawCollectedObjects(stage, _underlayDrawLimit).DrawnObjects;
+        }
+        finally
+        {
+            _underlayDrawingRange = null;
+            _renderOrder = renderOrder;
+            stage.Scene = scene;
         }
     }
 

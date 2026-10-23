@@ -7,6 +7,7 @@ internal static partial class Benchmark
     private static void RunSceneToolPaletteVisibilityRegression()
     {
         RunSceneSymbolEditingRegression();
+        RunRecursiveSceneSymbolEditingRegression();
         RunReferenceCameraKeyboardNavigationFixtureRegression();
         RunReferenceCameraRightLookPointerRegression();
         RunSpatialTransformMathRegression();
@@ -1206,6 +1207,92 @@ internal static partial class Benchmark
         AssertTimeline(ReferenceEquals(timeline.Context, scene) && stage.SymbolEditingReference is null,
             "Scene selection retained an obsolete in-place reference or symbol timeline.");
         Console.WriteLine("scene_symbol_editing=ok,shared_source=ok,reference_isolation=ok,local_transform=ok,drawing_undo=ok,return_context=ok");
+    }
+
+    private static void RunRecursiveSceneSymbolEditingRegression()
+    {
+        using var form = new MainForm
+        {
+            ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30_000, -30_000), Size = new Size(1280, 800)
+        };
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        var timeline = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        var pathPanel = (FlowLayoutPanel)RequireField(typeof(MainForm), "_drawingObjectTabs").GetValue(form)!;
+        var parent = project.AddDrawingObject("Character & props");
+        var child = project.AddDrawingObject("Arm");
+        var leaf = project.AddDrawingObject("Hand");
+        leaf.Scene.AddObject(0, PointF.Empty, new SizeF(300, 300), 0, 0, Color.Red, 4, ShapeKind.Rectangle);
+        AssertTimeline(project.TryAddDrawingObjectInstance(parent.Id, child.Id, PointF.Empty, out var arm),
+            "Recursive editing fixture could not create its parent placement.");
+        AssertTimeline(project.TryAddDrawingObjectInstance(child.Id, leaf.Id, PointF.Empty, out var hand),
+            "Recursive editing fixture could not create nested placements.");
+        var scene = project.Scenes[0];
+        AssertTimeline(project.TryAddSceneInstance(scene.Id, parent.Id, PointF.Empty, 0, out var root),
+            "Recursive editing fixture could not place the parent symbol.");
+        arm!.RotationZ = 25;
+        arm.ScaleX = arm.ScaleY = 1.2f;
+        form.Show();
+        tabs.SelectedView = WorkspaceView.SceneEditor;
+        Application.DoEvents();
+        var sceneView = stage.CaptureViewState();
+        var sceneFrame = stage.Frame;
+        var begin = RequireMethod(typeof(MainForm), "BeginSceneSymbolEditing");
+        var doubleClick = RequireMethod(typeof(MainForm), "StageMouseDoubleClick");
+        var command = RequireMethod(typeof(MainForm), "ProcessCmdKey");
+        var parentExit = RequireMethod(typeof(MainForm), "ExitParentSymbolEditing");
+        AssertTimeline(begin.Invoke(form, [new SceneCompositionObjectOwner(root!.Id, parent.Id, root.Id)]) is true,
+            "Recursive editing fixture could not enter its root placement.");
+        var parentReference = stage.SymbolEditingReference;
+        var parentView = stage.CaptureViewState();
+        var parentFrame = stage.Frame;
+        void DoubleClickOrigin()
+        {
+            var point = Point.Round(stage.WorldToScreen(0, 0));
+            doubleClick.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 2, point.X, point.Y, 0)]);
+        }
+        DoubleClickOrigin();
+        AssertTimeline(tabs.SelectedView == WorkspaceView.SceneEditor && ReferenceEquals(timeline.Context, child)
+            && stage.SymbolEditingReference is not null && !ReferenceEquals(stage.SymbolEditingReference, parentReference),
+            "Double-clicking a nested placement left scene editing or lost its own reference.");
+        var childReference = stage.SymbolEditingReference;
+        var childView = stage.CaptureViewState();
+        var childFrame = stage.Frame;
+        DoubleClickOrigin();
+        var names = pathPanel.Controls.OfType<Button>().Where(button => button.Visible).Select(button => button.Text).ToArray();
+        AssertTimeline(ReferenceEquals(timeline.Context, leaf)
+            && names.SequenceEqual(new[] { scene.Name, $"› {parent.Name}", $"› {child.Name}", $"› {leaf.Name}" }),
+            "Recursive editing did not show the complete ordered scene-to-leaf breadcrumb.");
+        object?[] escapeArguments = [default(Message), Keys.Escape];
+        AssertTimeline(command.Invoke(form, escapeArguments) is true
+            && ReferenceEquals(timeline.Context, child) && ReferenceEquals(stage.SymbolEditingReference, childReference)
+            && stage.Frame == childFrame && stage.CaptureViewState() == childView
+            && Equals(RequireField(typeof(MainForm), "_selectedSceneInstanceId").GetValue(form), hand!.Id),
+            "Esc did not restore exactly one parent level, reference, frame, view and placement selection.");
+        DoubleClickOrigin();
+        pathPanel.Controls.OfType<Button>().Single(button => button.Text == $"› {parent.Name}").PerformClick();
+        AssertTimeline(ReferenceEquals(timeline.Context, parent) && ReferenceEquals(stage.SymbolEditingReference, parentReference)
+            && stage.Frame == parentFrame && stage.CaptureViewState() == parentView
+            && Equals(RequireField(typeof(MainForm), "_selectedSceneInstanceId").GetValue(form), arm.Id),
+            "Ancestor breadcrumb did not return directly to the requested parent context.");
+        DoubleClickOrigin();
+        DoubleClickOrigin();
+        var sceneButton = (Button)RequireField(typeof(MainForm), "_symbolEditingReturnButton").GetValue(form)!;
+        sceneButton.PerformClick();
+        AssertTimeline(ReferenceEquals(timeline.Context, scene) && stage.SymbolEditingReference is null
+            && stage.Frame == sceneFrame && stage.CaptureViewState() == sceneView && !pathPanel.AutoScroll,
+            "Scene breadcrumb did not exit all recursive editing levels and restore the scene.");
+        begin.Invoke(form, [new SceneCompositionObjectOwner(root.Id, parent.Id, root.Id)]);
+        DoubleClickOrigin();
+        DoubleClickOrigin();
+        tabs.SelectedView = WorkspaceView.BasicDrawing;
+        AssertTimeline(stage.SymbolEditingReference is null && parentExit.Invoke(form, null) is false,
+            "Workspace switch retained a recursive editing session or reference.");
+        RequireField(typeof(MainForm), "_projectDirty").SetValue(form, false);
+        form.Hide();
+        Console.WriteLine("recursive_symbol_editing=ok,complete_breadcrumb=ok,parent_escape=ok,ancestor_return=ok,recursive_cleanup=ok");
     }
 
     private static void RunReferenceCameraRightLookPointerRegression()

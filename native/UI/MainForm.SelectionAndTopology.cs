@@ -989,7 +989,7 @@ internal sealed partial class MainForm : Form
     private bool TryResolveSceneInstanceAt(PointF world, out DrawingObjectInstanceDefinition instance)
     {
         var compositionScene = ActiveInstanceCompositionScene();
-        return TryResolveCompositionInstance(
+        if (!TryResolveCompositionInstance(
             compositionScene,
             ActiveInstanceCompositionResult(),
             ActiveEditableInstances(),
@@ -999,7 +999,15 @@ internal sealed partial class MainForm : Form
             out instance,
             UsesFlatSceneMaskSelectionClipping(compositionScene)
                 ? _stage.SceneCompositionMaskClips
-                : null);
+                : null)) return false;
+        if (IsSceneCompositionContext()) return true;
+
+        var localHit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
+        if (!localHit.IsValid || !_scene.IsObjectSelectable(localHit.Key.ObjectIndex, _frame)) return true;
+        var hostLayer = Array.IndexOf(_scene.LayerIds, instance.SceneLayerId);
+        if (hostLayer >= 0 && hostLayer <= _scene.ObjectLayer[localHit.Key.ObjectIndex]) return true;
+        instance = null!;
+        return false;
     }
 
     internal static bool TryResolveCompositionInstance(
@@ -2451,8 +2459,6 @@ internal sealed partial class MainForm : Form
         if (IsSceneCompositionContext() || ActiveDrawingObject()?.Instances.Count is not > 0) return false;
 
         var world = _stage.ScreenToWorld(screen);
-        var localHit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
-        if (localHit.IsValid && _scene.IsObjectSelectable(localHit.Key.ObjectIndex, _frame)) return false;
         return TryResolveSceneInstanceAt(world, out instance);
     }
 

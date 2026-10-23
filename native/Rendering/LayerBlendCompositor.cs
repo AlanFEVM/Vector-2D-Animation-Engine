@@ -30,6 +30,15 @@ internal sealed class LayerBlendCompositor : IDisposable
     public Size SurfaceSize => new(_width, _height);
     public SymbolFilterPadding Padding { get; }
     public float FilterPixelScale { get; }
+    internal Bitmap? CurrentLayerSurface { get; private set; }
+
+    internal void CompositeRangeOnto(Bitmap destination, VectorScene scene, int firstLayer, int layerCount,
+        Region clip, Action<Graphics, int> drawLayer)
+    {
+        var children = BuildLayerTree(scene);
+        CompositeChildren(scene, children, scene.LayerCount, destination, drawLayer,
+            firstLayer, firstLayer + layerCount, clip);
+    }
 
     public void CompositeTo(Graphics destination, VectorScene scene, Action<Graphics, int> drawLayer)
     {
@@ -108,13 +117,16 @@ internal sealed class LayerBlendCompositor : IDisposable
         IReadOnlyList<int>[] children,
         int parent,
         Bitmap destination,
-        Action<Graphics, int> drawLayer)
+        Action<Graphics, int> drawLayer,
+        int firstLayer = 0,
+        int endLayer = int.MaxValue,
+        Region? clip = null)
     {
         var siblings = children[parent];
         for (var siblingIndex = siblings.Count - 1; siblingIndex >= 0; siblingIndex--)
         {
             var layer = siblings[siblingIndex];
-            if ((uint)layer >= scene.LayerCount
+            if (layer < firstLayer || layer >= endLayer || (uint)layer >= scene.LayerCount
                 || layer >= scene.LayerVisible.Length
                 || !scene.LayerVisible[layer])
             {
@@ -132,10 +144,22 @@ internal sealed class LayerBlendCompositor : IDisposable
                 {
                     using var graphics = Graphics.FromImage(source);
                     ConfigureLayerGraphics(graphics);
-                    drawLayer(graphics, layer);
+                    var previousSurface = CurrentLayerSurface;
+                    CurrentLayerSurface = source;
+                    try { drawLayer(graphics, layer); }
+                    finally { CurrentLayerSurface = previousSurface; }
                 }
 
                 ApplyFilters(source, scene.GetLayerSymbolFilters(layer));
+                if (clip is not null)
+                {
+                    using var graphics = Graphics.FromImage(source);
+                    ConfigureLayerGraphics(graphics);
+                    graphics.CompositingMode = CompositingMode.SourceCopy;
+                    graphics.SetClip(clip, CombineMode.Exclude);
+                    using var transparent = new SolidBrush(Color.Transparent);
+                    graphics.FillRectangle(transparent, -Padding.Left, -Padding.Top, _width, _height);
+                }
                 CompositeSurface(
                     destination,
                     source,

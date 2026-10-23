@@ -50,6 +50,8 @@ internal sealed class SceneCompositionResult
     public IReadOnlyDictionary<int, SceneCompositionObjectOwner> ObjectOwners => _ownerView ??= new IndexedOwnerMap(_owners);
     public IReadOnlyList<SceneCompositionObjectPose> ObjectPoses => _poses;
     public IReadOnlyList<SpatialOpticalMaterial> ObjectMaterials => _materials;
+    public IReadOnlyDictionary<int, (int Start, int Count)> HostLayerRanges { get; internal set; }
+        = new Dictionary<int, (int Start, int Count)>();
 
     public bool TryGetOwner(int objectIndex, out SceneCompositionObjectOwner owner)
     {
@@ -306,7 +308,8 @@ internal static class SceneCompositionBuilder
         DrawingObjectDefinition? drawingObject,
         IReadOnlyList<DrawingObjectDefinition> drawingObjects,
         int frame,
-        decimal parentFps = 30m)
+        decimal parentFps = 30m,
+        bool compositeWithHostLayers = false)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(drawingObjects);
@@ -316,7 +319,8 @@ internal static class SceneCompositionBuilder
             return SceneCompositionResult.Empty;
         }
 
-        return BuildDrawingObjectChildrenCore(destination, drawingObject, drawingObjects, frame, parentFps, hostLayerFilter: null);
+        return BuildDrawingObjectChildrenCore(destination, drawingObject, drawingObjects, frame, parentFps,
+            hostLayerFilter: null, compositeWithHostLayers: compositeWithHostLayers);
     }
 
     public static SceneCompositionResult BuildDrawingObjectInstanceForBreakApart(
@@ -602,7 +606,8 @@ internal static class SceneCompositionBuilder
         decimal parentFps,
         int? hostLayerFilter,
         IReadOnlyDictionary<string, DrawingObjectDefinition>? definitionsById = null,
-        bool excludeEffectivelyLockedLayers = false)
+        bool excludeEffectivelyLockedLayers = false,
+        bool compositeWithHostLayers = false)
     {
         if (drawingObject is null || drawingObject.Instances.Count == 0)
         {
@@ -612,6 +617,7 @@ internal static class SceneCompositionBuilder
 
         definitionsById ??= DefinitionsById(drawingObjects);
         var layers = new List<CompositionLayer>();
+        var hostLayerRanges = new Dictionary<int, (int Start, int Count)>();
         drawingObject.SynchronizeTimelineTracks();
         var localFrame = Math.Clamp(frame, 0, Math.Max(0, drawingObject.FrameCount - 1));
         var ancestry = new HashSet<string>(StringComparer.Ordinal) { drawingObject.Id };
@@ -656,7 +662,7 @@ internal static class SceneCompositionBuilder
                     excludeEffectivelyLockedLayers: excludeEffectivelyLockedLayers);
             }
 
-            if (hostLayer < drawingObject.Scene.LayerBlendModes.Length
+            if (!compositeWithHostLayers && hostLayer < drawingObject.Scene.LayerBlendModes.Length
                 && drawingObject.Scene.LayerBlendModes[hostLayer] != LayerBlendMode.Normal
                 && layers.Count > firstLayer)
             {
@@ -668,9 +674,12 @@ internal static class SceneCompositionBuilder
                     hostOutline,
                     drawingObject.Scene.LayerColorArgb[hostLayer]);
             }
+            if (layers.Count > firstLayer) hostLayerRanges[hostLayer] = (firstLayer, layers.Count - firstLayer);
         }
 
-        return BuildLayers(destination, layers, Math.Max(AnimationTimeline.DefaultDuration, drawingObject.FrameCount));
+        var result = BuildLayers(destination, layers, Math.Max(AnimationTimeline.DefaultDuration, drawingObject.FrameCount));
+        result.HostLayerRanges = hostLayerRanges;
+        return result;
     }
 
     public static SceneCompositionResult BuildDrawingObjectPreview(
@@ -860,7 +869,7 @@ internal static class SceneCompositionBuilder
                         Distortions: compositionDistortions));
                 }
 
-                layers.Add(new CompositionLayer(
+                var localLayer = new CompositionLayer(
                     source,
                     sourceLayer,
                     localFrame,
@@ -882,7 +891,7 @@ internal static class SceneCompositionBuilder
                 {
                     IsCollisionTerrain = source.IsCollisionTerrainLayer(sourceLayer),
                     SuppressSourceOpacity = hostGroupId.Length > 0
-                });
+                };
                 foreach (var childItem in activeChildren)
                 {
                     var childInstance = childItem.Instance!;
@@ -919,6 +928,9 @@ internal static class SceneCompositionBuilder
                         excludeEffectivelyLockedLayers,
                         compositionDistortions);
                 }
+                // Composition layers are stored front to back. Instances on a host
+                // layer therefore precede its local drawing in the flattened stack.
+                layers.Add(localLayer);
             }
         }
         finally

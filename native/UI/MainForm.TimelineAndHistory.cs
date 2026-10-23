@@ -4654,11 +4654,11 @@ internal sealed partial class MainForm : Form
     private List<DrawingObjectInstanceDefinition> PasteCopiedDrawingObjectInstances(
         DrawingObjectDefinition container)
     {
+        var targetLayerId = container.Scene.ResolveInstanceLayerId(null);
         var offset = new PointF(PasteOffsetUnits, PasteOffsetUnits);
         var pasted = new List<DrawingObjectInstanceDefinition>(_clipboardDrawingObjectInstances.Count);
         foreach (var item in _clipboardDrawingObjectInstances)
         {
-            var layerId = container.Scene.ResolveInstanceLayerId(item.SceneLayerId);
             var baseState = item.BaseState with
             {
                 X = VectorUnits.Quantize(item.BaseState.X + offset.X),
@@ -4668,7 +4668,7 @@ internal sealed partial class MainForm : Form
                     container.Id,
                     item.DrawingObjectId,
                     baseState.Position,
-                    layerId,
+                    targetLayerId,
                     out var instance)
                 || instance is null)
             {
@@ -4697,6 +4697,7 @@ internal sealed partial class MainForm : Form
         var scene = ActiveScene();
         if (scene is null || _clipboardDrawingObjectInstances.Count == 0) return false;
 
+        var targetLayerId = scene.ActiveLayerId;
         var timelineSnapshot = scene.Timeline.CreateSnapshot();
         var instanceSnapshot = scene.CreateInstanceSnapshot();
         var timelineSelection = _timeline.CaptureSelectionSnapshot();
@@ -4714,7 +4715,7 @@ internal sealed partial class MainForm : Form
                     item.DrawingObjectId,
                     baseState.Position,
                     baseState.Z,
-                    item.SceneLayerId,
+                    targetLayerId,
                     out var instance)
                 || instance is null)
             {

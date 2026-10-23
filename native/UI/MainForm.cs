@@ -3415,10 +3415,11 @@ internal sealed partial class MainForm : Form, IMessageFilter
             ActiveDrawingObject(),
             _drawingObjects,
             _frame,
-            _playbackSettings.Fps);
+            _playbackSettings.Fps,
+            compositeWithHostLayers: true);
         _sceneInstancePreviewDirty = false;
         RefreshSelectedSceneInstanceObjectIndices();
-        _stage.BindUnderlayScene(_drawingObjectUnderlayStage);
+        _stage.BindUnderlayScene(_drawingObjectUnderlayStage, _drawingObjectUnderlayResult.HostLayerRanges);
         RebuildOnionSkinPreview();
         UpdateSceneInstanceSelectionOverlay();
         UpdateTransformOverlay();

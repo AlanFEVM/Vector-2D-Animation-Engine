@@ -334,7 +334,7 @@ Brush 和 Pressure Brush 仍保存为闭合 Path 填色。普通同色笔刷填�
 - 拖动已选对象：移动。指针悬停在已选直线、描边、填色或整体对象的主体上，以及整体移动期间，显示四向交叉箭头；移动已选边界描边或运动轨锚点时同样显示该光标。端点和曲率编辑使用十字光标，缩放手柄使用对应方向的双向箭头。
 - 舞台获得焦点时按 `Ctrl+A`：仅全选当前帧实际曝光、可见且未锁定的内容；不会跨帧选择。Basic Drawing 优先选择本地对象，该帧没有本地对象时选择实际可见的嵌套实例；Scene & Animation 选择当前帧实际可见的可编辑场景实例。
 - `Delete`：删除全部所选内容；Basic Drawing 可在一次操作中同时删除本地图形和嵌套元件实例，Scene & Animation 可删除一个或多个场景元件实例。
-- `Ctrl+C` / `Ctrl+V`：复制并带小偏移粘贴全部所选内容，支持多选以及同时选择本地图形和嵌套元件实例；Scene & Animation 中可复制粘贴多个场景元件实例。
+- `Ctrl+C` / `Ctrl+V`：复制并带小偏移粘贴全部所选内容，支持多选以及同时选择本地图形和嵌套元件实例；Scene & Animation 中可复制粘贴多个场景元件实例。场景实例和嵌套元件实例均粘贴到粘贴时当前选中的图层；一次粘贴多个元件时，全部使用该目标图层。
 - `F8`：把同一绘制图层中的所选对象转换为新元件，并在当前元件、当前图层和原位置留下该元件的嵌套实例。新元件以选区中心作为注册点；跨图层选区不会被压平转换。为保持遮挡关系，图层中仍有未选对象时，选区需是当前 Cel 的底部连续对象组。
 - `Ctrl+Z`：撤销。
 - 框选或套索产生的临时填色、线段切分会随首次实际编辑一起撤销，一次撤销即可恢复选择前的完整形状、材质和描边，不需要再次移动来触发合并。连续多次编辑仍逐步撤销，已经实际移开的部分不会提前合并。
@@ -528,11 +528,15 @@ Selecting a layer in the timeline layer list automatically outlines that layer's
 
 时间轴的核心概念：
 
-- 播放头：竖线表示当前帧，颜色跟随个性化中的强调色，顶部手柄与旁边的小标签使用同一强调色，标签文字自动选择可读的深色或浅色；高对比度模式下改用系统高亮色。没有帧选区时，当前编辑图层的帧格加亮显示。
+- 播放头：竖线表示当前帧，颜色跟随个性化中的强调色，顶部手柄与旁边的小标签使用同一强调色，标签文字自动选择可读的深色或浅色；高对比度模式下改用系统高亮色。没有帧选区时，当前编辑图层的帧格加亮显示。点击图层名称会清除原有帧选区，高亮编辑格立即跟随选中的图层；在帧网格中使用 `Ctrl`、`Shift` 仍可追加或扩展跨层帧选区。
 - 实心关键帧：该 Cel 有内容。
 - 空心关键帧：该 Cel 为空。
 - 曝光：从一个关键帧保持到下一个关键帧之前的区间。
 - Cel：某个绘制图层在某个关键帧拥有的独立内容。
+
+图层名称可上下拖动以调整叠放顺序，上方图层覆盖下方图层。编辑元件时，本地绘制和嵌套元件共同遵循所属图层的顺序；同一图层中元件显示在本地绘制之上，点击及双击也优先命中可见的上层元件。该规则在元件编辑和场景组合中保持一致。
+
+Drag layer names vertically to change stacking order; upper layers cover lower layers. Local drawing and nested symbols follow their host layers in both symbol editing and scene composition. Within one layer, symbols appear above local drawing, and clicks or double-clicks target the visible symbol first.
 
 场景与动画以场景图层中是否存在元件实例来判定关键帧内容。空场景图层始终显示空心关键帧，包括旧工程中残留了有内容曝光标记的情况；实例仅被隐藏时仍属于图层内容。
 
@@ -897,9 +901,9 @@ SVG 位图会复用同一内容、宽高比相容且分辨率足够的已有缓�
 
 在 `Scene & Animation` 的二维正面视图中双击实例，会留在当前工作区就地编辑其源元件。左侧绘画工具和快捷键重新启用，时间轴切到元件自身的图层与帧；编辑直接更新共享源元件，因此返回后所有引用它的实例都会更新。场景其余内容以进入时的画面加半透明白色遮罩作参考，不可选中或绘改，也不会保存为实际蒙版图层。参考图随编辑画布平移和缩放；实例的旋转、缩放或倾斜会换算到元件局部坐标，元件按自身坐标编辑。参考范围为进入时的可见画面。
 
-点击元件名称前的 `返回场景 / Back to scene`，或在没有未完成绘画操作时按 `Esc`，恢复原场景帧、视图和实例选择。切换到基础绘制会退出就地编辑。空间旋转或非线性变形实例沿用独立元件编辑入口，三维和非正面参考视图不提供该就地绘画入口。普通场景模式仍只允许实例操作。右侧场景和实例列表采用增量刷新，切换工作区或帧时不会重复清空列表。
+就地编辑时，双击元件中的嵌套实例可以继续逐层进入编辑。左上角显示完整路径，例如 `场景 → 角色 → 手臂 → 手掌`；长路径可横向滚动查看，不会省略中间层级。点击路径中的场景或任一祖先元件可直接返回该层；在没有未完成绘画操作时按 `Esc` 返回上一层。返回会恢复该层进入前的帧、视图和实例选择，每一层的周围内容均保留为不可编辑的淡化参考。切换到基础绘制会退出全部就地编辑层级。空间旋转或非线性变形实例沿用独立元件编辑入口，三维和非正面参考视图不提供该就地绘画入口。普通场景模式仍只允许实例操作。右侧场景和实例列表采用增量刷新，切换工作区或帧时不会重复清空列表。
 
-Double-click a placement in the 2D Front view of Scene & Animation to edit its shared source symbol in place. Drawing tools and shortcuts are enabled, and the timeline shows the symbol's own layers and frames. The surrounding scene is a frozen reference of the viewport at entry, faded with a translucent white veil; it is neither selectable nor saved as a mask layer. The reference follows canvas pan and zoom in symbol-local coordinates. Use Back to scene or Esc after finishing a drawing gesture to restore the scene frame, view and placement selection. All placements of the shared symbol reflect source edits. Spatially rotated or warped placements retain the independent symbol editor; 3D and other reference directions do not offer in-place drawing.
+Double-click a placement in the 2D Front view of Scene & Animation to edit its shared source symbol in place. Drawing tools and shortcuts are enabled, and the timeline shows the symbol's own layers and frames. Double-click nested placements to edit successive symbol levels. The top-left breadcrumb shows the complete scene-to-symbol path, with horizontal scrolling for long paths. Click the scene or any ancestor symbol to return directly to that level; Esc after finishing a drawing gesture returns one level. Each return restores that parent's frame, view and placement selection. Surrounding content at each level is a frozen viewport reference faded with a translucent white veil; it is neither selectable nor saved as a mask layer, and follows canvas pan and zoom in symbol-local coordinates. Switching to Basic Drawing exits all levels. All placements of the shared symbol reflect source edits. Spatially rotated or warped placements retain the independent symbol editor; 3D and other reference directions do not offer in-place drawing.
 
 机制：实例只保存“引用 + 变换 + 播放/外观状态”。多个实例可以引用同一个源对象；源对象也可嵌套其他对象，但软件会拒绝自身引用和循环引用。
 

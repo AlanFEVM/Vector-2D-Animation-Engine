@@ -44,25 +44,32 @@ internal sealed partial class StageControl
         graphics.FillRectangle(veil, ClientRectangle);
     }
 
-    internal Bitmap CaptureSymbolEditingReference(string rootInstanceId)
+    internal Bitmap CaptureSymbolEditingReference(string rootInstanceId,
+        SceneCompositionResult? nestedComposition = null)
     {
         var source = Scene;
+        var underlay = UnderlayScene;
         var resultScene = _sceneCompositionResultScene;
         var stats = LastStats;
         var isolated = new VectorScene();
-        isolated.RestoreSnapshot(source.CreateSnapshot());
+        isolated.RestoreSnapshot((nestedComposition is null ? source : underlay ?? new VectorScene()).CreateSnapshot());
+        var composition = nestedComposition ?? _sceneCompositionResult;
         // Keep all object indices and mask provenance aligned; hide only the chosen placement.
         for (var index = 0; index < isolated.ObjectCount; index++)
         {
-            if (_sceneCompositionResult?.TryGetOwner(index, out var owner) == true
+            if (composition?.TryGetOwner(index, out var owner) == true
                 && (owner.RootInstanceId == rootInstanceId || owner.InstanceId == rootInstanceId))
                 isolated.LayerVisible[isolated.ObjectLayer[index]] = false;
         }
         var image = new Bitmap(Math.Max(1, Width), Math.Max(1, Height), PixelFormat.Format32bppPArgb);
         try
         {
-            Scene = isolated;
-            _sceneCompositionResultScene = isolated;
+            if (nestedComposition is null)
+            {
+                Scene = isolated;
+                _sceneCompositionResultScene = isolated;
+            }
+            else UnderlayScene = isolated;
             using var graphics = Graphics.FromImage(image);
             if (RendersReferenceProjection) DrawGdiReferenceBase(graphics);
             else DrawGdiBase2D(graphics);
@@ -72,6 +79,7 @@ internal sealed partial class StageControl
         finally
         {
             Scene = source;
+            UnderlayScene = underlay;
             _sceneCompositionResultScene = resultScene;
             LastStats = stats;
         }

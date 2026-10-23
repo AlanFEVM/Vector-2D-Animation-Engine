@@ -716,17 +716,18 @@ internal sealed class SceneRenderOrderBuffer
             : Array.Empty<int>();
     }
 
-    public int DrawLayers(VectorScene scene, int drawLimit, Action<int, IReadOnlyList<int>, int> drawLayer)
+    public int DrawLayers(VectorScene scene, int drawLimit, Action<int, IReadOnlyList<int>, int> drawLayer,
+        bool includeEmptyLayers = false, int firstLayer = 0, int endLayer = int.MaxValue)
     {
         ArgumentNullException.ThrowIfNull(drawLayer);
-        if (VisibleCount == 0 || drawLimit <= 0) return 0;
+        if (!includeEmptyLayers && (VisibleCount == 0 || drawLimit <= 0)) return 0;
 
         var skip = Math.Max(0, VisibleCount - drawLimit);
         var drawn = 0;
         for (var layerIndex = scene.LayerCount - 1; layerIndex >= 0; layerIndex--)
         {
-            var layer = _layers[layerIndex];
-            if (layer is null || layer.Count == 0) continue;
+            var layer = GetLayerObjects(layerIndex);
+            if (!includeEmptyLayers && layer.Count == 0) continue;
 
             var start = 0;
             if (skip > 0)
@@ -735,6 +736,7 @@ internal sealed class SceneRenderOrderBuffer
                 skip -= start;
             }
 
+            if (layerIndex < firstLayer || layerIndex >= endLayer) continue;
             drawLayer(layerIndex, layer, start);
 
             drawn += layer.Count - start;
