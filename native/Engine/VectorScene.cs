@@ -134,6 +134,16 @@ internal sealed partial class VectorScene : ITimelineContext
     public bool HasLayerOutline => LayerOutline.Any(outline => outline);
     public bool HasDisplayLayerEffects => HasLayerEffects || HasLayerOutline;
 
+    /// <summary>
+    /// Layer structure that changes how the flattened scene looks. Folder and symbol layer
+    /// kinds, normal or isolating blends and opaque layers composite identically to a flat
+    /// scene, so a stage raster may stand in for them while the camera moves. Masks and
+    /// real blend modes change the pixels themselves and must stay on the object path.
+    /// </summary>
+    public bool HasCompositeLayerEffects => LayerMaskIds.Any(id => !string.IsNullOrWhiteSpace(id))
+        || LayerBlendModes.Any(mode => mode is not (LayerBlendMode.Normal or LayerBlendMode.Isolate));
+
+
     public ushort[] ObjectLayer { get; private set; } = [];
     public int[] ObjectKeyframeFrame { get; private set; } = [];
     public long[] ObjectOrder { get; private set; } = [];

@@ -8,7 +8,7 @@ internal sealed class SymbolFiltersChangedEventArgs(Func<SymbolFilters, SymbolFi
 
 internal sealed partial class SymbolFiltersPanel : Panel
 {
-    private const int LogicalPanelHeight = 424;
+    private const int LogicalPanelHeight = 456;
     private enum FilterKind { Blur, Glow, Shadow, Bevel, GradientBevel, GradientGlow }
     private sealed record NumericField(Label Label, ModernNumericUpDown Input, FilterKind Kind,
         int Row, int Column, Func<SymbolFilters, float> Read,
@@ -113,7 +113,7 @@ internal sealed partial class SymbolFiltersPanel : Panel
             Minimum = minimum, Maximum = maximum, DecimalPlaces = decimalPlaces, Increment = increment,
             Suffix = suffix, AccessibleName = accessibleName, WheelAdjustsHoveredDigit = true
         };
-        Theme.StyleNumeric(input);
+        InspectorModuleStyle.StyleField(input);
         var field = new NumericField(caption, input, kind, row, column, read, patch);
         _fields.Add(field);
         Controls.Add(caption);
@@ -358,13 +358,13 @@ internal sealed partial class SymbolFiltersPanel : Panel
             bool visible = field.Kind == kind;
             field.Label.Visible = field.Input.Visible = visible;
             int x = left + field.Column * (colWidth + ScaleLogical(10));
-            int y = 136 + field.Row - firstRow;
+            int y = 136 + (field.Row - firstRow) / 48 * 56;
             field.Label.SetBounds(x, ScaleLogical(y), colWidth, ScaleLogical(16));
-            field.Input.SetBounds(x, ScaleLogical(y + 17), colWidth, ScaleLogical(26));
+            field.Input.SetBounds(x, ScaleLogical(y + 20), colWidth, ScaleLogical(Theme.ControlHeight));
         }
         _glowColor.Visible = kind == FilterKind.Glow;
         _shadowColor.Visible = kind == FilterKind.Shadow;
-        int colorsY = selected.Length == 0 ? 136 : 136 + selected.Max(f => f.Row) - firstRow + 48;
+        int colorsY = selected.Length == 0 ? 136 : 136 + (selected.Max(f => f.Row) - firstRow) / 48 * 56 + 56;
         _glowColor.SetBounds(left, ScaleLogical(colorsY), width, ScaleLogical(38));
         _shadowColor.SetBounds(left, ScaleLogical(colorsY), width, ScaleLogical(38));
         bool edge = (int)kind >= 3;
@@ -380,10 +380,13 @@ internal sealed partial class SymbolFiltersPanel : Panel
     {
         Text = text, AccessibleName = text, AutoSize = false, TabStop = true
     };
-    private static Label TextLabel(string text, bool bold = false) => new()
+    private static Label TextLabel(string text, bool bold = false)
     {
-        Text = text, ForeColor = bold ? Theme.Text : Theme.Muted, BackColor = Color.Transparent,
-        Font = Theme.UiFont(bold ? 10 : 9, bold ? FontStyle.Bold : FontStyle.Regular),
-        TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true
-    };
+        var label = InspectorModuleStyle.CreateTextLabel();
+        label.Text = text;
+        label.ForeColor = bold ? Theme.Text : Theme.PanelSecondaryText;
+        label.Font = Theme.UiFont(Theme.InspectorLabelFontSize);
+        label.BackColor = Color.Transparent;
+        return label;
+    }
 }

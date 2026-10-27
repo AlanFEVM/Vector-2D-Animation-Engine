@@ -627,8 +627,37 @@ internal static partial class Benchmark
             Message.Create(form.Handle, 0, IntPtr.Zero, IntPtr.Zero),
             Keys.F8
         ];
-        if (processCmdKey.Invoke(form, arguments) is not true
+        var namingDialogVisited = false;
+        Exception? namingDialogFailure = null;
+        using var namingTimer = new System.Windows.Forms.Timer { Interval = 30 };
+        namingTimer.Tick += (_, _) =>
+        {
+            var dialog = Application.OpenForms.Cast<Form>()
+                .FirstOrDefault(candidate => candidate.GetType().Name == "DrawingObjectNameDialog");
+            if (dialog is null) return;
+            namingTimer.Stop();
+            namingDialogVisited = true;
+            try
+            {
+                var input = (TextBox)RequireField(dialog.GetType(), "_input").GetValue(dialog)!;
+                input.Text = "Converted shortcut symbol";
+                dialog.AcceptButton!.PerformClick();
+            }
+            catch (Exception exception)
+            {
+                namingDialogFailure = exception;
+                dialog.DialogResult = DialogResult.Cancel;
+                dialog.Close();
+            }
+        };
+        namingTimer.Start();
+        var converted = processCmdKey.Invoke(form, arguments) is true;
+        namingTimer.Stop();
+        if (namingDialogFailure is not null)
+            throw new InvalidOperationException("The F8 symbol naming dialog failed.", namingDialogFailure);
+        if (!converted || !namingDialogVisited
             || project.DrawingObjects.Count != 2
+            || project.DrawingObjects[1].Name != "Converted shortcut symbol"
             || project.DrawingObjects[0].Scene.ObjectCount != 0
             || project.DrawingObjects[0].Instances.Count != 1
             || project.DrawingObjects[1].Scene.ObjectCount != 2)

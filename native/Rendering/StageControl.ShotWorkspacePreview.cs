@@ -16,6 +16,7 @@ internal sealed partial class StageControl
 
     internal ShotWorkspacePreviewMode ShotPreviewMode { get; private set; }
     internal bool CanPreviewPlanarShot => _shotFramingVisible
+        && (!ShotFrameCollectionVisible || HasSelectedShotFrame)
         && _shotFramingSettings.PinsPlanarRotation && CanRenderPlanarShotPreview;
     private bool CanRenderPlanarShotPreview => ReferenceDimension == SceneDimension.TwoD
         && _reference2DViewDirection == ReferenceViewDirection.Front && !_referenceCameraTransitionActive;
@@ -90,7 +91,8 @@ internal sealed partial class StageControl
     }
 
     private RenderStats DrawPlanarShotScene(Graphics graphics, SceneShotSettings settings,
-        PointF[] destination, Size outputSize, bool clipToCamera, bool drawGrid)
+        PointF[] destination, Size outputSize, bool clipToCamera, bool drawGrid,
+        SceneShotSettings? parallaxAnchor = null)
     {
         var world = settings.ResolveWorldFrameCorners(CanvasWorldWidth, CanvasWorldHeight);
         var source = new[]
@@ -127,6 +129,7 @@ internal sealed partial class StageControl
             var gpuOptics = Reference3DGpuOpticsEnabled;
             var renderingCanvasOutput = _renderingCanvasOutput;
             var state = graphics.Save();
+            using var parallax = BeginShotParallax(settings, parallaxAnchor);
             try
             {
                 _renderingCanvasOutput = clipToCamera && !drawGrid;
@@ -227,7 +230,8 @@ internal sealed partial class StageControl
         new(bounds.Right, bounds.Bottom), new(bounds.Left, bounds.Bottom)
     ];
 
-    private bool TryCapturePlanarShotPreview(SceneShotSettings settings, Size targetSize, out Bitmap? bitmap)
+    private bool TryCapturePlanarShotPreview(SceneShotSettings settings, Size targetSize, out Bitmap? bitmap,
+        SceneShotSettings? parallaxAnchor)
     {
         bitmap = null;
         if (Width <= 8 || Height <= 8) return false;
@@ -239,7 +243,8 @@ internal sealed partial class StageControl
         {
             using var graphics = Graphics.FromImage(result);
             DrawPlanarShotScene(graphics, settings,
-                RectangleCorners(new RectangleF(PointF.Empty, size)), size, clipToCamera: true, drawGrid: false);
+                RectangleCorners(new RectangleF(PointF.Empty, size)), size, clipToCamera: true, drawGrid: false,
+                parallaxAnchor: parallaxAnchor);
             bitmap = result;
             return true;
         }

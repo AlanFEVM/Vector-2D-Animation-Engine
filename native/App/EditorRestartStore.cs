@@ -155,21 +155,23 @@ internal static class EditorRestartStore
     }
 
     public static void DeletePending()
+        => DeletePendingFromDirectory(Path.GetDirectoryName(StatePath)!);
+
+    internal static void DeletePendingFromDirectory(string handoffDirectory)
     {
         // A missing handoff directory already satisfies the "no pending handoff remains"
         // contract, so it must not be reported as a deletion failure.
-        if (Path.GetDirectoryName(StatePath) is { Length: > 0 } handoffDirectory
-            && !Directory.Exists(handoffDirectory))
+        if (!Directory.Exists(handoffDirectory))
         {
             return;
         }
 
         foreach (var path in new[]
                  {
-                     StatePath,
-                     StatePath + ".tmp",
-                     TokenSidecarPath,
-                     TokenSidecarPath + ".tmp"
+                     Path.Combine(handoffDirectory, Path.GetFileName(StatePath)),
+                     Path.Combine(handoffDirectory, Path.GetFileName(StatePath) + ".tmp"),
+                     Path.Combine(handoffDirectory, Path.GetFileName(TokenSidecarPath)),
+                     Path.Combine(handoffDirectory, Path.GetFileName(TokenSidecarPath) + ".tmp")
                  })
         {
             try

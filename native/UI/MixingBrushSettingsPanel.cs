@@ -4,7 +4,6 @@ internal sealed class MixingBrushSettingsPanel : UserControl
 {
     private const int PanelPaddingTop = 6;
     private const int PanelPaddingBottom = 6;
-    private const int PanelPaddingHorizontal = 12;
     private const int PanelRowCount = 5;
     private const int PanelHeight = PanelPaddingTop
         + PanelPaddingBottom
@@ -31,8 +30,8 @@ internal sealed class MixingBrushSettingsPanel : UserControl
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
         Height = PanelHeight;
-        MinimumSize = new Size(240, PanelHeight);
-        Padding = new Padding(PanelPaddingHorizontal, PanelPaddingTop, PanelPaddingHorizontal, PanelPaddingBottom);
+        MinimumSize = new Size(0, PanelHeight);
+        Padding = Theme.InspectorSectionPadding;
         AccessibleRole = AccessibleRole.Pane;
         AccessibleName = "Mixing brush settings";
 
@@ -82,7 +81,7 @@ internal sealed class MixingBrushSettingsPanel : UserControl
         modeSelector.Controls.Add(_opticalMode, 0, 0);
         modeSelector.Controls.Add(_pigmentMode, 1, 0);
 
-        content.Controls.Add(CreateFieldLabel("Mode"), 0, 0);
+        content.Controls.Add(InspectorModuleStyle.CreateFieldLabel("Mode"), 0, 0);
         content.Controls.Add(modeSelector, 1, 0);
         content.SetColumnSpan(modeSelector, 2);
 
@@ -194,41 +193,24 @@ internal sealed class MixingBrushSettingsPanel : UserControl
         Label value,
         int row)
     {
-        content.Controls.Add(CreateFieldLabel(label), 0, row);
+        content.Controls.Add(InspectorModuleStyle.CreateFieldLabel(label), 0, row);
         content.Controls.Add(slider, 1, row);
         content.Controls.Add(value, 2, row);
     }
 
-    private static Label CreateFieldLabel(string text)
-    {
-        return new Label
-        {
-            Text = text,
-            Dock = DockStyle.Fill,
-            BackColor = Color.Transparent,
-            ForeColor = Theme.Muted,
-            Font = Theme.UiFont(),
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true,
-            Margin = Theme.InspectorFieldMargin(rightGap: true)
-        };
-    }
-
     private static Label CreateValueLabel(string accessibleName)
     {
-        return new Label
-        {
-            Text = "0%",
-            Dock = DockStyle.Fill,
-            BackColor = Color.Transparent,
-            ForeColor = Theme.Muted,
-            Font = Theme.UiFont(),
-            TextAlign = ContentAlignment.MiddleRight,
-            AutoEllipsis = true,
-            Margin = Padding.Empty,
-            AccessibleName = accessibleName,
-            AccessibleRole = AccessibleRole.StaticText
-        };
+        var label = InspectorModuleStyle.CreateTextLabel();
+        label.Text = "0%";
+        label.Dock = DockStyle.Fill;
+        label.BackColor = Color.Transparent;
+        label.ForeColor = Theme.PanelSecondaryText;
+        label.Font = Theme.UiFont(Theme.InspectorLabelFontSize);
+        label.TextAlign = ContentAlignment.MiddleRight;
+        label.Margin = Padding.Empty;
+        label.AccessibleName = accessibleName;
+        label.AccessibleRole = AccessibleRole.StaticText;
+        return label;
     }
 
     private void SelectMode(BrushMixingMode mode)

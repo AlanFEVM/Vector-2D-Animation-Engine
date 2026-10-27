@@ -265,7 +265,7 @@ internal static partial class Benchmark
             "A bitmap whose image asset still exists was wrongly removed.");
 
         AssertTimeline(
-            ThrowsInvalidOperation(() =>
+            ThrowsMissingBitmapPayload(() =>
             {
                 var empty = new VectorScene();
                 empty.CreateEmpty();
@@ -314,8 +314,12 @@ internal static partial class Benchmark
         var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
         var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
         var original = BitmapImageImportSettings.Default;
-        AssertTimeline(project.TryAddImageAssetFromSource("Resolution", Path.GetFullPath("resolution.png"),
-            new string('a', 64), 400, 200, 96, original, out var asset), "Could not prepare image resolution fixture.");
+        var resolutionRoot = CreateTemporaryDirectory("image-import-dialog-regression");
+        var resolutionPath = Path.Combine(resolutionRoot, "resolution.png");
+        WriteFixturePng(resolutionPath, 400, 200);
+        AssertTimeline(project.TryAddImageAssetFromSource("Resolution", resolutionPath,
+            BitmapImageRasterizer.ComputeSha256(resolutionPath), 400, 200, 96, original, out var asset),
+            "Could not prepare image resolution fixture.");
         var index = scene.AddBitmapObject(scene.ActiveLayer, PointF.Empty,
             new BitmapObjectData { ImageAssetId = asset!.Id, PlacedSize = new SizeF(600, 300) });
         AssertTimeline(index >= 0, "Could not prepare placed image fixture.");
@@ -345,6 +349,7 @@ internal static partial class Benchmark
         AssertTimeline(apply.Invoke(form, [asset, previous]) is true
             && scene.TryGetBitmapObjectData(index, out var restoredSize) && restoredSize.PlacedSize == new SizeF(1200, 600),
             "Restoring the full image did not restore the existing placement size.");
+        DeleteTemporaryDirectory(resolutionRoot);
         Console.WriteLine("image_import_dialog_regression=passed");
     }
 
@@ -479,7 +484,10 @@ internal static partial class Benchmark
     {
         var root = CreateTemporaryDirectory("image-batch-preview");
         var previousContext = SynchronizationContext.Current;
-        using var context = new WindowsFormsSynchronizationContext();
+        var previousAutoInstall = WindowsFormsSynchronizationContext.AutoInstall;
+        WindowsFormsSynchronizationContext.AutoInstall = false;
+        var context = previousContext as WindowsFormsSynchronizationContext
+            ?? new WindowsFormsSynchronizationContext();
         SynchronizationContext.SetSynchronizationContext(context);
         try
         {
@@ -572,6 +580,7 @@ internal static partial class Benchmark
         finally
         {
             SynchronizationContext.SetSynchronizationContext(previousContext);
+            WindowsFormsSynchronizationContext.AutoInstall = previousAutoInstall;
             DeleteTemporaryDirectory(root);
         }
 
@@ -677,6 +686,8 @@ internal static partial class Benchmark
         using var image = new Bitmap(320, 180);
         using var editor = new ImageCropDialog(image, new Size(320, 180), BitmapImageImportSettings.Default, false);
         var type = typeof(ImageCropDialog);
+        editor.ClientSize = new Size(920, 640);
+        editor.PerformLayout();
         var canvas = (Panel)RequireField(type, "_canvas").GetValue(editor)!;
         canvas.Size = new Size(700, 400);
         var getStyle = typeof(Control).GetMethod("GetStyle", BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -725,7 +736,9 @@ internal static partial class Benchmark
         set.Invoke(editor, [new Rectangle(80, 45, 160, 90)]); frame = Frame();
         Drag(Point.Round(new PointF(frame.X + frame.Width / 2, frame.Y + frame.Height / 2)), new Point(10000, 10000));
         AssertTimeline(editor.Selection.Location == Point.Empty && editor.Selection.Size == new Size(160, 90),
-            "Image panning exposed empty space or resized the crop.");
+            "Image panning exposed empty space or resized the crop. "
+            + $"(selection={editor.Selection}, frame={frame}, imageBounds={(RectangleF)RequireField(type, "_imageBounds").GetValue(editor)!}, "
+            + $"dragMode={RequireField(type, "_dragMode").GetValue(editor)}, canvas={canvas.Size}, dpi={canvas.DeviceDpi}).");
         var ratio = RequireMethod(type, "SetRatio", [typeof(int)]);
         set.Invoke(editor, [new Rectangle(0, 0, 320, 180)]); ratio.Invoke(editor, [2]);
         AssertTimeline(editor.Selection.Width == editor.Selection.Height, "Square ratio did not create a square crop.");
@@ -773,14 +786,14 @@ internal static partial class Benchmark
         }
     }
 
-    private static bool ThrowsInvalidOperation(Action action)
+    private static bool ThrowsMissingBitmapPayload(Action action)
     {
         try
         {
             action();
             return false;
         }
-        catch (InvalidOperationException)
+        catch (ArgumentNullException exception) when (exception.ParamName == "bitmapObjectData")
         {
             return true;
         }

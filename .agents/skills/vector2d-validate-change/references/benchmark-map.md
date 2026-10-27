@@ -19,11 +19,18 @@
 | `Benchmark.FillRendering.cs` | `Freehand`, `Render` | fill geometry and visible rendering |
 | `Benchmark.FreehandSuite.cs` | `Freehand` | freehand entrypoint orchestration |
 | `Benchmark.HierarchyFocus.cs` | `Render` | hierarchy selection routing and camera focus |
+| `Benchmark.ImageAssets.cs` | `Timeline`, `Render` | image asset persistence, crop/import dialogs, previews and bitmap rendering |
+| `Benchmark.ImageDrop.cs` | `Timeline` | clipboard image paste, file classification, import progress and Stage drop preview |
+| `Benchmark.InstanceSkewPreview.cs` | `Freehand` | instance skew preview and transform behavior |
+| `Benchmark.MotionTrack.cs` | `Timeline`, `Render` | motion track lifecycle, editing, availability and scene interaction |
+| `Benchmark.SelectionPerformance.cs` | `Render` | large and overlapping artwork selection, marquee and interaction budgets |
+| `Benchmark.TimelineParenting.cs` | `Timeline` | motion parenting, transforms, pointer routing and detach commands |
 | `Benchmark.ImportedSvgConcurrency.cs`, `Benchmark.ProjectiveSvgClipping.cs` | `Render` | concurrent SVG cache use and bounded perspective texture rendering |
 | `Benchmark.MixingBrush.cs` | `Freehand`, `Render` | paint mixing and region geometry/raster behavior |
 | `Benchmark.PencilBezier.cs` | `Freehand` | Pencil Bezier generation |
 | `Benchmark.ProjectComposition.cs` | `Timeline`, `Stress` | project graph, persistence, instances, composition |
 | `Benchmark.ProjectCompression.cs` | `Timeline` | compressed project storage, legacy migration, bounded decoding |
+| `Benchmark.PackageSaveSafety.cs`, `Benchmark.FolderSaveSafety.cs` | `Timeline` | package write failure preserves asset bindings; failed folder Save As preserves package target, dirty state and retry |
 | `Benchmark.FlashImport.cs` | `Timeline` | Flash / Animate XFL import, geometry and exposures, nested symbols, safe input rejection, legacy conversion bridge and V2D save/reopen |
 | `Benchmark.RandomFracture.cs` | `Freehand`, `Timeline` | fracture geometry, gradients and timeline commands |
 | `Benchmark.RegressionHelpers.cs` | shared | assertions, temporary fixtures, reflection, GC preparation and pixel sampling; no standalone entrypoint |

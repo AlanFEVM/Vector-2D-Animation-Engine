@@ -85,6 +85,10 @@ scripts\publish-release-manager.ps1
 
 发布时编辑功能会锁定，输出和错误会实时显示在日志区。点击 `Cancel` 会发出协作式取消请求；当前构建或自检步骤完成后，脚本会在正式文件提交前停止。进入最终提交后不会强制中断，而是完成文件替换、校验和结果回传，避免留下部分提交的发布目录。新包完成全部校验前不会替换已有成功产物。
 
+提交成功后的旧产物清理失败只产生警告，不回滚已验证的新 EXE。若提交回滚无法恢复全部文件，脚本会保留发布目录旁的 `.v2d-release-backup-*` 备份并输出恢复位置；确认恢复前不要删除它。正式输出目录仍仅包含发布 EXE。
+
+Failure to clean up an old artifact after a successful commit only produces a warning; it does not roll back the verified new EXE. An incomplete rollback preserves the sibling `.v2d-release-backup-*` directory and reports its recovery path. Do not delete that backup before recovery is confirmed.
+
 ## 数据职责
 
 - `release/release-notes.json` 是程序内双语公告和鸣谢的唯一数据源，并作为资源嵌入正式编辑器。

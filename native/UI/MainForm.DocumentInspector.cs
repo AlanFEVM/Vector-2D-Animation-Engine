@@ -7,23 +7,33 @@ namespace VectorAnimationEngine;
 internal sealed partial class MainForm
 {
     private readonly DocumentInfoPanel _documentInfoPanel = new();
+    private readonly ThemedScrollPanel _documentInspectorPage = new();
+
+    private bool IsDocumentInspectorContext => _selectedObjects.Count == 0
+        && !_selectedElement.IsValid
+        && SelectedSceneInstances().Count == 0
+        && _timeline.SelectedTween is null
+        && _inspectorCategory == InspectorCategory.None
+        && !IsTextEditActive() && _tool != ToolMode.Text;
 
     private void BuildDocumentInfoPanel()
     {
         _documentInfoPanel.Dock = DockStyle.Top;
         _documentInfoPanel.Height = _documentInfoPanel.PreferredHeight;
-        _documentInfoPanel.Visible = false;
-        _inspectorHost.Controls.Add(_documentInfoPanel);
+        _documentInspectorPage.Dock = DockStyle.Fill;
+        _documentInspectorPage.ShowScrollBar = true;
+        _documentInspectorPage.ContentPadding = new Padding(0, 0, 2, 0);
+        _documentInspectorPage.Visible = false;
+        _documentInspectorPage.Content.Controls.Add(_documentInfoPanel);
+        _inspectorHost.Controls.Add(_documentInspectorPage);
         _documentInfoPanel.RenameCommitted += (_, name) => ApplyDocumentInfoRename(name);
+        _documentInfoPanel.LayerPanel.BlendModeChanged += (_, e) => ApplySelectedLayerBlendMode(e.BlendMode);
         InitializeCanvasWorkspace();
     }
 
     private void UpdateDocumentInfoPanel()
     {
-        var noSelection = _selectedObjects.Count == 0 && !_selectedElement.IsValid;
-        var visible = noSelection
-            && !_shotDirectorVisible
-            && _inspectorCategory == InspectorCategory.None;
+        var visible = IsDocumentInspectorContext;
         // Only touch the flag on change: a redundant Visible write re-lays the host
         // twice per selection change.
         if (_documentInfoPanel.Visible != visible) _documentInfoPanel.Visible = visible;
@@ -60,7 +70,7 @@ internal sealed partial class MainForm
                     ? UiLocalization.T("Image unavailable")
                     : _project.FindImageAsset(scene.Canvas.ImageAssetId)?.Name ?? UiLocalization.T("Missing project image"),
                 _ => UiLocalization.T("Not added")
-            }));
+            }, _projectDirty, scene?.Canvas is not null));
     }
 
     private void ApplyDocumentInfoRename(string name)

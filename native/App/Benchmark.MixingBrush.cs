@@ -205,8 +205,9 @@ internal static partial class Benchmark
                 || Math.Abs(panelSettings.Viscosity - 0.72f) > 0.001f
                 || Math.Abs(panelSettings.PaintLoad - 0.83f) > 0.001f
                 || Math.Abs(panelSettings.Influence - 0.47f) > 0.001f
-                || panel.MinimumSize.Width != 240
-                || panel.PreferredPanelHeight != 196)
+                || panel.MinimumSize.Width != 0
+                || panel.PreferredPanelHeight != 12 + Theme.InspectorTitleHeight + Theme.InspectorRowHeight * 5
+                || panel.MinimumSize.Height != panel.PreferredPanelHeight)
             {
                 throw new InvalidOperationException("The mixing-brush settings panel did not retain its compact model state.");
             }
@@ -271,6 +272,7 @@ internal static partial class Benchmark
             ?? throw new InvalidOperationException("Mixing-brush undo regression did not find the strength slider.");
         var initialObjectCount = scene.ObjectCount;
         activateTool.Invoke(form, [ToolMode.MixingBrush]);
+        RequireMethod(typeof(MainForm), "HandleInspectorCategoryShortcut").Invoke(form, [Keys.Control | Keys.Alt | Keys.D6]);
         Application.DoEvents();
 
         void CommitStroke(PointF world)
@@ -722,29 +724,80 @@ internal static partial class Benchmark
         {
             throw new InvalidOperationException("Mixing-brush composition regression could not create its instance.");
         }
-        instance.ScaleX = 2f;
-        instance.ScaleY = 0.5f;
         instance.Alpha = 0.5f;
         instance.TintArgb = Color.FromArgb(255, 128, 255, 255).ToArgb();
-        var composedScene = new VectorScene();
-        var composition = SceneCompositionBuilder.Build(
-            composedScene,
-            sceneDefinition,
-            project.DrawingObjects,
-            0);
-        if (composedScene.ObjectCount != 1
-            || composedScene.ShapeKind[0] != ShapeKind.MixingStroke
-            || !composedScene.TryGetMixingStrokeWorldSamples(0, out var composedTrajectory)
-            || composedTrajectory.Length != crossingTrajectory.Length
-            || Math.Abs(composedTrajectory[0].Diameter - crossingTrajectory[0].Diameter) > 0.001f
-            || composedTrajectory[0].Point != new PointF(-40, 40)
-            || composedTrajectory[0].Argb != ApplyInstanceAppearanceForRegression(
-                crossingTrajectory[0].Argb,
-                0.5f,
-                instance.TintArgb)
-            || !composition.TryGetOwner(0, out _))
+        foreach (var (scaleX, scaleY) in new[] { (2f, 0.5f), (4f, 1f) })
         {
-            throw new InvalidOperationException("Mixing-brush trajectory composition lost its transform, color, or ownership.");
+            instance.ScaleX = scaleX;
+            instance.ScaleY = scaleY;
+            var composedScene = new VectorScene();
+            var composition = SceneCompositionBuilder.Build(
+                composedScene,
+                sceneDefinition,
+                project.DrawingObjects,
+                0);
+            if (composedScene.ObjectCount != 1
+                || composedScene.ShapeKind[0] != ShapeKind.MixingStroke
+                || !composedScene.TryGetMixingStrokeWorldSamples(0, out var composedTrajectory)
+                || composedTrajectory.Length != crossingTrajectory.Length
+                || !composition.TryGetOwner(0, out var owner)
+                || owner.InstanceId != instance.Id
+                || owner.DrawingObjectId != drawingObject.Id
+                || owner.RootInstanceId != instance.Id)
+            {
+                throw new InvalidOperationException("Mixing-brush trajectory composition lost its payload or ownership.");
+            }
+
+            var composedLayer = composedScene.ObjectLayer[0];
+            var appearanceLayer = composedScene.GetLayerParentIndex(composedLayer);
+            if (appearanceLayer < 0
+                || composedScene.GetLayerKind(appearanceLayer) != DrawingLayerKind.Folder
+                || composedScene.LayerBlendModes[appearanceLayer] != LayerBlendMode.Isolate
+                || composedScene.LayerOpacity[appearanceLayer] != instance.Alpha
+                || composedScene.LayerOpacity[composedLayer] != 1f
+                || composedScene.GetLayerParentIndex(appearanceLayer) != -1)
+            {
+                throw new InvalidOperationException("Mixing-brush instance opacity was not retained on its isolated appearance group.");
+            }
+
+            var diameterScale = MathF.Sqrt(Math.Abs(scaleX * scaleY));
+            for (var sampleIndex = 0; sampleIndex < crossingTrajectory.Length; sampleIndex++)
+            {
+                var sourceSample = crossingTrajectory[sampleIndex];
+                var composedSample = composedTrajectory[sampleIndex];
+                var expectedPoint = new PointF(
+                    sourceSample.Point.X * scaleX + 120f,
+                    sourceSample.Point.Y * scaleY + 80f);
+                if (composedSample.Point != expectedPoint
+                    || Math.Abs(composedSample.Diameter - sourceSample.Diameter * diameterScale) > 0.001f
+                    || composedSample.Argb != ApplyInstanceAppearanceForRegression(
+                        sourceSample.Argb, 1f, instance.TintArgb))
+                {
+                    throw new InvalidOperationException(
+                        $"Mixing-brush trajectory composition lost transform or color at sample {sampleIndex}, scale=({scaleX}, {scaleY}).");
+                }
+            }
+
+            foreach (var sampleIndex in new[] { 0, crossingTrajectory.Length - 1 })
+            {
+                var tintedColor = Color.FromArgb(ApplyInstanceAppearanceForRegression(
+                    crossingTrajectory[sampleIndex].Argb, 1f, instance.TintArgb));
+                var expectedColor = Color.FromArgb(
+                    (int)MathF.Round(tintedColor.A * instance.Alpha),
+                    tintedColor.R, tintedColor.G, tintedColor.B);
+                var sampledColor = MixingBrushPaintSampler.SampleActiveLayerFill(
+                    composedScene, composedTrajectory[sampleIndex].Point, frame: 0, layer: composedLayer);
+                if (sampledColor?.ToArgb() != expectedColor.ToArgb())
+                {
+                    throw new InvalidOperationException(
+                        "Mixing-brush composed paint did not apply tint and isolated instance opacity exactly once.");
+                }
+            }
+        }
+        if (!drawingObject.Scene.TryGetMixingStrokeWorldSamples(0, out var sourceTrajectory)
+            || !sourceTrajectory.SequenceEqual(crossingTrajectory))
+        {
+            throw new InvalidOperationException("Mixing-brush composition modified its source trajectory.");
         }
 
         if (!solidScene.TrySampleMixingStrokeColor(brushObject, PointF.Empty, out var crossingColor)
@@ -1608,13 +1661,7 @@ internal static partial class Benchmark
 
             try
             {
-                using var probe = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
-                using var graphics = Graphics.FromImage(probe);
-                graphics.CopyFromScreen(
-                    form.PointToScreen(Point.Empty),
-                    Point.Empty,
-                    form.ClientSize,
-                    CopyPixelOperation.SourceCopy);
+                using var probe = CaptureBenchmarkWindow(form);
                 visibleDesktop = new[]
                     {
                         new Point(1, 1),
@@ -1638,15 +1685,7 @@ internal static partial class Benchmark
             return;
         }
 
-        using var capture = new Bitmap(stage.ClientSize.Width, stage.ClientSize.Height);
-        using (var graphics = Graphics.FromImage(capture))
-        {
-            graphics.CopyFromScreen(
-                stage.PointToScreen(Point.Empty),
-                Point.Empty,
-                stage.ClientSize,
-                CopyPixelOperation.SourceCopy);
-        }
+        using var capture = CaptureBenchmarkWindow(stage);
 
         Color PixelAt(PointF world)
         {

@@ -379,7 +379,7 @@ internal sealed partial class TimelineStrip
             var name = TabGroupItems().FirstOrDefault(item => item.Id == _pressedTabGroupId).Name;
             TextRenderer.DrawText(graphics, name, tabFont, Rectangle.Inflate(ghost, -ScaleTimelineMetric(7), 0),
                 SystemInformation.HighContrast ? SystemColors.HighlightText : Theme.ReadableText(ghostColor, Theme.Text),
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         }
         if (_draggingTabGroup && _tabGroupDropIndex >= 0)
         {

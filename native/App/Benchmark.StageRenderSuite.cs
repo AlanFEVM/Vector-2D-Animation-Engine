@@ -8307,13 +8307,7 @@ internal static partial class Benchmark
                 Bitmap? capture = null;
                 try
                 {
-                    capture = new Bitmap(captureBounds.Width, captureBounds.Height);
-                    using var graphics = Graphics.FromImage(capture);
-                    graphics.CopyFromScreen(
-                        captureBounds.Location,
-                        Point.Empty,
-                        captureBounds.Size,
-                        CopyPixelOperation.SourceCopy);
+                    capture = CaptureBenchmarkWindow(form);
                 }
                 catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
                     or System.Runtime.InteropServices.ExternalException
@@ -8419,6 +8413,7 @@ internal static partial class Benchmark
 
     public static void RunStageRendererRegression()
     {
+        RunShotParallaxRenderingRegression();
         RunSceneCanvasRenderingRegression();
         RunMultiLayerSelectionRegression();
         RunUiRefreshStabilityRegression();

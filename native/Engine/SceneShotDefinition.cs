@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Text.Json.Serialization;
 
 namespace VectorAnimationEngine;
 
@@ -47,8 +48,8 @@ internal readonly record struct SceneShotSettings
     internal const float MaximumZoom = 100f;
     internal const float MinimumFocalLength = 1f;
     internal const float MaximumFocalLength = 5_000f;
-    internal const float MinimumFrameWidth = 1920f;
-    internal const float MinimumFrameHeight = 1080f;
+    internal const float MinimumFrameWidth = 1f;
+    internal const float MinimumFrameHeight = 1f;
     internal const float MinimumOrthographicSize = MinimumFrameHeight;
     internal const float MaximumOrthographicSize = 5_000_000f;
     internal const float MaximumPosition = 5_000_000f;
@@ -74,6 +75,7 @@ internal readonly record struct SceneShotSettings
     public float Zoom { get; init; } = 1f;
     public float FocalLength { get; init; } = 50f;
     public float OrthographicSize { get; init; } = 28_000f;
+    public SceneShotParallaxSettings Parallax { get; init; } = new();
 
     public static SceneShotSettings Default => new()
     {
@@ -89,6 +91,9 @@ internal readonly record struct SceneShotSettings
         FocalLength = 50f,
         OrthographicSize = 28_000f
     };
+
+    [JsonConstructor]
+    public SceneShotSettings() { }
 
     /// <summary>Legacy four-value constructor used by the old 2D preview and old documents.</summary>
     public SceneShotSettings(float x, float y, float zoom, float rotationDegrees) : this()
@@ -163,7 +168,8 @@ internal readonly record struct SceneShotSettings
         && FocalLength is >= MinimumFocalLength and <= MaximumFocalLength
         && float.IsFinite(OrthographicSize)
         // Accept legacy positive sizes at the decoding boundary, then normalize them to the new limit.
-        && OrthographicSize is >= 0.01f and <= MaximumOrthographicSize;
+        && OrthographicSize is >= 0.01f and <= MaximumOrthographicSize
+        && Parallax.IsValid;
 
     internal SceneShotSettings Normalized()
     {
@@ -190,7 +196,8 @@ internal readonly record struct SceneShotSettings
             RotationDegrees = NormalizeAngle(RotationDegrees),
             Zoom = Math.Clamp(float.IsFinite(Zoom) ? Zoom : 1f, MinimumZoom, MaximumZoom),
             FocalLength = focalLength,
-            OrthographicSize = orthographicSize
+            OrthographicSize = orthographicSize,
+            Parallax = Parallax.Normalized()
         };
     }
 
@@ -222,7 +229,8 @@ internal readonly record struct SceneShotSettings
             RotationDegrees = LerpAngle(source.RotationDegrees, target.RotationDegrees, progress),
             Zoom = Lerp(source.Zoom, target.Zoom, progress),
             FocalLength = Lerp(source.FocalLength, target.FocalLength, progress),
-            OrthographicSize = Lerp(source.OrthographicSize, target.OrthographicSize, progress)
+            OrthographicSize = Lerp(source.OrthographicSize, target.OrthographicSize, progress),
+            Parallax = SceneShotParallaxSettings.Interpolate(source.Parallax, target.Parallax, progress)
         };
     }
 

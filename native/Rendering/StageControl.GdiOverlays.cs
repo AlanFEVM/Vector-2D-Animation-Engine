@@ -19,6 +19,7 @@ internal sealed partial class StageControl : Control
         }
         var oldMode = g.SmoothingMode;
         g.SmoothingMode = SmoothingMode.AntiAlias;
+        Scene.PrepareSelectionOutlineBatch(SelectedObjects, Frame);
 
         if (_selectedElements.Length > 0)
         {

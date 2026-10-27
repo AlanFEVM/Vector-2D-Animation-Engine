@@ -592,6 +592,8 @@ internal sealed partial class StageControl
             pose => pose.FlatToScene != Matrix4x4.Identity);
         ClearSceneCompositionMaskClipIndex();
         _reference3DSelectedObjects = [];
+        Reference3DPlaybackActive = true;
+        PlaybackActive = true;
         InvalidateReference3DRenderPlanCache();
     }
 
@@ -3536,7 +3538,7 @@ internal sealed partial class StageControl
                 if (contour.Length >= 3) result.Add(contour);
             }
         }
-        return result.ToArray();
+        return ApplyShotParallaxToMask(clip, result.ToArray());
     }
 
     internal float GetReference3DStrokeWidth(int objectIndex, float worldWidth)

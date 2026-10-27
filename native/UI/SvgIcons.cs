@@ -100,7 +100,9 @@ internal enum SvgIconKind
     InspectorPhysics,
     InspectorCamera,
     InspectorScene,
-    InspectorColor
+    InspectorColor,
+    Copy,
+    SceneSlate
 }
 
 internal static partial class SvgIcons
@@ -158,6 +160,26 @@ internal static partial class SvgIcons
 
         switch (kind)
         {
+            case SvgIconKind.SceneSlate:
+            {
+                var body = Rect(referenceBounds, 4, 9, 16, 12);
+                g.DrawRectangle(pen, body.X, body.Y, body.Width, body.Height);
+                g.DrawPolygon(pen, [P(referenceBounds, 3, 5), P(referenceBounds, 19, 2),
+                    P(referenceBounds, 20, 6), P(referenceBounds, 4, 9)]);
+                g.DrawLine(thinPen, P(referenceBounds, 7, 4.25f), P(referenceBounds, 10, 7.75f));
+                g.DrawLine(thinPen, P(referenceBounds, 13, 3.15f), P(referenceBounds, 16, 6.65f));
+                break;
+            }
+            case SvgIconKind.Copy:
+                g.DrawRectangle(pen, r.X + r.Width * 0.26f, r.Y + r.Height * 0.26f,
+                    r.Width * 0.64f, r.Height * 0.64f);
+                g.DrawLines(pen,
+                [
+                    new PointF(r.X + r.Width * 0.10f, r.Y + r.Height * 0.70f),
+                    new PointF(r.X + r.Width * 0.10f, r.Y + r.Height * 0.10f),
+                    new PointF(r.X + r.Width * 0.70f, r.Y + r.Height * 0.10f)
+                ]);
+                break;
             case SvgIconKind.InspectorProperties:
             case SvgIconKind.InspectorPhysics:
             case SvgIconKind.InspectorCamera:

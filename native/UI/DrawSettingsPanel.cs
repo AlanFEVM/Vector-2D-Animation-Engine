@@ -2,6 +2,7 @@ namespace VectorAnimationEngine;
 
 internal sealed class DrawSettingsPanel : UserControl
 {
+    private const int FieldRowHeight = Theme.InspectorRowHeightComfortable;
     private readonly DrawSettings _settings;
     private readonly Label _title = InspectorModuleStyle.CreateTitle("Draw Settings");
     private readonly ComboBox _shape = new() { DropDownStyle = ComboBoxStyle.DropDownList };
@@ -9,7 +10,7 @@ internal sealed class DrawSettingsPanel : UserControl
     private readonly SvgToggleButton _keepRatio = Toggle("Ratio", SvgIconKind.Ratio);
     private readonly ModernNumericUpDown _shapeVertexCount = new();
     private readonly ModernSlider _pencilSmoothing = new();
-    private readonly Label _pencilSmoothingValue = new();
+    private readonly Label _pencilSmoothingValue = InspectorModuleStyle.CreateTextLabel();
     private readonly Panel _eraserOptions = new();
     private readonly CheckBox _eraseLines = EraserOption("Stroke");
     private readonly CheckBox _eraseFills = EraserOption("Fill");
@@ -29,7 +30,7 @@ internal sealed class DrawSettingsPanel : UserControl
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
         Padding = Theme.InspectorSectionPadding;
-        MinimumSize = new Size(248, 152);
+        MinimumSize = new Size(0, 152);
         Theme.StyleToolTip(_toolTip);
 
         BuildUi();
@@ -57,8 +58,8 @@ internal sealed class DrawSettingsPanel : UserControl
         + Theme.InspectorRowHeightComfortable
         + (_pencilPresentation
             ? 0
-            : Theme.InspectorRowHeight * 2
-              + (_shapeDetailVisible ? Theme.InspectorRowHeight : 0)
+            : FieldRowHeight + Theme.InspectorRowHeight
+              + (_shapeDetailVisible ? FieldRowHeight : 0)
               + (_eraserOptions.Visible ? Theme.InspectorRowHeight : 0));
 
     private static int SectionBaseHeight =>
@@ -113,11 +114,11 @@ internal sealed class DrawSettingsPanel : UserControl
             RowCount = 4,
             Padding = new Padding(0, Theme.InspectorContentPaddingTop, 0, 0)
         };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Theme.InspectorFieldLabelColumnWidth));
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, FieldRowHeight));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, FieldRowHeight));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeightComfortable));
         _content = content;
         Controls.Add(content);
@@ -128,16 +129,9 @@ internal sealed class DrawSettingsPanel : UserControl
         _eraserOptions.BackColor = Theme.Panel;
         _eraserOptions.Padding = new Padding(0, 2, 0, 2);
         _eraserOptions.Visible = false;
-        var eraseLabel = new Label
-        {
-            Text = "Erase",
-            Dock = DockStyle.Left,
-            Width = Theme.InspectorFieldLabelColumnWidth,
-            ForeColor = Theme.Muted,
-            BackColor = Theme.Panel,
-            Font = Theme.UiFont(),
-            TextAlign = ContentAlignment.MiddleLeft
-        };
+        var eraseLabel = InspectorModuleStyle.CreateFieldLabel("Erase");
+        eraseLabel.Dock = DockStyle.Left;
+        eraseLabel.Width = Theme.InspectorFieldLabelColumnWidth;
         var eraseControls = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -209,25 +203,28 @@ internal sealed class DrawSettingsPanel : UserControl
             UpdatePencilSmoothing();
         };
         _pencilSmoothingValue.Dock = DockStyle.Fill;
-        _pencilSmoothingValue.ForeColor = Theme.Muted;
+        _pencilSmoothingValue.ForeColor = Theme.PanelSecondaryText;
         _pencilSmoothingValue.BackColor = Theme.Panel;
         _pencilSmoothingValue.TextAlign = ContentAlignment.MiddleRight;
-        _pencilSmoothingValue.Font = Theme.UiFont();
+        _pencilSmoothingValue.Font = Theme.UiFont(Theme.InspectorLabelFontSize);
         _pencilSmoothingValue.AccessibleName = "Pencil smoothing value";
         _pencilSmoothingValue.AccessibleRole = AccessibleRole.StaticText;
         var smoothingRow = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
-            ColumnCount = 2,
+            ColumnCount = 3,
             RowCount = 1,
             Margin = Padding.Empty
         };
+        smoothingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76));
         smoothingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         smoothingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
-        smoothingRow.Controls.Add(_pencilSmoothing, 0, 0);
-        smoothingRow.Controls.Add(_pencilSmoothingValue, 1, 0);
-        AddField(content, "Smoothing", smoothingRow, 3);
+        smoothingRow.Controls.Add(InspectorModuleStyle.CreateFieldLabel("Smoothing"), 0, 0);
+        smoothingRow.Controls.Add(_pencilSmoothing, 1, 0);
+        smoothingRow.Controls.Add(_pencilSmoothingValue, 2, 0);
+        content.Controls.Add(smoothingRow, 0, 3);
+        content.SetColumnSpan(smoothingRow, 2);
         ConfigureShapeDetail(_settings.ShapeKind, syncValue: true);
     }
 
@@ -298,7 +295,7 @@ internal sealed class DrawSettingsPanel : UserControl
 
         if (_shapeDetailVisible == visible) return;
         _shapeDetailVisible = visible;
-        _content!.RowStyles[2].Height = visible ? Theme.InspectorRowHeight : 0;
+        _content!.RowStyles[2].Height = visible ? FieldRowHeight : 0;
         _shapeVertexCountLabel!.Visible = visible;
         _shapeVertexCount.Visible = visible;
         NotifyPreferredHeightChanged();
@@ -312,29 +309,19 @@ internal sealed class DrawSettingsPanel : UserControl
             _content.Height = Theme.InspectorContentPaddingTop
                 + (int)_content.RowStyles.Cast<RowStyle>().Sum(style => style.Height);
         }
-        MinimumSize = new Size(248, _pencilPresentation ? PreferredHeight : PreferredHeight - 12);
+        MinimumSize = new Size(0, _pencilPresentation ? PreferredHeight : PreferredHeight - 12);
         PreferredHeightChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private static Label AddField(TableLayoutPanel parent, string label, Control input, int row, bool fillInput = true)
     {
-        var labelControl = new Label
-        {
-            Text = label,
-            Dock = DockStyle.Fill,
-            ForeColor = Theme.Muted,
-            BackColor = Theme.Panel,
-            Font = Theme.UiFont(),
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = false,
-            Margin = Theme.InspectorFieldMargin(rightGap: true)
-        };
+        var labelControl = InspectorModuleStyle.CreateFieldLabel(label);
         parent.Controls.Add(labelControl, 0, row);
 
         if (fillInput)
         {
             input.Dock = DockStyle.Fill;
-            input.Margin = Theme.InspectorFieldMargin(rightGap: false);
+            InspectorModuleStyle.StyleField(input);
         }
 
         parent.Controls.Add(input, 1, row);
@@ -348,10 +335,10 @@ internal sealed class DrawSettingsPanel : UserControl
         Text = text,
         AutoSize = true,
         Checked = true,
-        ForeColor = Theme.Text,
+        ForeColor = Theme.PanelSecondaryText,
         BackColor = Theme.Panel,
         FlatStyle = FlatStyle.Flat,
-        Font = Theme.UiFont(),
+        Font = Theme.UiFont(Theme.InspectorLabelFontSize),
         Margin = new Padding(0, 3, 14, 0)
     };
 }

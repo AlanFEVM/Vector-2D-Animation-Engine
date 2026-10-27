@@ -2016,17 +2016,19 @@ internal sealed partial class TimelineStrip : Control
         }
         graphics.SmoothingMode = smoothingMode;
 
-        DrawPlayheadFrameLabel(graphics, layout, centerX, playhead, accent);
+        DrawPlayheadFrameLabel(graphics, layout, playhead, accent);
     }
 
-    private void DrawPlayheadFrameLabel(Graphics graphics, TimelineLayout layout, float centerX, Color playhead, Color accent)
+    private RectangleF PlayheadFrameLabelBounds(TimelineLayout layout, int frame, Font font)
     {
-        if (layout.TrackRight - layout.TrackLeft < ScaleTimelineMetric(64)) return;
+        if (layout.TrackRight - layout.TrackLeft < ScaleTimelineMetric(64)) return RectangleF.Empty;
+        var column = frame - _firstVisibleFrame;
+        if (column < 0 || column >= VisibleFrameDrawCount(layout)) return RectangleF.Empty;
+        var centerX = layout.TrackLeft + column * _frameCellWidth + _frameCellWidth / 2f;
+        if (centerX < layout.TrackLeft || centerX >= layout.TrackRight) return RectangleF.Empty;
 
-        var label = CurrentFrame.ToString(CultureInfo.CurrentCulture);
-        using var font = Theme.UiFont(7.5f, FontStyle.Bold);
         var textSize = TextRenderer.MeasureText(
-            label,
+            frame.ToString(CultureInfo.CurrentCulture),
             font,
             new Size(int.MaxValue, int.MaxValue),
             TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
@@ -2041,18 +2043,30 @@ internal sealed partial class TimelineStrip : Control
         // track area, and skip it entirely rather than clip half a number against the gutter.
         var left = centerX + ScaleTimelineMetric(8);
         if (left + width > layout.TrackRight - ScaleTimelineMetric(2)) left = centerX - ScaleTimelineMetric(8) - width;
-        if (left < layout.TrackLeft || left + width > layout.TrackRight) return;
+        if (left < layout.TrackLeft || left + width > layout.TrackRight) return RectangleF.Empty;
+
+        return new RectangleF(left, top, width, height);
+    }
+
+    private void DrawPlayheadFrameLabel(Graphics graphics, TimelineLayout layout, Color playhead, Color accent)
+    {
+        using var font = Theme.UiFont(7.5f, FontStyle.Bold);
+        var bounds = PlayheadFrameLabelBounds(layout, CurrentFrame, font);
+        if (bounds.IsEmpty) return;
+        var label = CurrentFrame.ToString(CultureInfo.CurrentCulture);
+        var bullet = ScaleTimelineMetric(4);
+        var gap = ScaleTimelineMetric(4);
+        var padding = ScaleTimelineMetric(4);
 
         // A solid accent chip: the marker color itself carries the badge, so the counter stays the
         // strongest reading of the playhead frame while the number resolves to readable ink. Text and ink
         // are contrasted against the same color the chip is painted with.
-        var bounds = new RectangleF(left, top, width, height);
         using var chip = new SolidBrush(playhead);
         Theme.FillUiRectangle(graphics, chip, bounds);
         using var border = new Pen(Color.FromArgb(150, accent), 1f);
         Theme.DrawUiRectangle(graphics, border, bounds);
 
-        var dot = new RectangleF(left + padding, top + height / 2f - bullet / 2f, bullet, bullet);
+        var dot = new RectangleF(bounds.Left + padding, bounds.Top + bounds.Height / 2f - bullet / 2f, bullet, bullet);
         var smoothingMode = graphics.SmoothingMode;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         Theme.FillUiRectangle(graphics, chip, dot);
@@ -2065,7 +2079,7 @@ internal sealed partial class TimelineStrip : Control
 
         var textBounds = Rectangle.Round(RectangleF.FromLTRB(
             dot.Right + gap,
-            top,
+            bounds.Top,
             bounds.Right - padding,
             bounds.Bottom));
         TextRenderer.DrawText(
@@ -2074,7 +2088,7 @@ internal sealed partial class TimelineStrip : Control
             font,
             textBounds,
             Theme.ReadableText(playhead, accent),
-            TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+            TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
     }
 
     private void DrawHorizontalScroll(Graphics graphics, TimelineLayout layout)

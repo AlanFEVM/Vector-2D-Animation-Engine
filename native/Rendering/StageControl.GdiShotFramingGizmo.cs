@@ -6,7 +6,7 @@ namespace VectorAnimationEngine;
 internal readonly record struct ShotPreviewSourceState(
     Reference3DBaseFrameRenderState Content, StageControl.ShotProjectionView View,
     int BackgroundArgb, float GridOpacity, WorldGridType GridType, bool Playback,
-    SceneCanvasPresentation? Canvas);
+    SceneCanvasPresentation? Canvas, ulong ParallaxLayers);
 
 // GDI overlay of the shot framing gizmo plus the offscreen capture used for shot previews.
 internal sealed partial class StageControl
@@ -18,8 +18,16 @@ internal sealed partial class StageControl
     internal ShotPreviewSourceState CreateShotPreviewSourceState()
     {
         EnsureShotProjectionView();
+        var parallaxLayers = 14695981039346656037UL;
+        if (_referenceSceneDefinition is { } definition)
+            foreach (var layer in definition.Layers)
+            {
+                AddReference3DHashString(ref parallaxLayers, layer.Id);
+                AddReference3DHashInt(ref parallaxLayers, BitConverter.SingleToInt32Bits(layer.ParallaxDepth));
+                AddReference3DHashInt(ref parallaxLayers, layer.ParallaxEnabled ? 1 : 0);
+            }
         return new(CreateReference3DBaseFrameRenderState(), _shotProjectionView,
-            BackColor.ToArgb(), WorldGridOpacity, WorldGridType, PlaybackActive, CanvasPresentation);
+            BackColor.ToArgb(), WorldGridOpacity, WorldGridType, PlaybackActive, CanvasPresentation, parallaxLayers);
     }
 
     internal void ReleaseShotPreviewResources()
@@ -502,12 +510,13 @@ internal sealed partial class StageControl
     /// Renders the composition of the current frame offscreen and returns the pixels covered by the
     /// framed viewport, so the director panel can present a real shot preview (rotation included).
     /// </summary>
-    internal bool TryCaptureShotPreview(SceneShotSettings settings, Size targetSize, out Bitmap? bitmap)
+    internal bool TryCaptureShotPreview(SceneShotSettings settings, Size targetSize, out Bitmap? bitmap,
+        SceneShotSettings? parallaxAnchor = null)
     {
         bitmap = null;
         if (Scene is null) return false;
         if (settings.PinsPlanarRotation && CanRenderPlanarShotPreview)
-            return TryCapturePlanarShotPreview(settings, targetSize, out bitmap);
+            return TryCapturePlanarShotPreview(settings, targetSize, out bitmap, parallaxAnchor);
         var surfaceWidth = ClientSize.Width;
         var surfaceHeight = ClientSize.Height;
         if (surfaceWidth <= 8 || surfaceHeight <= 8) return false;

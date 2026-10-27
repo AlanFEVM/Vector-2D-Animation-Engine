@@ -592,14 +592,53 @@ internal sealed partial class VectorScene
             .ToArray();
     }
 
+    // A marquee over a traced artwork addresses tens of thousands of boundary segments.
+    // Per-segment hits at that scale cost more to build and carry through selection than
+    // they can express, so a large marquee answers with whole-element hits instead: every
+    // object keeps exactly one fill and one boundary-stroke hit, and the containment test
+    // is unchanged. Precise per-segment hits remain for marquees up to this many objects.
+    internal const int MarqueeElementHitBudget = 8_192;
+    internal const int MarqueeWholeElementObjectLimit = 256;
+
     public DrawingElementHit[] QueryDrawingElementsInsideBounds(RectangleF worldBounds, int frame, int limit = 100_000)
     {
         var bounds = Normalize(worldBounds);
         var result = new List<DrawingElementHit>();
-        foreach (var objectIndex in QueryDrawingObjects(bounds, frame, limit))
+        // QueryDrawingObjects already resolved the exposure of every returned object, so the
+        // occlusion union per object must not run a second time here.
+        var marqueeObjects = QueryDrawingObjects(bounds, frame, limit);
+        if (marqueeObjects.Length > MarqueeWholeElementObjectLimit)
         {
-            if (!HasExposedPathFill(objectIndex, frame)) continue;
+            var bulk = new List<DrawingElementHit>(marqueeObjects.Length * 2);
+            foreach (var objectIndex in marqueeObjects)
+            {
+                if (!IsObjectGeometryInsideBounds(objectIndex, bounds)) continue;
+                if (HasFill(objectIndex))
+                {
+                    bulk.Add(new DrawingElementHit(
+                        new DrawingElementKey(objectIndex, DrawingElementKind.Fill, 0),
+                        0,
+                        0,
+                        1));
+                }
+
+                if (HasStroke(objectIndex))
+                {
+                    bulk.Add(new DrawingElementHit(
+                        new DrawingElementKey(objectIndex, DrawingElementKind.BoundaryStroke, 0),
+                        0,
+                        0,
+                        1));
+                }
+            }
+
+            return bulk.ToArray();
+        }
+
+        foreach (var objectIndex in marqueeObjects)
+        {
             var shape = ShapeKind[objectIndex];
+            var collapsed = result.Count >= MarqueeElementHitBudget;
             if (shape == VectorAnimationEngine.ShapeKind.MixingStroke)
             {
                 if (TryGetMixingBrushLocalRegion(objectIndex, out var mixingRegion))
@@ -646,6 +685,16 @@ internal sealed partial class VectorScene
             if (IsTopologyStrokeShape(shape))
             {
                 if (!HasStroke(objectIndex)) continue;
+                if (collapsed)
+                {
+                    result.Add(new DrawingElementHit(
+                        new DrawingElementKey(objectIndex, DrawingElementKind.BoundaryStroke, 0),
+                        0,
+                        0,
+                        1));
+                    continue;
+                }
+
                 var splits = StrokeSplitParameters(objectIndex, candidates);
                 if (shape == VectorAnimationEngine.ShapeKind.Line)
                 {
@@ -692,6 +741,16 @@ internal sealed partial class VectorScene
             }
 
             if (!HasStroke(objectIndex)) continue;
+            if (collapsed)
+            {
+                result.Add(new DrawingElementHit(
+                    new DrawingElementKey(objectIndex, DrawingElementKind.BoundaryStroke, 0),
+                    0,
+                    0,
+                    1));
+                continue;
+            }
+
             foreach (var part in BuildBoundaryStrokeParts(objectIndex, candidates))
             {
                 if (!part.Points.All(point => PointInRectangle(point, bounds))) continue;

@@ -1051,10 +1051,13 @@ internal static partial class Benchmark
             && PointsNear(compositionShapeMapping[0][0], new PointF(170, 420))
             && NearlyEqual(destination.X[1], 200)
             && NearlyEqual(destination.Y[1], 360)
-            && destination.GeometryRevision <= 2
+            && destination.GeometryIndexBuildCount == 1
             && destination.TileCount.Sum() > 0
             && destination.OverviewCount.Sum() > 0,
-            "Scene composition did not resolve and transform the drawing-object instance.");
+            "Scene composition did not resolve and transform the drawing-object instance. "
+            + $"objects={destination.ObjectCount}, layers={string.Join(';', destination.LayerNames)}, "
+            + $"x={string.Join(';', destination.X.Take(destination.ObjectCount))}, y={string.Join(';', destination.Y.Take(destination.ObjectCount))}, "
+            + $"revision={destination.GeometryRevision}, tiles={destination.TileCount.Sum()}, overview={destination.OverviewCount.Sum()}.");
         AssertTimeline(
             composition.TryGetOwner(0, out var rootOwner)
             && rootOwner.InstanceId == instance.Id
@@ -1084,13 +1087,13 @@ internal static partial class Benchmark
         var tintedStops = destination.GetGradientStops(0);
         AssertTimeline(
             destination.ObjectCount == 2
-            && destination.Argb[0] == ApplyInstanceAppearanceForRegression(Color.Teal.ToArgb(), 0.5f, rootTint)
-            && destination.Argb[1] == ApplyInstanceAppearanceForRegression(
+            && ComposedArgbForRegression(destination, 0, destination.Argb[0]) == ApplyInstanceAppearanceForRegression(Color.Teal.ToArgb(), 0.5f, rootTint)
+            && ComposedArgbForRegression(destination, 1, destination.Argb[1]) == ApplyInstanceAppearanceForRegression(
                 Color.Coral.ToArgb(),
                 0.25f,
                 Color.FromArgb(255, 128, 128, 128).ToArgb())
             && tintedStops.Length == sourceGradientStops.Length
-            && tintedStops.Select(stop => stop.Argb).SequenceEqual(sourceGradientStops.Select(stop =>
+            && tintedStops.Select(stop => ComposedArgbForRegression(destination, 0, stop.Argb)).SequenceEqual(sourceGradientStops.Select(stop =>
                 ApplyInstanceAppearanceForRegression(stop.Argb, 0.5f, rootTint)))
             && drawingObject.Scene.Argb[sourceGradientObject] == Color.Teal.ToArgb()
             && drawingObject.Scene.GetGradientStops(sourceGradientObject).SequenceEqual(sourceGradientStops),
@@ -1381,7 +1384,7 @@ internal static partial class Benchmark
         AssertTimeline(
             !stackProject.TryConvertDrawingObjectsToSymbol(
                 stackContainer.Id,
-                [topRectangle],
+                [bottomRectangle, bottomEllipse],
                 0,
                 out _,
                 out _)
@@ -1401,13 +1404,13 @@ internal static partial class Benchmark
         AssertTimeline(
             stackProject.TryConvertDrawingObjectsToSymbol(
                 stackContainer.Id,
-                [bottomRectangle, bottomEllipse],
+                [topRectangle],
                 0,
                 out var stackSymbol,
                 out var stackInstance)
             && stackSymbol is not null
             && stackInstance is not null,
-            "Convert to Symbol rejected a bottommost contiguous local selection.");
+            "Convert to Symbol rejected a topmost contiguous local selection.");
         var stackAfter = new VectorScene();
         SceneCompositionBuilder.BuildDrawingObjectPreview(
             stackAfter,
@@ -1428,16 +1431,19 @@ internal static partial class Benchmark
         AssertTimeline(
             stackBefore.ObjectCount == stackAfter.ObjectCount
             && stackInstances.Count == 2
-            && ReferenceEquals(stackInstances[0], stackInstance)
-            && ReferenceEquals(stackInstances[1], existingInstance)
-            && stackAfter.ObjectLayer[navyObject] > stackAfter.ObjectLayer[tealObject]
+            && ReferenceEquals(stackInstances[0], existingInstance)
+            && ReferenceEquals(stackInstances[1], stackInstance)
+            && stackAfter.ObjectLayer[navyObject] < stackAfter.ObjectLayer[crimsonObject]
             && stackAfter.ObjectLayer[tealObject] == stackAfter.ObjectLayer[goldObject]
             && stackAfter.ObjectLayer[tealObject] > stackAfter.ObjectLayer[crimsonObject]
             && PointsNear(new PointF(stackAfter.X[tealObject], stackAfter.Y[tealObject]), new PointF(40, 40))
             && PointsNear(new PointF(stackAfter.X[goldObject], stackAfter.Y[goldObject]), new PointF(80, 40))
             && PointsNear(new PointF(stackAfter.X[crimsonObject], stackAfter.Y[crimsonObject]), new PointF(60, 40))
             && PointsNear(new PointF(stackAfter.X[navyObject], stackAfter.Y[navyObject]), new PointF(60, 40)),
-            "Convert to Symbol changed the selected group's order relative to local geometry or existing nested instances.");
+            "Convert to Symbol changed the selected group's order relative to local geometry or existing nested instances. "
+            + $"objects={stackBefore.ObjectCount}/{stackAfter.ObjectCount}, instances={string.Join(';', stackInstances.Select(item => item.Name))}, "
+            + $"layers navy/teal/gold/crimson={stackAfter.ObjectLayer[navyObject]}/{stackAfter.ObjectLayer[tealObject]}/{stackAfter.ObjectLayer[goldObject]}/{stackAfter.ObjectLayer[crimsonObject]}, "
+            + $"positions={string.Join(';', Enumerable.Range(0, stackAfter.ObjectCount).Select(index => $"{stackAfter.X[index]},{stackAfter.Y[index]}"))}.");
     }
 
     private static void RunSceneSpatialPoseCompositionRegression()
@@ -2261,27 +2267,27 @@ internal static partial class Benchmark
     /// </summary>
     private static bool RunEditorRestartMissingDirectoryRegression()
     {
-        var (statePath, tokenSidecarPath) = EditorRestartStore.GetPendingPathsForRegression();
-        var directory = Path.GetDirectoryName(statePath);
-        if (string.IsNullOrEmpty(directory)) return false;
+        var temporaryRoot = CreateTemporaryDirectory("restart-missing-directory");
+        try
+        {
+            var directory = Path.Combine(temporaryRoot, "absent");
+            AppLog.Flush();
+            var logPath = AppLog.LogPath;
+            if (string.IsNullOrEmpty(logPath) || !File.Exists(logPath)) return false;
+            var before = new FileInfo(logPath).Length;
 
-        EditorRestartStore.DeletePending();
-        if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
-        if (Directory.Exists(directory)) return false;
+            EditorRestartStore.DeletePendingFromDirectory(directory);
+            AppLog.Flush();
 
-        AppLog.Flush();
-        var logPath = AppLog.LogPath;
-        if (string.IsNullOrEmpty(logPath) || !File.Exists(logPath)) return false;
-        var before = new FileInfo(logPath).Length;
-
-        EditorRestartStore.DeletePending();
-        AppLog.Flush();
-
-        var appended = ReadAppendedLogText(logPath, before);
-        return !appended.Contains("Unable to delete the pending editor restart handoff", StringComparison.Ordinal)
-            && !appended.Contains("DirectoryNotFoundException", StringComparison.Ordinal)
-            && !File.Exists(statePath)
-            && !File.Exists(tokenSidecarPath);
+            var appended = ReadAppendedLogText(logPath, before);
+            return !appended.Contains("Unable to delete the pending editor restart handoff", StringComparison.Ordinal)
+                && !appended.Contains("DirectoryNotFoundException", StringComparison.Ordinal)
+                && !Directory.Exists(directory);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(temporaryRoot);
+        }
     }
 
     private static string ReadAppendedLogText(string logPath, long offset)
@@ -2859,8 +2865,7 @@ internal static partial class Benchmark
             using (var maliciousArchive = new ZipArchive(maliciousStream, ZipArchiveMode.Create))
             {
                 var evilEntry = maliciousArchive.CreateEntry("Project.v2dProject");
-                using var evilWriter = new StreamWriter(evilEntry.Open());
-                evilWriter.Write("{}");
+                using (var evilWriter = new StreamWriter(evilEntry.Open())) evilWriter.Write("{}");
                 var escapeEntry = maliciousArchive.CreateEntry("../Escaped.txt");
                 using var escapeWriter = new StreamWriter(escapeEntry.Open());
                 escapeWriter.Write("escape");
@@ -2995,7 +3000,7 @@ internal static partial class Benchmark
             && previousFrameObjectCount == 1
             && destination.ObjectCount == 2
             && destination.Argb[0] == Color.CornflowerBlue.ToArgb()
-            && destination.Argb[1] == ApplyInstanceAppearanceForRegression(
+            && ComposedArgbForRegression(destination, 1, destination.Argb[1]) == ApplyInstanceAppearanceForRegression(
                 Color.CornflowerBlue.ToArgb(),
                 0.5f,
                 Color.FromArgb(255, 128, 200, 64).ToArgb())
@@ -3252,10 +3257,14 @@ internal static partial class Benchmark
             .First();
         var destination = new VectorScene();
         var packedResult = SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 20);
+        var firstRootObject = packedResult.ObjectOwners
+            .Where(item => item.Value.InstanceId == instance.Id)
+            .Select(item => item.Key)
+            .Min();
         var evaluatedAppearance = instance.EvaluateState(20);
         var expectedFirstArgb = ApplyInstanceAppearanceForRegression(
             sourceArgb[sourceFirstObject],
-            evaluatedAppearance.Alpha,
+            evaluatedAppearance.Alpha * drawingObject.Scene.LayerOpacity[drawingObject.Scene.ObjectLayer[sourceFirstObject]],
             evaluatedAppearance.TintArgb);
         var sourceUnchanged = drawingObject.Scene.Argb
             .Take(drawingObject.Scene.ObjectCount)
@@ -3264,12 +3273,12 @@ internal static partial class Benchmark
         AssertTimeline(
             destination.ObjectCount == expectedPackedObjectCount
             && CompositionRegressionMetadataMatches(destination, packedResult, expectedMetadata)
-            && destination.Argb[0] == expectedFirstArgb
+            && ComposedArgbForRegression(destination, firstRootObject, destination.Argb[firstRootObject]) == expectedFirstArgb
             && sourceUnchanged,
             "Packed instance composition did not apply Alpha and multiply tint without mutating its source: "
             + $"objects={destination.ObjectCount}/{expectedPackedObjectCount}, owners={packedResult.ObjectOwners.Count}, "
             + $"poses={packedResult.ObjectPoses.Count}, "
-            + $"source={sourceFirstObject}, actual=0x{(destination.ObjectCount > 0 ? destination.Argb[0] : 0):X8}, expected=0x{expectedFirstArgb:X8}, "
+            + $"source={sourceFirstObject}, actual=0x{ComposedArgbForRegression(destination, firstRootObject, destination.Argb[firstRootObject]):X8}, expected=0x{expectedFirstArgb:X8}, "
             + $"alpha={evaluatedAppearance.Alpha:R}, tint=0x{evaluatedAppearance.TintArgb:X8}, sourceUnchanged={sourceUnchanged}.");
 
         drawingObject.Scene.EditFrame = 20;

@@ -13,6 +13,7 @@ This directory separates current product behavior from version-specific history.
 
 | Version | Release notes |
 | --- | --- |
+| 0.2.7 | [RELEASE_NOTES_0.2.7.md](RELEASE_NOTES_0.2.7.md) |
 | 0.1.12 | [RELEASE_NOTES_0.1.12.md](RELEASE_NOTES_0.1.12.md) |
 | 0.1.11 | [RELEASE_NOTES_0.1.11.md](RELEASE_NOTES_0.1.11.md) |
 | 0.1.9 | [RELEASE_NOTES_0.1.9.md](RELEASE_NOTES_0.1.9.md) |

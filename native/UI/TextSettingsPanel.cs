@@ -32,7 +32,7 @@ internal sealed class TextSettingsPanel : UserControl
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
         Padding = Theme.InspectorSectionPadding;
-        MinimumSize = new Size(248, PreferredHeight - 12);
+        MinimumSize = new Size(0, PreferredHeight);
         AccessibleName = "Text Tool";
         AccessibleRole = AccessibleRole.Pane;
         Theme.StyleToolTip(_toolTip);
@@ -43,6 +43,7 @@ internal sealed class TextSettingsPanel : UserControl
             DefaultFontSizePoints,
             TextFontStyle.Regular,
             TextHorizontalAlignment.Left);
+        UiLocalization.Watch(this);
     }
 
     public string FontFamilyName => _fontFamily.SelectedItem as string ?? DefaultFontFamilyName;
@@ -57,7 +58,7 @@ internal sealed class TextSettingsPanel : UserControl
 
     public int PreferredHeight => Theme.InspectorTitleHeight
         + Theme.InspectorContentPaddingTop
-        + Theme.InspectorRowHeight * 4
+        + Theme.InspectorRowHeightComfortable * 4
         + Theme.InspectorSectionPaddingVertical * 2;
 
     public event EventHandler? SettingsChanged;
@@ -147,11 +148,11 @@ internal sealed class TextSettingsPanel : UserControl
             Padding = new Padding(0, Theme.InspectorContentPaddingTop, 0, 0),
             Margin = Padding.Empty
         };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Theme.InspectorFieldLabelColumnWidthNarrow));
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
         for (var row = 0; row < 4; row++)
         {
-            content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeightComfortable));
         }
 
         Controls.Add(content);
@@ -205,17 +206,17 @@ internal sealed class TextSettingsPanel : UserControl
             _alignLeft,
             "Align Left",
             TextHorizontalAlignment.Left,
-            new Padding(0, 2, 4, 2));
+            new Padding(0, 4, 4, 4));
         ConfigureAlignmentButton(
             _alignCenter,
             "Align Center",
             TextHorizontalAlignment.Center,
-            new Padding(0, 2, 4, 2));
+            new Padding(0, 4, 4, 4));
         ConfigureAlignmentButton(
             _alignRight,
             "Align Right",
             TextHorizontalAlignment.Right,
-            new Padding(0, 2, 0, 2));
+            new Padding(0, 4, 0, 4));
         alignmentControls.Controls.Add(_alignLeft);
         alignmentControls.Controls.Add(_alignCenter);
         alignmentControls.Controls.Add(_alignRight);
@@ -246,8 +247,8 @@ internal sealed class TextSettingsPanel : UserControl
         TextHorizontalAlignment alignment,
         Padding margin)
     {
-        button.Width = Theme.ControlHeightCompact;
-        button.Height = Theme.ControlHeightCompact;
+        button.Width = Theme.ControlHeight;
+        button.Height = Theme.ControlHeight;
         button.Margin = margin;
         button.AccessibleName = accessibleName;
         button.AccessibleRole = AccessibleRole.RadioButton;
@@ -316,17 +317,8 @@ internal sealed class TextSettingsPanel : UserControl
 
     private static void AddField(TableLayoutPanel parent, string label, Control input, int row)
     {
-        var labelControl = new Label
-        {
-            Text = label,
-            Dock = DockStyle.Fill,
-            ForeColor = Theme.Muted,
-            BackColor = Theme.Panel,
-            Font = Theme.UiFont(),
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = false,
-            Margin = Theme.InspectorFieldMargin(rightGap: true)
-        };
+        var labelControl = InspectorModuleStyle.CreateFieldLabel(label);
+        if (input is not FlowLayoutPanel) InspectorModuleStyle.StyleField(input);
         parent.Controls.Add(labelControl, 0, row);
         parent.Controls.Add(input, 1, row);
     }

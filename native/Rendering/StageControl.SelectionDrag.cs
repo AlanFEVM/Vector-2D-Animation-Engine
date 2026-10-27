@@ -180,7 +180,9 @@ internal sealed partial class StageControl
         _selectionDragPreviewActive = true;
         _selectionDragPreviewOffset = worldOffset;
         AdvanceSelectionDragPreviewRevision();
-        if (invalidate) InvalidateOverlay();
+        // A drag is a pure translation of the recorded highlight; repaint without
+        // invalidating the selection command cache so large selections stay cheap.
+        if (invalidate) RequestStageFrame(basePresentationChanged: false, preserveSelectionRenderCache: true);
         return true;
     }
 
@@ -190,7 +192,7 @@ internal sealed partial class StageControl
         _selectionDragPreviewActive = false;
         _selectionDragPreviewOffset = PointF.Empty;
         AdvanceSelectionDragPreviewRevision();
-        if (invalidate) InvalidateOverlay();
+        if (invalidate) RequestStageFrame(basePresentationChanged: false, preserveSelectionRenderCache: true);
         return true;
     }
 

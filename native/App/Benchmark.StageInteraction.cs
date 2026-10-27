@@ -6066,11 +6066,17 @@ internal static partial class Benchmark
             }
             var expectedObjectArgb = ApplyInstanceAppearanceForRegression(
                 Color.FromArgb(128, 128, 128).ToArgb(),
-                0.5f,
+                1f,
                 tint.ToArgb());
+            var appearanceLayer = appearanceScene.GetLayerParentIndex(appearanceScene.ObjectLayer[appearanceImported]);
             AssertTimeline(
                 appearanceMatches
-                && appearanceScene.Argb[appearanceImported] == expectedObjectArgb,
+                && appearanceScene.Argb[appearanceImported] == expectedObjectArgb
+                && appearanceLayer >= 0
+                && appearanceScene.GetLayerKind(appearanceLayer) == DrawingLayerKind.Folder
+                && appearanceScene.LayerBlendModes[appearanceLayer] == LayerBlendMode.Isolate
+                && appearanceScene.LayerOpacity[appearanceLayer] == 0.5f
+                && appearanceScene.LayerOpacity[appearanceScene.ObjectLayer[appearanceImported]] == 1f,
                 "Imported SVG composition did not apply instance Alpha and multiply tint to its rendered appearance: "
                 + $"pixel={comparisonPixel}, actualBGRA=[{string.Join(',', actualAppearance)}], "
                 + $"expectedBGRA=[{string.Join(',', expectedAppearance)}], "
@@ -6259,7 +6265,14 @@ internal static partial class Benchmark
                 AssertCyan(new PointF(0, 2_000), "outer contour");
                 AssertCyan(new PointF(0, 500), "hole contour");
             }
-            else AssertCyan(new PointF(-2_500, -2_000), "native object bounds");
+            else
+            {
+                // Whole-object selection of an editable path follows its authored contours, exactly
+                // like the fill-part case and like the Direct2D renderer, instead of boxing it.
+                AssertCyan(new PointF(0, 2_000), "whole-object outer contour");
+                AssertCyan(new PointF(1_250, 0), "whole-object outer contour");
+                AssertCyan(new PointF(0, 500), "whole-object hole contour");
+            }
             AssertNativeOverlayParity(stage, bitmap, direct2d);
             var fillInterior = SampleBitmap(bitmap, stage.WorldToScreen(-1_625, 1_375));
             AssertTimeline(fillInterior.ToArgb() == Color.Black.ToArgb(),
@@ -6275,7 +6288,9 @@ internal static partial class Benchmark
                     var color = bitmap.GetPixel(x, y);
                     cyan |= color.G > 100 && color.B > 100 && color.R < color.G;
                 }
-                AssertTimeline(cyan, $"SVG Path {label} did not use native fill UI for {contourLabel}.");
+                AssertTimeline(cyan, $"SVG Path {label} did not use native fill UI for {contourLabel} "
+                    + $"(screen={screen}, bounds={scene.GetObjectWorldBounds(path)}, shape={scene.ShapeKind[path]}, "
+                    + $"centerPixel={bitmap.GetPixel(screen.X, screen.Y).ToArgb():X8}, active={scene.IsObjectActive(path, stage.Frame)}).");
             }
         }
 
@@ -6690,11 +6705,14 @@ internal static partial class Benchmark
         RequireField(typeof(MainForm), "_activeHandle").SetValue(form, EditHandleKind.None);
         RequireField(typeof(MainForm), "_startWorld").SetValue(form, PointF.Empty);
         RequireMethod(typeof(MainForm), "CaptureEditStart").Invoke(form, [editorPartial]);
+        AssertTimeline(editorScene.TryGetLineCubic(editorPartial, out var partialStart, out _, out _, out var partialEnd),
+            "The partial imported stroke lost its cubic geometry before translation.");
         move.Invoke(form, [new PointF(100, 0), true, false]);
         editorScene.TryGetPathBezierWorldContours(fill, out var movedFill);
-        AssertTimeline(movedFill[0][0].Anchor == beforePartial[0][0].Anchor
-            && movedFill[0][3].Anchor == beforePartial[0][1].Anchor,
-            "The editor translated an entire fill edge when moving a partial imported stroke.");
+        AssertTimeline(movedFill[0].SequenceEqual(beforePartial[0])
+            && editorScene.TryGetLineCubic(editorPartial, out var movedStart, out _, out _, out var movedEnd)
+            && movedStart == Offset(partialStart, 100) && movedEnd == Offset(partialEnd, 100),
+            "Moving an independent partial imported stroke changed its coincident fill or lost the stroke translation.");
         move.Invoke(form, [PointF.Empty, true, false]);
         editorScene.TryGetPathBezierWorldContours(fill, out var unmovedFill);
         AssertTimeline(unmovedFill[0].SequenceEqual(beforePartial[0]),
@@ -6767,6 +6785,8 @@ internal static partial class Benchmark
             && scene.GetVisiblePathSelectionPolylines(lower, 0).Length > 0,
             "Transparent clothes incorrectly suppressed visible underlying paths.");
         scene.Argb[upper] = Color.Blue.ToArgb();
+        AssertTimeline(scene.GetVisiblePathSelectionPolylines(lower, 0).Length == 0,
+            "Restoring opaque paint reused the transparent selection outline.");
         scene.TransformObjects([upper], point => new PointF(point.X + 500, point.Y));
         AssertTimeline(scene.IsSelectionPointExposed(lower, new PointF(5, 5), 0),
             "Moved occluders left stale selection visibility.");
@@ -6775,7 +6795,24 @@ internal static partial class Benchmark
         AssertTimeline(after.PathLocalContours[lower].SelectMany(contour => contour)
             .SequenceEqual(lowerSnapshot.PathLocalContours[lower].SelectMany(contour => contour)),
             "Visibility queries modified hidden source geometry.");
-        Console.WriteLine("svg_visible_selection=ok,opaque=ok,holes=ok,transparent=ok,locked=ok,move=ok,nonmutating=ok");
+        var batchTargets = new List<int> { lower, upper };
+        for (var index = 0; index < 6; index++)
+        {
+            batchTargets.Add(scene.AddObject(0, new PointF(400 + index * 120, 0), new SizeF(40, 40),
+                0, 0, Color.Teal, Color.Transparent, 4, ShapeKind.Rectangle));
+        }
+        scene.PrepareSelectionOutlineBatch(batchTargets, 0);
+        AssertTimeline(scene.GetVisiblePathSelectionPolylines(lower, 0).Length == 0,
+            "Prepared selection did not retain opaque occlusion.");
+        scene.Argb[upper] = Color.FromArgb(128, Color.Blue).ToArgb();
+        AssertTimeline(scene.IsSelectionPointExposed(lower, new PointF(5, 5), 0)
+            && scene.GetVisiblePathSelectionPolylines(lower, 0).Length > 0,
+            "Prepared selection retained stale opaque paint.");
+        scene.Argb[upper] = Color.Blue.ToArgb();
+        AssertTimeline(!scene.IsSelectionPointExposed(lower, new PointF(5, 5), 0)
+            && scene.GetVisiblePathSelectionPolylines(lower, 0).Length == 0,
+            "Prepared selection retained stale transparent paint.");
+        Console.WriteLine("svg_visible_selection=ok,opaque=ok,holes=ok,transparent=ok,locked=ok,move=ok,nonmutating=ok,prepared_paint_changes=ok");
     }
 
     private static void RunMultiLayerSelectionRegression()
@@ -7418,6 +7455,7 @@ internal static partial class Benchmark
         RunDenseToolNavigationRegression();
         RunDenseToolWheelNavigationRegression();
         RunSelectedBoundaryPanCacheRegression();
+        RunLargeSelectionFrameRateRegression();
         RunLineEditingPointerRegression();
         RunSelectionMoveCursorRegression();
         AssertTimeline(

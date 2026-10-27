@@ -29,10 +29,16 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
     private readonly Label _originalSize = ValueLabel();
     private readonly Label _validation = ValueLabel();
     private readonly CanvasPreview _preview = new();
+    private readonly Label _previewSummary = ValueLabel();
+    private readonly SvgIconButton _advancedToggle = new(SvgIconKind.ChevronRight)
+    {
+        Text = "Advanced settings", AccessibleName = "Advanced settings", IsDisclosureHeader = true,
+        Dock = DockStyle.Fill, Margin = Padding.Empty
+    };
     private readonly ToolTip _toolTip = new();
     private readonly List<(Button Button, Size Size)> _presets = [];
     private readonly List<Control> _imageControls = [];
-    private readonly List<(TableLayoutPanel Panel, int Row, int Height)> _imageRows = [];
+    private readonly List<(TableLayoutPanel Panel, int Row, int Height, SettingVisibility Visibility)> _conditionalRows = [];
     private readonly List<(Button Button, int Horizontal, int Vertical)> _alignmentButtons = [];
     private readonly Func<ImageAssetDefinition, string?> _resolveImagePath;
     private readonly Button _apply;
@@ -44,7 +50,7 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
     private string? _loadedImagePath;
     private string? _imageError;
     private bool _updating;
-    private bool? _imageRowsVisible;
+    private bool _advancedExpanded;
     private bool _displaySizeInvalid;
     private ModernTextInput? _displayEditSource;
     private double _aspectRatio;
@@ -105,21 +111,22 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
             Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1,
             Margin = Padding.Empty, BackColor = Theme.Panel
         };
-        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 270));
-        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
+        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 68));
         columns.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         DialogContent.Controls.Add(columns);
 
         var left = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4,
+            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5,
             Margin = new Padding(0, 0, 16, 0), BackColor = Theme.Panel
         };
         left.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         left.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        left.RowStyles.Add(new RowStyle(SizeType.Absolute, 252));
+        left.RowStyles.Add(new RowStyle(SizeType.Absolute, 288));
         left.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        left.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         columns.Controls.Add(left, 0, 0);
         left.Controls.Add(Heading("Canvas presets"), 0, 0);
         var presets = new TableLayoutPanel
@@ -141,7 +148,6 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
             var button = ActionButton("");
             button.AccessibleName = name;
             button.AccessibleDescription = $"{size.Width} × {size.Height} px";
-            button.Padding = new Padding(4, 28, 4, 22);
             button.Margin = new Padding(index % 2 == 0 ? 0 : 4, 0, index % 2 == 0 ? 4 : 0, 8);
             button.ContentPaint += (_, e) => PaintPresetCard(button, size, name, e);
             button.Click += (_, _) => SetCanvasSize(size.Width, size.Height);
@@ -155,6 +161,15 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         _preview.AccessibleName = "Canvas background preview";
         _preview.Paint += PaintPreview;
         left.Controls.Add(_preview, 0, 3);
+        _previewSummary.TextAlign = ContentAlignment.MiddleCenter;
+        _previewSummary.AccessibleName = "Canvas preview dimensions";
+        left.Controls.Add(_previewSummary, 0, 4);
+        left.SizeChanged += (_, _) =>
+        {
+            var dpi = left.DeviceDpi / 96f;
+            var presetHeight = (left.Height < 490 * dpi ? 216 : 288) * dpi;
+            if (left.RowStyles[1].Height != presetHeight) left.RowStyles[1].Height = presetHeight;
+        };
 
         var scroll = new ThemedScrollPanel
         {
@@ -167,10 +182,11 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
             Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 2, RowCount = 0, BackColor = Theme.Panel, Margin = Padding.Empty
         };
-        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 176));
-        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
         scroll.Content.Controls.Add(fields);
 
+        AddWideRow(fields, Heading("Canvas size"), 28);
         AddRow(fields, "Width × height (px)", Pair(_width, _height));
         var swap = ActionButton("Swap dimensions");
         swap.Click += (_, _) =>
@@ -179,31 +195,40 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
                 SetCanvasSize(height, width);
         };
         AddWideRow(fields, Pair(_lockAspect, swap));
-        AddRow(fields, "Background", _background);
+        AddWideRow(fields, Heading("Background"), 36);
+        AddRow(fields, "Background type", _background);
         _colorButton.Text = "";
         _colorButton.ContentPaint += PaintColorSwatch;
-        AddRow(fields, "Color", _colorButton);
-        AddRow(fields, "Quick colors", CreateQuickColors(), 80);
-        AddRow(fields, "Color opacity (%)", _colorOpacity);
+        AddConditionalRow(fields, "Color", _colorButton, SettingVisibility.Background);
+        AddConditionalRow(fields, "Quick colors", CreateQuickColors(), SettingVisibility.Background);
         AddImageRow(fields, "Project image", _projectImage);
         AddImageRow(fields, "External image", _externalButton);
-        _source.AccessibleName = "Selected image source";
-        AddImageRow(fields, "Source", _source);
-        AddImageRow(fields, "Original size (px)", _originalSize);
         AddImageRow(fields, "Image fit", _imageFit);
-        AddImageRow(fields, "Uniform scale (%)", _imageScale);
-        AddImageRow(fields, "Display W × H (px)", Pair(_displayWidth, _displayHeight));
-        AddImageRow(fields, "Offset X / Y (px)", Pair(_offsetX, _offsetY));
-        AddImageRow(fields, "Image opacity (%)", _imageOpacity);
-        AddImageRow(fields, "Image alignment", CreateImageAlignment(), 120);
+        Theme.StyleToolbarButton(_advancedToggle);
+        AddWideRow(fields, _advancedToggle, 44);
+        _advancedToggle.Click += (_, _) =>
+        {
+            _advancedExpanded = !_advancedExpanded;
+            _advancedToggle.Icon = _advancedExpanded ? SvgIconKind.ChevronDown : SvgIconKind.ChevronRight;
+            Theme.StyleToolbarButton(_advancedToggle, _advancedExpanded);
+            UpdateSettingsVisibility();
+        };
+        AddConditionalRow(fields, "Color opacity (%)", _colorOpacity, SettingVisibility.AdvancedBackground);
+        AddImageRow(fields, "Uniform scale (%)", _imageScale, advanced: true);
+        AddImageRow(fields, "Display W × H (px)", Pair(_displayWidth, _displayHeight), advanced: true);
+        AddImageRow(fields, "Offset X / Y (px)", Pair(_offsetX, _offsetY), advanced: true);
+        AddImageRow(fields, "Image opacity (%)", _imageOpacity, advanced: true);
+        AddImageRow(fields, "Image alignment", CreateImageAlignment(), 120, advanced: true);
         var placement = Pair(_centerButton, _matchButton);
-        _imageRows.Add((fields, fields.RowCount, 40));
-        AddWideRow(fields, placement);
+        AddConditionalWideRow(fields, placement, SettingVisibility.AdvancedImage);
         _imageControls.Add(placement);
-        AddWideRow(fields, _dimOutside);
+        _source.AccessibleName = "Selected image source";
+        AddImageRow(fields, "Source", _source, advanced: true);
+        AddImageRow(fields, "Original size (px)", _originalSize, advanced: true);
+        AddConditionalWideRow(fields, _dimOutside, SettingVisibility.Advanced);
         _validation.ForeColor = Theme.Danger;
         _validation.AccessibleName = "Canvas settings validation";
-        AddWideRow(fields, _validation, 62);
+        AddConditionalWideRow(fields, _validation, SettingVisibility.Validation, 62);
 
         _toolTip.SetToolTip(_imageScale, UiLocalization.T("Uniform scale is applied after image fit."));
         _toolTip.SetToolTip(_offsetX, UiLocalization.T("Offset from the centered image, in canvas pixels."));
@@ -214,17 +239,13 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         KeepFocusedEditorsVisible(fields, scroll);
     }
 
-    private TableLayoutPanel CreateQuickColors()
+    private FlowLayoutPanel CreateQuickColors()
     {
-        var palette = new TableLayoutPanel
+        var palette = new FlowLayoutPanel
         {
-            Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2,
-            BackColor = Theme.Panel, Margin = Padding.Empty
+            Dock = DockStyle.Fill, WrapContents = false,
+            BackColor = Theme.Panel, Margin = Padding.Empty, Padding = Padding.Empty
         };
-        palette.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        palette.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        palette.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        palette.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         (string Name, Color Color)[] colors =
         [
             ("White", Color.White), ("Black", Color.Black),
@@ -235,8 +256,11 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
             var (name, color) = colors[index];
             var button = ActionButton(name);
             button.Text = "";
-            button.Margin = new Padding(0, 0, index % 2 == 0 ? 4 : 0, index < 2 ? 4 : 0);
-            button.ContentPaint += (_, e) => PaintSwatch(button, color, e);
+            button.Dock = DockStyle.None;
+            button.Size = new Size(32, 32);
+            button.Margin = new Padding(0, 0, 8, 0);
+            _toolTip.SetToolTip(button, UiLocalization.T(name));
+            button.ContentPaint += (_, e) => PaintSwatch(button, color, e, compact: true);
             button.Click += (_, _) =>
             {
                 _updating = true;
@@ -250,7 +274,7 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
                 finally { _updating = false; }
                 UpdateDraft();
             };
-            palette.Controls.Add(button, index % 2, index / 2);
+            palette.Controls.Add(button);
         }
         return palette;
     }
@@ -611,13 +635,13 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         var hasBackground = kind is SceneBackgroundKind.Solid or SceneBackgroundKind.Image;
         _colorButton.Enabled = _colorOpacity.Enabled = hasBackground;
         foreach (var control in _imageControls) control.Enabled = isImage;
-        SetImageRowsVisible(isImage);
         _centerButton.Enabled = _matchButton.Enabled = isImage && _thumbnail is not null;
 
         var valid = TryReadSettings(out var candidate, out var error);
         _apply.Enabled = valid;
         _validation.Text = error;
         _toolTip.SetToolTip(_validation, error);
+        UpdateSettingsVisibility();
         if (valid) _draft = candidate;
         RefreshDisplayDimensions(isImage);
         var alignmentSettings = _draft;
@@ -635,6 +659,8 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
                 && TryDimension(_height, out var height) && size.Width == width && size.Height == height);
         }
         _colorButton.Invalidate();
+        _previewSummary.Text = TryDimension(_width, out var previewWidth) && TryDimension(_height, out var previewHeight)
+            ? PixelSizeText(previewWidth, previewHeight) : "—";
         _preview.Invalidate();
     }
 
@@ -762,30 +788,42 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
     private static void PaintPresetCard(Button button, Size size, string name, PaintEventArgs e)
     {
         var dpi = button.DeviceDpi / 96f;
+        var compact = button.Height < 78 * dpi;
         var frameScale = Math.Min(36 * dpi / size.Width, 18 * dpi / size.Height);
         var frame = new RectangleF((button.Width - size.Width * frameScale) / 2,
-            7 * dpi, size.Width * frameScale, size.Height * frameScale);
+            9 * dpi, size.Width * frameScale, size.Height * frameScale);
         var state = e.Graphics.Save();
         try
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             using var fill = new SolidBrush(Color.FromArgb(24, button.ForeColor));
             using var border = new Pen(button.ForeColor, Math.Max(1, dpi));
-            e.Graphics.FillRectangle(fill, frame);
-            e.Graphics.DrawRectangle(border, frame.X, frame.Y, frame.Width, frame.Height);
+            if (!compact)
+            {
+                e.Graphics.FillRectangle(fill, frame);
+                e.Graphics.DrawRectangle(border, frame.X, frame.Y, frame.Width, frame.Height);
+            }
         }
         finally { e.Graphics.Restore(state); }
         var inset = (int)Math.Ceiling(4 * dpi);
-        var title = new Rectangle(inset, (int)Math.Ceiling(28 * dpi),
-            Math.Max(0, button.Width - inset * 2), (int)Math.Ceiling(24 * dpi));
+        var titleHeight = TextRenderer.MeasureText(e.Graphics, UiLocalization.T(name), button.Font,
+            Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding).Height;
+        using var dimensionFont = Theme.UiFont(9);
+        var dimensionHeight = TextRenderer.MeasureText(e.Graphics, "1920 × 1080", dimensionFont,
+            Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding).Height;
+        var titleTop = compact
+            ? Math.Max(inset, (button.Height - titleHeight - dimensionHeight - (int)Math.Ceiling(3 * dpi)) / 2)
+            : (int)Math.Ceiling(33 * dpi);
+        var title = new Rectangle(inset, titleTop,
+            Math.Max(0, button.Width - inset * 2), titleHeight);
         TextRenderer.DrawText(e.Graphics, UiLocalization.T(name), button.Font, title, button.ForeColor,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine
                 | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix
                 | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
-        var dimensions = new Rectangle(inset, button.Height - (int)Math.Ceiling(22 * dpi),
-            Math.Max(0, button.Width - inset * 2), (int)Math.Ceiling(18 * dpi));
-        TextRenderer.DrawText(e.Graphics, $"{size.Width} × {size.Height}", button.Font, dimensions,
-            button.ForeColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
+        var dimensions = new Rectangle(inset, title.Bottom + (int)Math.Ceiling(3 * dpi),
+            Math.Max(0, button.Width - inset * 2), Math.Max(0, button.Height - title.Bottom - (int)Math.Ceiling(7 * dpi)));
+        TextRenderer.DrawText(e.Graphics, $"{size.Width} × {size.Height}", dimensionFont, dimensions,
+            Theme.ReadableText(button.BackColor, Theme.Muted), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
                 | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix
                 | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
     }
@@ -797,17 +835,19 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         PaintSwatch(_colorButton, Color.FromArgb(alpha, _color), e);
     }
 
-    private static void PaintSwatch(Button button, Color color, PaintEventArgs e)
+    private static void PaintSwatch(Button button, Color color, PaintEventArgs e, bool compact = false)
     {
         var inset = Math.Max(4, 6 * button.DeviceDpi / 96);
         var edge = Math.Max(8, Math.Min(button.Height - inset * 2, 16 * button.DeviceDpi / 96));
         var rect = new Rectangle(inset, (button.Height - edge) / 2, edge, edge);
+        if (compact) rect.X = (button.Width - edge) / 2;
         using var checker = new HatchBrush(HatchStyle.LargeCheckerBoard, Theme.PanelHover, Theme.Panel);
         using var fill = new SolidBrush(color);
         using var border = new Pen(Theme.Border);
         e.Graphics.FillRectangle(checker, rect);
         e.Graphics.FillRectangle(fill, rect);
         e.Graphics.DrawRectangle(border, rect);
+        if (compact) return;
         var textBounds = new Rectangle(rect.Right + inset, 0,
             Math.Max(0, button.Width - rect.Right - inset * 2), button.Height);
         TextRenderer.DrawText(e.Graphics, UiLocalization.T(button.AccessibleName), button.Font, textBounds,
@@ -815,14 +855,6 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine
                 | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix
                 | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
-    }
-
-    protected override void OnLoad(EventArgs e)
-    {
-        var working = Screen.FromControl(Owner ?? this).WorkingArea;
-        MinimumSize = new Size(Math.Min(MinimumSize.Width, working.Width), Math.Min(MinimumSize.Height, working.Height));
-        Size = new Size(Math.Min(Width, working.Width), Math.Min(Height, working.Height));
-        base.OnLoad(e);
     }
 
     protected override void Dispose(bool disposing)
@@ -957,27 +989,56 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         editor.Margin = new Padding(0, 0, 0, 8);
         panel.Controls.Add(label, 0, row);
         panel.Controls.Add(editor, 1, row);
+        if (editor is ComboBox selector)
+            Theme.StyleComboBoxSelection(selector, label.Font.Size, Theme.ControlHeight);
     }
 
-    private void AddImageRow(TableLayoutPanel panel, string text, Control editor, int height = 40)
+    private void AddImageRow(TableLayoutPanel panel, string text, Control editor, int height = 40, bool advanced = false)
     {
-        _imageRows.Add((panel, panel.RowCount, height));
-        AddRow(panel, text, editor, height);
+        AddConditionalRow(panel, text, editor,
+            advanced ? SettingVisibility.AdvancedImage : SettingVisibility.Image, height);
         _imageControls.Add(editor);
     }
 
-    private void SetImageRowsVisible(bool visible)
+    private void AddConditionalRow(TableLayoutPanel panel, string text, Control editor, SettingVisibility visibility, int height = 40)
     {
-        if (_imageRowsVisible == visible) return;
-        _imageRowsVisible = visible;
-        foreach (var panel in _imageRows.Select(row => row.Panel).Distinct())
+        _conditionalRows.Add((panel, panel.RowCount, height, visibility));
+        AddRow(panel, text, editor, height);
+    }
+
+    private void AddConditionalWideRow(TableLayoutPanel panel, Control editor, SettingVisibility visibility, int height = 40)
+    {
+        _conditionalRows.Add((panel, panel.RowCount, height, visibility));
+        AddWideRow(panel, editor, height);
+    }
+
+    private void UpdateSettingsVisibility()
+    {
+        var kind = (_background.SelectedItem as Choice<SceneBackgroundKind>)?.Value;
+        var image = kind == SceneBackgroundKind.Image;
+        var background = kind is SceneBackgroundKind.Solid or SceneBackgroundKind.Image;
+        _advancedToggle.AccessibleDescription = UiLocalization.T(_advancedExpanded
+            ? "Hide advanced canvas settings" : "Show advanced canvas settings");
+        foreach (var panel in _conditionalRows.Select(row => row.Panel).Distinct())
         {
             panel.SuspendLayout();
             try
             {
-                foreach (var row in _imageRows.Where(row => ReferenceEquals(row.Panel, panel)))
+                foreach (var row in _conditionalRows.Where(row => ReferenceEquals(row.Panel, panel)))
                 {
-                    panel.RowStyles[row.Row].Height = visible ? row.Height : 0;
+                    var visible = row.Visibility switch
+                    {
+                        SettingVisibility.Background => background,
+                        SettingVisibility.Image => image,
+                        SettingVisibility.Advanced => _advancedExpanded,
+                        SettingVisibility.AdvancedBackground => _advancedExpanded && background,
+                        SettingVisibility.AdvancedImage => _advancedExpanded && image,
+                        SettingVisibility.Validation => !string.IsNullOrEmpty(_validation.Text),
+                        _ => false
+                    };
+                    var height = visible ? row.Height * panel.DeviceDpi / 96f : 0;
+                    if (panel.RowStyles[row.Row].Height == height) continue;
+                    panel.RowStyles[row.Row].Height = height;
                     foreach (Control control in panel.Controls)
                         if (panel.GetRow(control) == row.Row) control.Visible = visible;
                 }
@@ -987,6 +1048,11 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
                 panel.ResumeLayout(performLayout: true);
             }
         }
+    }
+
+    private enum SettingVisibility
+    {
+        Background, Image, Advanced, AdvancedBackground, AdvancedImage, Validation
     }
 
     private static void AddWideRow(TableLayoutPanel panel, Control control, int height = 40)

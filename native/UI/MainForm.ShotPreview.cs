@@ -10,7 +10,8 @@ internal sealed partial class MainForm
     private ShotPreviewFrameKey? _shotPreviewFrameKey;
 
     private readonly record struct ShotPreviewFrameKey(
-        ShotPreviewSourceState Source, SceneShotSettings Settings, Size Size, string Caption);
+        ShotPreviewSourceState Source, SceneShotSettings Settings, SceneShotSettings ParallaxAnchor,
+        Size Size, string Caption);
 
     private void UpdateShotPreviewScheduler()
     {

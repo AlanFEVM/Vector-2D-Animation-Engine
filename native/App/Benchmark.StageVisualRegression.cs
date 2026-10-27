@@ -4,6 +4,15 @@ namespace VectorAnimationEngine;
 
 internal static partial class Benchmark
 {
+    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "ShowWindow")]
+    private static extern bool ShowWorkspaceCaptureWindow(IntPtr window, int command);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SetWindowPos")]
+    private static extern bool PositionWorkspaceCaptureWindow(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
+
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll", EntryPoint = "DwmFlush")]
+    private static extern int FlushWorkspaceCapture();
+
     private static void RunWorkspacePreRenderTargetRegression()
     {
         const int initialWidth = 640;
@@ -27,7 +36,9 @@ internal static partial class Benchmark
         var frameOneComposition = CreateComposition(System.Numerics.Matrix4x4.Identity);
         var frameTwoComposition = CreateComposition(
             System.Numerics.Matrix4x4.CreateTranslation(500, 0, 0));
-        var screenBounds = SystemInformation.VirtualScreen;
+        var screenBounds = Screen.PrimaryScreen!.WorkingArea;
+        const int captureBorder = 4;
+        var captureSentinel = Color.FromArgb(255, 211, 37, 173);
 
         using var form = new Form
         {
@@ -36,10 +47,12 @@ internal static partial class Benchmark
             FormBorderStyle = FormBorderStyle.None,
             AutoScaleMode = AutoScaleMode.None,
             StartPosition = FormStartPosition.Manual,
-            ClientSize = initialSize,
+            ClientSize = new Size(initialSize.Width + captureBorder * 2, initialSize.Height + captureBorder * 2),
+            Padding = new Padding(captureBorder),
+            BackColor = captureSentinel,
             Location = new Point(
-                Math.Max(screenBounds.Left, screenBounds.Right - initialWidth),
-                Math.Max(screenBounds.Top, screenBounds.Bottom - initialHeight))
+                screenBounds.Left + Math.Max(0, (screenBounds.Width - initialWidth - captureBorder * 2) / 2),
+                screenBounds.Top + Math.Max(0, (screenBounds.Height - initialHeight - captureBorder * 2) / 2))
         };
         using var stage = new StageControl(scene)
         {
@@ -135,7 +148,7 @@ internal static partial class Benchmark
             frameTwoCenter,
             "frame 2 pre-render");
 
-        form.ClientSize = resizedSize;
+        form.ClientSize = new Size(resizedSize.Width + captureBorder * 2, resizedSize.Height + captureBorder * 2);
         Application.DoEvents();
         if (stage.ClientSize != resizedSize)
         {
@@ -303,25 +316,55 @@ internal static partial class Benchmark
         {
             for (var attempt = 0; attempt < 8; attempt++)
             {
+                ShowWorkspaceCaptureWindow(form.Handle, 5);
+                PositionWorkspaceCaptureWindow(form.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0043);
                 form.Activate();
                 form.BringToFront();
+                form.Refresh();
                 stage.Update();
                 Application.DoEvents();
                 System.Threading.Thread.Sleep(20);
                 Application.DoEvents();
 
-                var captureBounds = stage.RectangleToScreen(stage.ClientRectangle);
+                FlushWorkspaceCapture();
+                var captureBounds = form.RectangleToScreen(form.ClientRectangle);
                 Bitmap? capture = null;
                 try
                 {
                     capture = new Bitmap(captureBounds.Width, captureBounds.Height);
-                    using var graphics = Graphics.FromImage(capture);
-                    graphics.CopyFromScreen(
-                        captureBounds.Location,
-                        Point.Empty,
-                        captureBounds.Size,
-                        CopyPixelOperation.SourceCopy);
-                    return capture;
+                    using (var graphics = Graphics.FromImage(capture))
+                    {
+                        graphics.CopyFromScreen(
+                            captureBounds.Location,
+                            Point.Empty,
+                            captureBounds.Size,
+                            CopyPixelOperation.SourceCopy);
+                    }
+                    var markers = new[]
+                    {
+                        new Point(1, 1), new Point(capture.Width - 2, 1),
+                        new Point(1, capture.Height - 2), new Point(capture.Width - 2, capture.Height - 2)
+                    };
+                    if (!markers.All(point => PixelRgbNear(capture.GetPixel(point.X, point.Y), captureSentinel, 8)))
+                    {
+                        capture.Dispose();
+                        capture = CaptureBenchmarkWindow(form);
+                    }
+                    if (markers.All(point => PixelRgbNear(capture.GetPixel(point.X, point.Y), captureSentinel, 8)))
+                    {
+                        var stageOrigin = form.PointToClient(stage.PointToScreen(Point.Empty));
+                        var result = capture.Clone(new Rectangle(stageOrigin, stage.ClientSize), capture.PixelFormat);
+                        capture.Dispose();
+                        return result;
+                    }
+                    if (attempt == 7)
+                    {
+                        var directory = Path.Combine(Environment.CurrentDirectory, "artifacts", "validation");
+                        Directory.CreateDirectory(directory);
+                        capture.Save(Path.Combine(directory, "workspace-capture-failed.png"));
+                        Console.WriteLine($"workspace_capture_bounds={captureBounds},stage={stage.Bounds},form={form.Bounds},dpi={stage.DeviceDpi},markers={string.Join(',', markers.Select(point => capture.GetPixel(point.X, point.Y).ToArgb().ToString("X8")))}");
+                    }
+                    capture.Dispose();
                 }
                 catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
                     or System.Runtime.InteropServices.ExternalException
@@ -332,7 +375,7 @@ internal static partial class Benchmark
             }
 
             throw new InvalidOperationException(
-                "The real HWND workspace pre-render Stage could not be captured from the desktop.");
+                "The real HWND workspace pre-render Stage could not be captured with all four window-ownership markers.");
         }
 
         void AssertDirect2DFrame(string label)
@@ -438,7 +481,7 @@ internal static partial class Benchmark
         AssertTimeline(
             desktop.InitialSize == new Size(1480, 920)
             && desktop.MinimumSize == new Size(760, 520)
-            && desktop.InspectorWidth == 324
+            && desktop.InspectorWidth == 408
             && desktop.VaultWidth == 306
             && desktop.TimelineHeight == 192
             && laptop.InitialSize.Width <= 1366
@@ -448,13 +491,14 @@ internal static partial class Benchmark
             && compact.MinimumSize.Width <= compact.InitialSize.Width
             && compact.MinimumSize.Height <= compact.InitialSize.Height
             && compact.InspectorWidth <= laptop.InspectorWidth
-            && compact.InspectorWidth >= 272
+            && compact.InspectorWidth == 282
             && small.InitialSize.Width <= 800
             && small.InitialSize.Height <= 560
             && small.MinimumSize.Width <= small.InitialSize.Width
             && small.MinimumSize.Height <= small.InitialSize.Height
             && small.TimelineHeight >= 118
-            && highDpi.InspectorWidth >= 366
+            && small.InspectorWidth == 272
+            && highDpi.InspectorWidth == 537
             && highDpi.TimelineHeight >= 177,
             $"Responsive workbench metrics were not bounded across resolutions: " +
             $"desktop={desktop}, laptop={laptop}, compact={compact}, small={small}, highDpi={highDpi}.");

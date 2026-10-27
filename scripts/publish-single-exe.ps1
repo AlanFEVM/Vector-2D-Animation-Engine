@@ -339,8 +339,9 @@ try {
 
     $transactionId = [Guid]::NewGuid().ToString("N")
     $pendingExe = Join-Path $OutputDirectory ("." + $exeName + ".$transactionId.tmp")
-    $backupDirectory = Join-Path $OutputDirectory ".v2d-release-backup-$transactionId"
+    $backupDirectory = Join-Path (Split-Path -Parent $OutputDirectory) ".v2d-release-backup-$transactionId"
     $newFinalInstalled = $false
+    $commitCompleted = $false
     try {
         Copy-Item -LiteralPath $builtExe -Destination $pendingExe
         Assert-FileVersion `
@@ -372,6 +373,9 @@ try {
         if ((Get-Item -LiteralPath $finalExe).Length -ne $pendingSize) {
             throw "Committed release EXE size does not match the verified pending artifact."
         }
+        if ((Get-FileHash -LiteralPath $finalExe -Algorithm SHA256).Hash -ne $hash) {
+            throw "Committed release EXE hash does not match the verified pending artifact."
+        }
 
         Write-JsonResult ([ordered]@{
             schemaVersion = 1
@@ -381,8 +385,7 @@ try {
             maximumBytes = $maximumExeBytes
             sha256 = $hash
         })
-        Remove-Item -LiteralPath $backupDirectory -Recurse -Force
-        $backupDirectory = $null
+        $commitCompleted = $true
     } catch {
         if (-not [string]::IsNullOrWhiteSpace($resolvedResultPath) `
                 -and (Test-Path -LiteralPath $resolvedResultPath -PathType Leaf)) {
@@ -400,18 +403,25 @@ try {
         throw
     } finally {
         if (Test-Path -LiteralPath $pendingExe) {
-            Remove-Item -LiteralPath $pendingExe -Force
+            try { Remove-Item -LiteralPath $pendingExe -Force }
+            catch { Write-Warning "Could not remove pending release artifact: $pendingExe. $_" }
         }
         if (-not [string]::IsNullOrWhiteSpace($backupDirectory) `
                 -and (Test-Path -LiteralPath $backupDirectory -PathType Container)) {
-            Remove-Item -LiteralPath $backupDirectory -Recurse -Force
+            if ($commitCompleted -or @(Get-ChildItem -LiteralPath $backupDirectory -Force).Count -eq 0) {
+                try { Remove-Item -LiteralPath $backupDirectory -Recurse -Force }
+                catch { Write-Warning "Release backup cleanup failed; committed output is unchanged. Backup: $backupDirectory. $_" }
+            } else {
+                Write-Warning "Release rollback did not finish. Preserve this backup for recovery: $backupDirectory"
+            }
         }
     }
 }
 finally {
     if ($locationPushed) { Pop-Location }
     if (Test-Path -LiteralPath $stagingRoot) {
-        Remove-Item -LiteralPath $stagingRoot -Recurse -Force
+        try { Remove-Item -LiteralPath $stagingRoot -Recurse -Force }
+        catch { Write-Warning "Could not remove release staging directory: $stagingRoot. $_" }
     }
     if ($publishLockAcquired) {
         try { $publishMutex.ReleaseMutex() } catch { }

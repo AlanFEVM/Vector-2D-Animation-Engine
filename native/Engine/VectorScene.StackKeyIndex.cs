@@ -75,7 +75,7 @@ internal sealed partial class VectorScene
         {
             index = -1;
             if (!EnsureBuilt()) return false;
-            var (low, high) = Range(0, _sorted.Length, candidate => _scene.ObjectLayer[candidate].CompareTo(layer));
+            var (low, high) = Range(0, _sorted.Length, candidate => ((int)_scene.ObjectLayer[candidate]).CompareTo(layer));
             (low, high) = Range(low, high, candidate => _scene.ObjectOrder[candidate].CompareTo(order));
             (low, high) = Range(low, high, candidate => _scene.ObjectKeyframeFrame[candidate].CompareTo(keyframe));
             if (low >= high || !IsSubOrderSorted(low, high)) return false;
@@ -89,7 +89,7 @@ internal sealed partial class VectorScene
         {
             index = -1;
             if (!EnsureBuilt()) return false;
-            var (low, high) = Range(0, _sorted.Length, candidate => _scene.ObjectLayer[candidate].CompareTo(layer));
+            var (low, high) = Range(0, _sorted.Length, candidate => ((int)_scene.ObjectLayer[candidate]).CompareTo(layer));
             (low, high) = Range(low, high, candidate => _scene.ObjectOrder[candidate].CompareTo(order));
             (low, high) = Range(low, high, candidate => _scene.ObjectKeyframeFrame[candidate].CompareTo(keyframe));
             if (low >= high) return false;

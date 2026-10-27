@@ -130,7 +130,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private const float DefaultTextAreaHeightPixels = 64f;
     private const int VaultDrawerExpandedWidth = 306;
     private const double VaultDrawerAnimationMilliseconds = 160;
-    private const int InspectorPanelExpandedWidth = 372;
+    private const int InspectorPanelExpandedWidth = 372 + InspectorRailWidth;
     /// <summary>
     /// Height the timeline opens at: 108 px of chrome (64 header + 28 ruler + 16 scroll bar) plus six
     /// layer rows at 21 px. Four rows was too few to read a scene, and the old value was also spent

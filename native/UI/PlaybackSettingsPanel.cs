@@ -44,6 +44,12 @@ internal sealed class PlaybackSettingsPanel : Panel
     };
 
     private bool _updating;
+    private readonly Label _title = InspectorModuleStyle.CreateTitle("Playback", primary: true);
+    private readonly Label _fpsCaption = Caption("Frame rate");
+    private readonly Label _modeCaption = Caption("Playback mode");
+    private readonly Label _rangeCaption = Caption("Playback range");
+    private readonly Label _startCaption = Caption("Start");
+    private readonly Label _endCaption = Caption("End");
 
     public event EventHandler? FpsChanged;
     public event EventHandler? LoopPlaybackChanged;
@@ -55,8 +61,8 @@ internal sealed class PlaybackSettingsPanel : Panel
         BackColor = Theme.Panel;
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
-        Padding = new Padding(4, 10, 8, 16);
-        MinimumSize = new Size(236, 220);
+        Padding = Padding.Empty;
+        MinimumSize = new Size(0, 220);
 
         BuildUi();
         HookEvents();
@@ -128,27 +134,10 @@ internal sealed class PlaybackSettingsPanel : Panel
         if (notifyChanged) RaiseFrameRangeChanged();
     }
 
-    public int PreferredPanelHeight => 220;
+    public int PreferredPanelHeight => (int)Math.Round(244 * DeviceDpi / 96f);
 
     private void BuildUi()
     {
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill, BackColor = Theme.Panel,
-            ColumnCount = 1, RowCount = 2, Margin = Padding.Empty
-        };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorTitleHeight));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.Controls.Add(InspectorModuleStyle.CreateTitle("Playback"), 0, 0);
-        var fields = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill, BackColor = Theme.Panel,
-            ColumnCount = 2, RowCount = 4, Margin = Padding.Empty,
-            Padding = new Padding(4, 8, 0, 0)
-        };
-        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
-        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
         Theme.StyleNumeric(_fps);
         Theme.StyleNumeric(_startFrame);
         Theme.StyleNumeric(_endFrame);
@@ -156,26 +145,46 @@ internal sealed class PlaybackSettingsPanel : Panel
         {
             input.Font = Theme.UiFont(11f);
         }
-        _loop.Text = "";
+        _loop.Text = "Loop";
         _loop.AccessibleName = "Loop";
-        string[] labels = ["FPS", "Loop", "Start", "End"];
-        Control[] editors = [_fps, _loop, _startFrame, _endFrame];
-        for (var i = 0; i < editors.Length; i++)
-        {
-            fields.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.ControlHeight + 8));
-            fields.Controls.Add(new Label
-            {
-                Text = labels[i], Dock = DockStyle.Fill,
-                ForeColor = Theme.Muted, BackColor = Color.Transparent,
-                TextAlign = ContentAlignment.MiddleLeft,
-                Margin = new Padding(0, 4, 8, 4), AutoEllipsis = true
-            }, 0, i);
-            editors[i].Dock = DockStyle.Fill;
-            editors[i].Margin = new Padding(0, 4, 0, 4);
-            fields.Controls.Add(editors[i], 1, i);
-        }
-        root.Controls.Add(fields, 0, 1);
-        Controls.Add(root);
+        _fps.ShowSuffix = true;
+        _fps.TabIndex = 0;
+        _loop.TabIndex = 1;
+        _startFrame.TabIndex = 2;
+        _endFrame.TabIndex = 3;
+        _title.Dock = DockStyle.None;
+        Controls.AddRange([_title, _fpsCaption, _modeCaption, _rangeCaption, _startCaption,
+            _endCaption, _fps, _loop, _startFrame, _endFrame]);
+        UiLocalization.Watch(this);
+    }
+
+    protected override void OnLayout(LayoutEventArgs e)
+    {
+        base.OnLayout(e);
+        int Scale(int value) => (int)Math.Round(value * DeviceDpi / 96f);
+        var left = Scale(16);
+        var width = Math.Max(1, Width - left * 2);
+        var gap = Scale(16);
+        var half = Math.Max(1, (width - gap) / 2);
+        var second = left + half + gap;
+        _title.SetBounds(left, Scale(18), width, Scale(26));
+        _fpsCaption.SetBounds(left, Scale(58), half, Scale(24));
+        _modeCaption.SetBounds(second, Scale(58), half, Scale(24));
+        _fps.SetBounds(left, Scale(86), half, Scale(Theme.ControlHeight));
+        _loop.SetBounds(second, Scale(86), half, Scale(Theme.ControlHeight));
+        _rangeCaption.SetBounds(left, Scale(140), width, Scale(24));
+        _startCaption.SetBounds(left, Scale(170), half, Scale(24));
+        _endCaption.SetBounds(second, Scale(170), half, Scale(24));
+        _startFrame.SetBounds(left, Scale(198), half, Scale(Theme.ControlHeight));
+        _endFrame.SetBounds(second, Scale(198), half, Scale(Theme.ControlHeight));
+    }
+
+    private static Label Caption(string text)
+    {
+        var label = InspectorModuleStyle.CreateFieldLabel(text);
+        label.Dock = DockStyle.None;
+        label.BackColor = Color.Transparent;
+        return label;
     }
 
     private void HookEvents()

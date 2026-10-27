@@ -73,6 +73,7 @@ internal sealed partial class MainForm
         _shotDirectorPanel.ShotEditCompleted += (_, _) => CompleteSceneShotEdit();
         _shotDirectorPanel.ShotFramingCommitted += (_, e) => ApplySceneShotFraming(e);
         _shotDirectorPanel.ShotFramingResetRequested += (_, e) => ResetSceneShotFraming(e.ShotId);
+        InitializeCameraParallax();
 
         // The director is an inspector page, not another stage dock. Keeping it inside the existing
         // right host makes the stage reclaim the old left-side width and guarantees that the ordinary
@@ -223,14 +224,11 @@ internal sealed partial class MainForm
         if (_shotDirectorVisible != visible)
         {
             _shotDirectorVisible = visible;
-            _shotDirectorPanel.Visible = visible || _inspectorCategory == InspectorCategory.Camera;
+            _shotDirectorPanel.Visible = _inspectorCategory == InspectorCategory.Camera && IsSceneWorkspaceSelected;
             // Joining or leaving the docked stack changes the stage area; re-run the body layout so the
             // stage preview reclaims or releases the panel width immediately.
             _shotDirectorPanel.Parent?.PerformLayout(_shotDirectorPanel, "Visible");
         }
-        _sceneEditPage.Visible = view == WorkspaceView.SceneEditor && !visible && !IsSymbolEditing;
-        _layerBlendModePanel.Visible = !visible;
-        if (visible) _shotDirectorPanel.BringToFront();
         LayoutInspectorCategoryRail();
 
         if (visible) RefreshShotDirectorWidth();
@@ -458,6 +456,14 @@ internal sealed partial class MainForm
         hash.Add(scene.Id, StringComparer.Ordinal);
         hash.Add(scene.FrameCount);
         hash.Add(scene.ShotCount);
+        foreach (var layer in scene.Layers)
+        {
+            hash.Add(layer.Id);
+            hash.Add(layer.Name);
+            hash.Add(layer.ColorArgb);
+            hash.Add(layer.ParallaxDepth);
+            hash.Add(layer.ParallaxEnabled);
+        }
         foreach (var shot in scene.Shots)
         {
             hash.Add(shot.Id, StringComparer.Ordinal);
@@ -541,7 +547,10 @@ internal sealed partial class MainForm
             FrameCount = frameCount,
             PlaybackFps = _playbackSettings.Fps,
             ShotSequenceLength = scene.ShotSequenceLength,
-            Shots = shots
+            Shots = shots,
+            ParallaxLayers = scene.Layers.Where(layer => layer.Kind == SceneLayerKind.Content)
+                .Select(layer => new CameraParallaxLayer(layer.Id, layer.Name, layer.ColorArgb,
+                    layer.ParallaxDepth, layer.ParallaxEnabled)).ToArray()
         };
     }
 
@@ -640,11 +649,13 @@ internal sealed partial class MainForm
         {
             _sceneShotEditScene = null;
             _sceneShotEditSnapshot = null;
+            _sceneShotEditLayerSnapshot = null;
             _sceneShotEditNeedsTimelineRefresh = false;
             return;
         }
 
         if (ReferenceEquals(_sceneShotEditScene, scene) && _sceneShotEditSnapshot is not null) return;
+        _sceneShotEditLayerSnapshot = null;
         _sceneShotEditScene = scene;
         _sceneShotEditSnapshot = scene.CreateShotSnapshot();
         _sceneShotEditTimelineSnapshot = scene.Timeline.CreateSnapshot();
@@ -658,6 +669,8 @@ internal sealed partial class MainForm
         var scene = _sceneShotEditScene;
         var shotSnapshot = _sceneShotEditSnapshot;
         var timelineSnapshot = _sceneShotEditTimelineSnapshot;
+        var layerSnapshot = _sceneShotEditLayerSnapshot;
+        _sceneShotEditLayerSnapshot = null;
         _sceneShotEditScene = null;
         _sceneShotEditSnapshot = null;
         _sceneShotEditTimelineSnapshot = null;
@@ -670,6 +683,7 @@ internal sealed partial class MainForm
         }
 
         if (shotSnapshot is not null) scene.RestoreShotSnapshot(shotSnapshot);
+        if (layerSnapshot is not null) scene.RestoreLayerSnapshot(layerSnapshot);
         _shotDirectorFingerprint = int.MinValue;
         RefreshShotDirector(force: true);
         _timeline.RefreshTimeline();
@@ -681,6 +695,8 @@ internal sealed partial class MainForm
         var scene = _sceneShotEditScene;
         var before = _sceneShotEditSnapshot;
         var timelineBefore = _sceneShotEditTimelineSnapshot;
+        var layersBefore = _sceneShotEditLayerSnapshot;
+        _sceneShotEditLayerSnapshot = null;
         var frame = _sceneShotEditFrame;
         var needsTimelineRefresh = _sceneShotEditNeedsTimelineRefresh;
         _sceneShotEditScene = null;
@@ -688,10 +704,11 @@ internal sealed partial class MainForm
         _sceneShotEditTimelineSnapshot = null;
         _sceneShotEditNeedsTimelineRefresh = false;
         if (scene is null || before is null || timelineBefore is null) return;
-        if (ShotSnapshotsEqual(before, scene)) return;
+        if (ShotSnapshotsEqual(before, scene) && ParallaxLayersEqual(layersBefore, scene)) return;
         PushSceneTimelineUndo(
             scene,
             timelineBefore,
+            layerSnapshot: layersBefore,
             playheadFrame: frame,
             shotSnapshot: before);
         RefreshShotDirector(force: true);

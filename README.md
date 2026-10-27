@@ -1,5 +1,7 @@
 # Vector 2D Animation Engine
 
+Release preparation: [0.2.7 notes](docs/RELEASE_NOTES_0.2.7.md). Save-recovery and distribution fixes are covered by the native Timeline suite, the bootstrap self-test, and `scripts/test-release-output-transaction.ps1`; these checks do not constitute a universal zero-defect guarantee.
+
 Native Windows desktop prototype for a large-scale 2D vector animation engine. The workbench combines Adobe Animate-style drawing and timeline workflows with a dense WinForms desktop UI and Direct2D rendering.
 
 ## Documentation

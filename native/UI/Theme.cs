@@ -163,6 +163,31 @@ internal static partial class Theme
         Color.FromArgb(155, 91, 0),
         Color.FromArgb(190, 52, 62));
 
+    private static readonly ThemePalette CharcoalPalette = new(
+        App: Color.FromArgb(24, 24, 24),
+        Top: Color.FromArgb(37, 40, 43),
+        Panel: Color.FromArgb(45, 48, 52),
+        PanelStrong: Color.FromArgb(35, 38, 41),
+        PanelHover: Color.FromArgb(55, 59, 64),
+        Field: Color.FromArgb(35, 38, 41),
+        FieldHover: Color.FromArgb(41, 45, 49),
+        FieldFocus: Color.FromArgb(39, 49, 52),
+        Stage: Color.FromArgb(24, 24, 24),
+        Border: Color.FromArgb(68, 74, 82),
+        BorderHover: Color.FromArgb(100, 113, 122),
+        Text: Color.FromArgb(235, 238, 242),
+        Muted: Color.FromArgb(174, 190, 207),
+        DisabledText: Color.FromArgb(145, 154, 164),
+        Accent: Color.FromArgb(73, 197, 205),
+        AccentSurface: Color.FromArgb(40, 76, 81),
+        AccentHoverSurface: Color.FromArgb(46, 94, 100),
+        AccentPressedSurface: Color.FromArgb(33, 65, 70),
+        DisabledSurface: Color.FromArgb(42, 45, 49),
+        AccentText: Color.FromArgb(19, 38, 42),
+        AccentLabel: Color.FromArgb(177, 231, 235),
+        Warning: Color.FromArgb(214, 169, 106),
+        Danger: Color.FromArgb(232, 126, 132));
+
     private static ThemePalette _palette = DefaultPalette;
 
     public static ApplicationColorTheme ColorTheme { get; private set; } = ApplicationColorTheme.Dark;
@@ -407,6 +432,7 @@ internal static partial class Theme
     {
         if (color.IsEmpty || color.A == 0) return color;
         if (SameRgb(color, from.Text)) return WithAlpha(to.Text, color.A);
+        if (SameRgb(color, PanelSecondaryTextFor(from))) return WithAlpha(PanelSecondaryTextFor(to), color.A);
         if (SameRgb(color, from.Muted)) return WithAlpha(to.Muted, color.A);
         if (SameRgb(color, from.DisabledText)) return WithAlpha(to.DisabledText, color.A);
         if (SameRgb(color, from.Accent)) return WithAlpha(to.Accent, color.A);
@@ -459,7 +485,12 @@ internal static partial class Theme
         int accentSaturationPercent,
         int accentBrightnessPercent)
     {
-        var basePalette = colorTheme == ApplicationColorTheme.White ? WhitePalette : DefaultPalette;
+        var basePalette = colorTheme switch
+        {
+            ApplicationColorTheme.White => WhitePalette,
+            ApplicationColorTheme.Charcoal => CharcoalPalette,
+            _ => DefaultPalette
+        };
         var themeShift = ApplicationSettingsStore.NormalizeHueDegrees(themeHueDegrees)
             - ApplicationSettings.DefaultThemeHueDegrees;
         var accentShift = ApplicationSettingsStore.NormalizeHueDegrees(accentHueDegrees)
@@ -671,6 +702,12 @@ internal static partial class Theme
     internal static Color SecondaryText => SystemInformation.HighContrast
         ? SystemColors.ControlText : Mix(Top, Text, 0.58f);
 
+    internal static Color PanelSecondaryText => SystemInformation.HighContrast
+        ? SystemColors.ControlText : PanelSecondaryTextFor(_palette);
+
+    private static Color PanelSecondaryTextFor(ThemePalette palette) =>
+        ReadableText(palette.Panel, Mix(palette.Panel, palette.Text, 0.64f));
+
     internal static Color ControlOutline => SystemInformation.HighContrast
         ? SystemColors.WindowText : Mix(Panel, Border, 0.55f);
 
@@ -859,9 +896,9 @@ internal static partial class Theme
         if (!button.FlatAppearance.MouseOverBackColor.IsEmpty) button.FlatAppearance.MouseOverBackColor = Color.Empty;
         if (!button.FlatAppearance.MouseDownBackColor.IsEmpty) button.FlatAppearance.MouseDownBackColor = Color.Empty;
         var disclosure = button is SvgIconButton { IsDisclosureHeader: true };
-        var fontSize = disclosure ? InspectorSectionFontSize
+        var fontSize = button is SvgIconButton { IsInspectorPageHeader: true } ? InspectorModuleStyle.PageTitleFontSize : disclosure ? InspectorSectionFontSize
             : button is SegmentedButton { CompactText: true } ? InspectorLabelFontSize : 9.5f;
-        var fontStyle = disclosure ? FontStyle.Bold : FontStyle.Regular;
+        var fontStyle = FontStyle.Regular;
         if (!string.Equals(button.Font.Name, "Segoe UI", StringComparison.Ordinal)
             || Math.Abs(button.Font.Size - fontSize) > 0.01f
             || button.Font.Style != fontStyle)

@@ -131,12 +131,28 @@ internal sealed class MaterialEditorPanel : UserControl
     private readonly ColorComponentSlider[] _channelSliders = [new(), new(), new(), new()];
     private readonly ModernNumericUpDown[] _channelValues = [new(), new(), new(), new()];
     private readonly Panel _channelsPanel = new();
+    private TableLayoutPanel? _channelRows;
+    private TableLayoutPanel? _modeRow;
+    private TableLayoutPanel? _pickerLayout;
+    private readonly ColorComponentSlider _hueComponent = new() { Maximum = 360, CircularThumb = true };
+    private readonly ColorTargetButton _currentColor = new(string.Empty);
+    private readonly Button _copyHex = new SvgIconButton(SvgIconKind.Copy);
+    private readonly ColorPaletteGrid _inlineRecentGrid = new();
+    private readonly SvgIconButton _channelToggle = new(SvgIconKind.ChevronRight)
+    {
+        Text = "Color channels", IsDisclosureHeader = true
+    };
     private readonly Panel _hexPanel = new();
     private readonly ModernTextInput _hexText = new();
     private readonly TraditionalColorPlane _traditionalPlane = new();
     private readonly VerticalColorComponentSlider _primaryComponent = new();
     private readonly ComboBox _harmonyRule = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ColorPaletteGrid _harmonyGrid = new();
+    private readonly TableLayoutPanel _harmonyPanel = new();
+    private readonly SvgIconButton _harmonyToggle = new(SvgIconKind.ChevronRight)
+    {
+        Text = "Harmony", IsDisclosureHeader = true
+    };
     private readonly ColorPaletteGrid _builtInGrid = new();
     private readonly ColorPaletteGrid _recentGrid = new();
     private readonly GradientPresetGrid _recentGradientGrid = new();
@@ -147,7 +163,7 @@ internal sealed class MaterialEditorPanel : UserControl
     private readonly Button _removeCustom = new SvgIconButton(SvgIconKind.Remove);
     private readonly Button _saveGradientPreset = new SvgIconButton(SvgIconKind.Add);
     private readonly Button _removeGradientPreset = new SvgIconButton(SvgIconKind.Remove);
-    private readonly Button _colorEditorToggle = new SvgIconButton(SvgIconKind.ChevronDown) { Text = "Color", IsDisclosureHeader = true };
+    private readonly Label _colorPageTitle = new() { Text = "Appearance" };
     private readonly ModernNumericUpDown _strokeWidth = new() { Suffix = UiLocalization.T("pt"), ShowSuffix = true };
     private readonly Label _strokeWidthLabel = CreateFieldLabel("Width");
     private readonly Panel _lineEndpointStylePanel = new();
@@ -163,7 +179,9 @@ internal sealed class MaterialEditorPanel : UserControl
     private bool _updating;
     private bool _updatingComponents;
     private bool _handlingColorChange;
-    private bool _colorEditorExpanded;
+    private const bool _colorEditorExpanded = true;
+    private bool _harmonyExpanded;
+    private bool _channelsExpanded;
     private bool _editingFill = true;
     private bool _gradientPreviewOnStroke;
     private GradientColorTarget _editingGradientTarget;
@@ -172,7 +190,7 @@ internal sealed class MaterialEditorPanel : UserControl
     private int _colorInteractionDepth;
     private int _continuousControlInteractionDepth;
     private int _continuousColorStartArgb;
-    private ColorMode _colorMode = ColorMode.Rgb;
+    private ColorMode _colorMode = ColorMode.Hsv;
     private Color _fill = Color.FromArgb(79, 179, 162);
     private Color _stroke = Color.FromArgb(238, 242, 241);
     private float _opacity = 1f;
@@ -200,7 +218,7 @@ internal sealed class MaterialEditorPanel : UserControl
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         BackColor = Theme.Panel;
         MinimumSize = new Size(240, 0);
-        Padding = new Padding(4, Theme.InspectorSectionPaddingVertical + 4, 8, Theme.InspectorSectionPaddingVertical + 4);
+        Padding = new Padding(4, 0, 8, Theme.InspectorSectionPaddingVertical + 4);
         Theme.StyleToolTip(_toolTip);
 
         EnsureGradientPaletteStateLoaded();
@@ -346,7 +364,7 @@ internal sealed class MaterialEditorPanel : UserControl
             _targetRow.SetColumnSpan(_fillTarget, enabled ? 2 : 1);
             _gradientPanel.Visible = !enabled;
             _materialSettings.Visible = !enabled;
-            _content.RowStyles[2].Height = enabled ? 0 : InspectorHeight(_gradientSettingsExpanded ? 126 : 34);
+            _content.RowStyles[2].Height = enabled ? 0 : InspectorHeight(_gradientSettingsExpanded ? 132 : 40);
             _content.RowStyles[3].Height = enabled ? 0 : InspectorHeight(Theme.ControlHeight + Theme.InspectorRowMarginVertical * 2 + 16);
         }
         finally
@@ -406,30 +424,24 @@ internal sealed class MaterialEditorPanel : UserControl
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 1,
-            RowCount = 9,
+            RowCount = 15,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorTitleHeight));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 126));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.ControlHeight + Theme.InspectorRowMarginVertical * 2 + 16));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.ControlHeightCompact + 16));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight * 2));
+        foreach (var height in new[] { InspectorModuleStyle.PageHeaderHeight + 12, 50, 132,
+            Theme.ControlHeight + Theme.InspectorRowMarginVertical * 2 + 16,
+            0, 0, 232, 44, Theme.InspectorRowHeight * 2, 80, 44, 0, 64, 40, 0 })
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         Controls.Add(content);
         _content = content;
 
         // TODO: Replace this basic shading editor with the full material system.
-        content.Controls.Add(InspectorModuleStyle.CreateTitle("Shading"), 0, 0);
 
         BuildTargetRow(content);
         BuildGradientSettings(content);
         BuildMaterialSettings(content);
-        BuildColorEditorToggle(content);
+        BuildColorPageHeader(content);
         BuildModeRow(content);
         BuildColorEditor(content);
         BuildPersistentHex(content);
@@ -446,7 +458,7 @@ internal sealed class MaterialEditorPanel : UserControl
         RefreshModeButtons();
         _channelsPanel.Visible = true;
         _channelsPanel.BringToFront();
-        SetColorEditorExpanded(expanded: false);
+        RefreshColorEditorLayout();
         SetLineEndpointStyles(LineEndpointStyle.Round, LineEndpointStyle.Round, visible: false);
     }
 
@@ -467,6 +479,7 @@ internal sealed class MaterialEditorPanel : UserControl
         _fillTarget.Dock = DockStyle.Fill;
         _fillTarget.Margin = new Padding(0, 3, 3, 3);
         _strokeTarget.Dock = DockStyle.Fill;
+        _strokeTarget.OutlineSwatch = true;
         _strokeTarget.Margin = new Padding(3, 3, 0, 3);
         _fillTarget.Click += (_, _) => SelectTarget(fill: true);
         _strokeTarget.Click += (_, _) => SelectTarget(fill: false);
@@ -477,25 +490,39 @@ internal sealed class MaterialEditorPanel : UserControl
         content.Controls.Add(row, 0, 1);
     }
 
-    private void BuildColorEditorToggle(TableLayoutPanel content)
+    private void BuildColorPageHeader(TableLayoutPanel content)
     {
-        _colorEditorToggle.Dock = DockStyle.Fill;
-        _colorEditorToggle.Margin = new Padding(0, 1, 0, 1);
-        _colorEditorToggle.AccessibleName = "Show or hide color editor";
-        _colorEditorToggle.AccessibleRole = AccessibleRole.CheckButton;
-        _toolTip.SetToolTip(_colorEditorToggle, "Show or hide color editor");
-        _colorEditorToggle.Click += (_, _) => SetColorEditorExpanded(!_colorEditorExpanded);
-        Theme.StyleToolbarButton(_colorEditorToggle);
+        InspectorModuleStyle.StylePageTitle(_colorPageTitle);
+        _colorPageTitle.AccessibleRole = AccessibleRole.StaticText;
         var section = new Panel
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             Margin = Padding.Empty,
-            Padding = new Padding(0, 16, 0, 0)
+            Padding = Padding.Empty
         };
-        AddSectionDivider(section);
-        section.Controls.Add(_colorEditorToggle);
-        content.Controls.Add(section, 0, 4);
+        section.Controls.Add(_colorPageTitle);
+        var divider = new Panel { BackColor = Theme.ControlOutline, TabStop = false };
+        section.Controls.Add(divider);
+        UiLocalization.Watch(_colorPageTitle);
+        section.Paint += (_, eventArgs) =>
+        {
+            var scale = section.ClientSize.Height / (float)(InspectorModuleStyle.PageHeaderHeight + 12);
+            SvgIcons.Draw(eventArgs.Graphics, SvgIconKind.InspectorColor,
+                new Rectangle((int)Math.Round(8 * scale), (int)Math.Round(17 * scale),
+                    (int)Math.Round(26 * scale), (int)Math.Round(26 * scale)), Theme.PanelSecondaryText);
+        };
+        section.Layout += (_, _) =>
+        {
+            var scale = section.ClientSize.Height / (float)(InspectorModuleStyle.PageHeaderHeight + 12);
+            var top = (int)Math.Round(16 * scale);
+            var height = (int)Math.Round(28 * scale);
+            var left = (int)Math.Round(36 * scale);
+            _colorPageTitle.SetBounds(left, top, Math.Max(1, section.ClientSize.Width - left), height);
+            divider.SetBounds(0, (int)Math.Round(InspectorModuleStyle.PageHeaderHeight * scale),
+                section.ClientSize.Width, Math.Max(1, (int)Math.Round(scale)));
+        };
+        content.Controls.Add(section, 0, 0);
     }
 
     private void BuildModeRow(TableLayoutPanel content)
@@ -515,6 +542,7 @@ internal sealed class MaterialEditorPanel : UserControl
         AddModeButton(row, ColorMode.Hsv, "HSV", 1);
         AddModeButton(row, ColorMode.Hsl, "HSL", 2);
         AddModeButton(row, ColorMode.Lab, "Lab", 3);
+        _modeRow = row;
         content.Controls.Add(row, 0, 5);
     }
 
@@ -524,6 +552,7 @@ internal sealed class MaterialEditorPanel : UserControl
         {
             Text = text,
             CompactText = true,
+            ShowSelectionIndicator = true,
             Dock = DockStyle.Fill,
             Height = Theme.ControlHeightCompact,
             Margin = new Padding(column == 0 ? 0 : 1, 2, column == row.ColumnCount - 1 ? 0 : 1, 2),
@@ -539,77 +568,161 @@ internal sealed class MaterialEditorPanel : UserControl
 
     private void BuildColorEditor(TableLayoutPanel content)
     {
-        var host = new Panel
+        _pickerLayout = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            Margin = Padding.Empty,
-            Padding = new Padding(0, 8, 0, 0)
+            Dock = DockStyle.Fill, BackColor = Theme.Panel, Margin = Padding.Empty,
+            Padding = new Padding(0, 8, 0, 12), ColumnCount = 2, RowCount = 2
         };
-        content.Controls.Add(host, 0, 6);
-
-        var picker = new TableLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            Height = 120,
-            Padding = new Padding(0, 0, 0, 12),
-            BackColor = Theme.Panel,
-            ColumnCount = 3,
-            RowCount = 1,
-            Margin = Padding.Empty
-        };
-        picker.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
-        picker.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 24));
-        picker.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _pickerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _pickerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 24));
+        _pickerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _pickerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        content.Controls.Add(_pickerLayout, 0, 6);
         _traditionalPlane.Dock = DockStyle.Fill;
-        _traditionalPlane.Margin = new Padding(0, 1, 4, 1);
+        _traditionalPlane.Margin = Padding.Empty;
         _traditionalPlane.ColorAt = TraditionalPlaneColor;
         _traditionalPlane.ValueChanged += (_, _) => TraditionalPlaneChanged();
         _traditionalPlane.InteractionStarted += (_, _) => BeginColorContinuousEdit();
         _traditionalPlane.InteractionCompleted += (_, _) => CompleteColorContinuousEdit();
         _traditionalPlane.InteractionCanceled += (_, _) => CancelColorContinuousEdit();
-        picker.Controls.Add(_traditionalPlane, 0, 0);
-
+        _pickerLayout.Controls.Add(_traditionalPlane, 0, 0);
         _primaryComponent.Dock = DockStyle.Fill;
-        _primaryComponent.Margin = new Padding(0, 1, 6, 1);
+        _primaryComponent.Margin = new Padding(8, 0, 0, 0);
         _primaryComponent.GradientColor = TraditionalPrimaryGradient;
         _primaryComponent.ValueChanged += (_, _) => TraditionalPrimaryChanged();
         _primaryComponent.InteractionStarted += (_, _) => BeginColorContinuousEdit();
         _primaryComponent.InteractionCompleted += (_, _) => CompleteColorContinuousEdit();
         _primaryComponent.InteractionCanceled += (_, _) => CancelColorContinuousEdit();
-        picker.Controls.Add(_primaryComponent, 1, 0);
+        _pickerLayout.Controls.Add(_primaryComponent, 1, 0);
+        _hueComponent.Dock = DockStyle.Fill;
+        _hueComponent.Margin = new Padding(0, 8, 0, 0);
+        _hueComponent.AccessibleName = "Hue";
+        _hueComponent.GradientColor = TraditionalPrimaryGradient;
+        _hueComponent.ValueChanged += (_, _) =>
+        {
+            if (_updatingComponents) return;
+            _updatingComponents = true;
+            _primaryComponent.SetValue(_hueComponent.Value / 360f);
+            _updatingComponents = false;
+            TraditionalPrimaryChanged();
+        };
+        _hueComponent.InteractionStarted += (_, _) => BeginColorContinuousEdit();
+        _hueComponent.InteractionCompleted += (_, _) => CompleteColorContinuousEdit();
+        _hueComponent.InteractionCanceled += (_, _) => CancelColorContinuousEdit();
+        _pickerLayout.Controls.Add(_hueComponent, 0, 1);
+        _pickerLayout.SetColumnSpan(_hueComponent, 2);
 
-        var harmony = new TableLayoutPanel
+        var opacity = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 1,
-            RowCount = 3,
-            Margin = Padding.Empty
+            Dock = DockStyle.Fill, BackColor = Theme.Panel, Margin = Padding.Empty,
+            Padding = new Padding(0, 10, 0, 8), ColumnCount = 2, RowCount = 2
         };
-        harmony.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
-        harmony.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.ControlHeightCompact + 6));
-        harmony.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        var ruleRow = new TableLayoutPanel
+        opacity.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        opacity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
+        opacity.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.ControlHeight));
+        opacity.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        content.Controls.Add(opacity, 0, 9);
+        ConfigureChannelEditor(3);
+        _channelLabels[3].Dock = DockStyle.Fill;
+        _channelLabels[3].Margin = Padding.Empty;
+        _channelValues[3].Margin = Padding.Empty;
+        _channelSliders[3].Margin = new Padding(0, 8, 0, 0);
+        _channelSliders[3].CircularThumb = true;
+        opacity.Controls.Add(_channelLabels[3], 0, 0);
+        opacity.Controls.Add(_channelValues[3], 1, 0);
+        opacity.Controls.Add(_channelSliders[3], 0, 1);
+        opacity.SetColumnSpan(_channelSliders[3], 2);
+
+        _channelToggle.Dock = DockStyle.Fill;
+        _channelToggle.Margin = new Padding(0, 10, 0, 0);
+        _channelToggle.AccessibleName = "Color channels";
+        _channelToggle.AccessibleRole = AccessibleRole.CheckButton;
+        Theme.StyleToolbarButton(_channelToggle);
+        _channelToggle.Click += (_, _) => SetColorChannelsExpanded(!_channelsExpanded);
+        content.Controls.Add(_channelToggle, 0, 10);
+        _channelsPanel.Dock = DockStyle.Fill;
+        _channelsPanel.BackColor = Theme.Panel;
+        _channelsPanel.Margin = Padding.Empty;
+        _channelsPanel.Padding = new Padding(0, 0, 0, 8);
+        var channelContent = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 1,
-            RowCount = 1,
-            Margin = Padding.Empty
+            Dock = DockStyle.Fill, BackColor = Theme.Panel, Margin = Padding.Empty,
+            ColumnCount = 1, RowCount = 2
         };
-        ruleRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        ruleRow.AutoSize = false;
-        ruleRow.Height = Theme.ControlHeightCompact + 6;
-        ruleRow.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        var harmonyLabel = CreateFieldLabel("Harmony");
-        harmonyLabel.Font = Theme.UiFont(8.5f);
-        harmonyLabel.Margin = Padding.Empty;
-        harmonyLabel.AutoEllipsis = true;
-        harmony.Controls.Add(harmonyLabel, 0, 0);
-        _harmonyRule.Dock = DockStyle.None;
-        _harmonyRule.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        _harmonyRule.Width = 156;
+        channelContent.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        channelContent.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        channelContent.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _channelsPanel.Controls.Add(channelContent);
+        if (_modeRow is not null) channelContent.Controls.Add(_modeRow, 0, 0);
+        _channelRows = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, BackColor = Theme.Panel, Margin = Padding.Empty,
+            ColumnCount = 3, RowCount = 1
+        };
+        for (var index = 0; index < 3; index++)
+        {
+            _channelRows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+            var editor = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill, BackColor = Theme.Panel,
+                Margin = new Padding(index == 0 ? 0 : 4, 0, index == 2 ? 0 : 4, 0),
+                ColumnCount = 1, RowCount = 2
+            };
+            editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            editor.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
+            editor.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            ConfigureChannelEditor(index);
+            _channelLabels[index].Margin = Padding.Empty;
+            _channelValues[index].Margin = Padding.Empty;
+            editor.Controls.Add(_channelLabels[index], 0, 0);
+            editor.Controls.Add(_channelValues[index], 0, 1);
+            _channelSliders[index].Visible = false;
+            _channelSliders[index].TabStop = false;
+            _channelsPanel.Controls.Add(_channelSliders[index]);
+            _channelRows.Controls.Add(editor, index, 0);
+        }
+        _channelRows.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        channelContent.Controls.Add(_channelRows, 0, 1);
+        content.Controls.Add(_channelsPanel, 0, 11);
+
+        var recent = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, BackColor = Theme.Panel, Margin = Padding.Empty,
+            Padding = new Padding(0, 10, 0, 6), ColumnCount = 1, RowCount = 2
+        };
+        recent.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        recent.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        recent.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        recent.Controls.Add(CreateSectionLabel("Recent colors"), 0, 0);
+        ConfigurePaletteGrid(_inlineRecentGrid);
+        _inlineRecentGrid.BackColor = Theme.Panel;
+        _inlineRecentGrid.InheritSurface = true;
+        _inlineRecentGrid.SwatchSize = 24;
+        _inlineRecentGrid.Gap = 6;
+        _inlineRecentGrid.EmptyText = "No recent colors";
+        recent.Controls.Add(_inlineRecentGrid, 0, 1);
+        _inlineRecentGrid.SizeChanged += (_, _) => UpdateInlineRecentLayout();
+        _inlineRecentGrid.DpiChangedAfterParent += (_, _) => UpdateInlineRecentLayout();
+        content.Controls.Add(recent, 0, 12);
+
+        _harmonyToggle.Dock = DockStyle.Fill;
+        _harmonyToggle.Margin = new Padding(0, 8, 0, 0);
+        _harmonyToggle.AccessibleName = "Color harmony rule";
+        _harmonyToggle.AccessibleRole = AccessibleRole.CheckButton;
+        Theme.StyleToolbarButton(_harmonyToggle);
+        _harmonyToggle.Click += (_, _) => SetHarmonyExpanded(!_harmonyExpanded);
+        content.Controls.Add(_harmonyToggle, 0, 13);
+        _harmonyPanel.Dock = DockStyle.Fill;
+        _harmonyPanel.BackColor = Theme.Panel;
+        _harmonyPanel.Margin = Padding.Empty;
+        _harmonyPanel.ColumnCount = 2;
+        _harmonyPanel.RowCount = 2;
+        _harmonyPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        _harmonyPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
+        _harmonyPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.ControlHeight + 6));
+        _harmonyPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _harmonyPanel.Controls.Add(CreateFieldLabel("Color harmony rule"), 0, 0);
+        _harmonyRule.Dock = DockStyle.Fill;
         _harmonyRule.Margin = new Padding(0, 3, 0, 3);
         _harmonyRule.AccessibleName = "Color harmony rule";
         _harmonyRule.Items.AddRange(HarmonyRules.Select(rule => (object)rule.Label).ToArray());
@@ -618,76 +731,82 @@ internal sealed class MaterialEditorPanel : UserControl
         _harmonyRule.Font = Theme.UiFont(8.8f);
         Theme.StyleComboBoxSelection(_harmonyRule, Font.Size, Theme.ControlHeight);
         _harmonyRule.DropDownWidth = 176;
-
         _harmonyRule.SelectedIndexChanged += (_, _) => HarmonyRuleChanged();
         _toolTip.SetToolTip(_harmonyRule, "Choose a color harmony rule");
-        ruleRow.Controls.Add(_harmonyRule, 0, 0);
-        harmony.Controls.Add(ruleRow, 0, 1);
+        _harmonyPanel.Controls.Add(_harmonyRule, 1, 0);
         void LayoutHarmonyRule()
         {
             var gap = Math.Max(1, (int)Math.Round(3f * _harmonyRule.DeviceDpi / 96f));
-            var rowHeight = _harmonyRule.Height + gap * 2;
-            if (Math.Abs(harmony.RowStyles[1].Height - rowHeight) > 0.1f)
-                harmony.RowStyles[1].Height = rowHeight;
-            var width = Math.Max(1, picker.ClientSize.Width - (int)Math.Floor(picker.ClientSize.Width * 0.48f));
-            if (_harmonyRule.Width != width) _harmonyRule.Width = width;
-            _harmonyRule.Margin = new Padding(0, gap, 0, gap);
+            _harmonyPanel.RowStyles[0].Height = _harmonyRule.Height + gap * 2;
+            SetHarmonyExpanded(_harmonyExpanded);
         }
         _harmonyRule.SizeChanged += (_, _) => LayoutHarmonyRule();
         _harmonyRule.DpiChangedAfterParent += (_, _) => LayoutHarmonyRule();
-        ruleRow.Resize += (_, _) => LayoutHarmonyRule();
-        LayoutHarmonyRule();
-        picker.Layout += (_, _) =>
-        {
-            var width = Math.Max(1, (int)Math.Floor(picker.ClientSize.Width * 0.48f)
-                - (int)picker.ColumnStyles[1].Width);
-            if (picker.ColumnStyles[0].Width != width) picker.ColumnStyles[0].Width = width;
-            LayoutHarmonyRule();
-        };
-
         _harmonyGrid.Dock = DockStyle.Fill;
         _harmonyGrid.Margin = new Padding(0, 7, 0, 0);
-        _harmonyGrid.SwatchSize = 20;
-        _harmonyGrid.Gap = 4;
+        _harmonyGrid.SwatchSize = 32;
+        _harmonyGrid.InheritSurface = true;
+        _harmonyGrid.Gap = 6;
         _harmonyGrid.ColorSelected += (_, e) => SelectPaletteColor(e.Color);
         _harmonyGrid.HoveredColorChanged += (_, e) => _toolTip.SetToolTip(_harmonyGrid, ToHex(e.Color));
         _harmonyGrid.HoverCleared += (_, _) => _toolTip.SetToolTip(_harmonyGrid, string.Empty);
-        harmony.Controls.Add(_harmonyGrid, 0, 2);
-        picker.Controls.Add(harmony, 2, 0);
-        host.Controls.Add(picker);
+        _harmonyPanel.Controls.Add(_harmonyGrid, 0, 1);
+        _harmonyPanel.SetColumnSpan(_harmonyGrid, 2);
+        content.Controls.Add(_harmonyPanel, 0, 14);
+    }
 
-        var componentHost = new Panel
+    private void SetColorChannelsExpanded(bool expanded)
+    {
+        _channelsExpanded = expanded;
+        if (_content is null) return;
+        _channelsPanel.Visible = _colorEditorExpanded && expanded;
+        _content.RowStyles[11].Height = _colorEditorExpanded && expanded ? InspectorHeight(100) : 0;
+        _channelToggle.Icon = expanded ? SvgIconKind.ChevronDown : SvgIconKind.ChevronRight;
+        Theme.StyleToolbarButton(_channelToggle, expanded);
+        _channelToggle.AccessibleDescription = UiLocalization.T(
+            expanded ? "Color channels expanded" : "Color channels collapsed");
+        UpdatePanelHeight();
+    }
+
+    private void UpdateInlineRecentLayout()
+    {
+        if (_content is null) return;
+        _inlineRecentGrid.Gap = (int)Math.Round(6f * _inlineRecentGrid.DeviceDpi / 96f);
+        var minimumSwatch = (int)Math.Round(24f * _inlineRecentGrid.DeviceDpi / 96f);
+        _inlineRecentGrid.SwatchSize = Math.Max(minimumSwatch,
+            (_inlineRecentGrid.ClientSize.Width - _inlineRecentGrid.Gap * 7) / 8);
+        var columns = Math.Max(1, (_inlineRecentGrid.ClientSize.Width + _inlineRecentGrid.Gap)
+            / (_inlineRecentGrid.SwatchSize + _inlineRecentGrid.Gap));
+        var rows = Math.Max(1, (Math.Min(8, RecentPalette.Count) + columns - 1) / columns);
+        var visible = _colorEditorExpanded && RecentPalette.Count > 0;
+        if (_inlineRecentGrid.Parent is { } recent) recent.Visible = visible;
+        var height = visible
+            ? InspectorHeight(40) + rows * (_inlineRecentGrid.SwatchSize + _inlineRecentGrid.Gap) - _inlineRecentGrid.Gap : 0;
+        if (Math.Abs(_content.RowStyles[12].Height - height) < 0.1f) return;
+        _content.RowStyles[12].Height = height;
+        UpdatePanelHeight();
+    }
+
+    private void SetHarmonyExpanded(bool expanded)
+    {
+        _harmonyExpanded = expanded;
+        if (_content is null) return;
+        _content.SuspendLayout();
+        try
         {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            Margin = Padding.Empty
-        };
-        componentHost.Padding = new Padding(0, 26, 0, 0);
-        AddSectionDivider(componentHost);
-        host.Controls.Add(componentHost);
-        // WinForms lays out docked controls from back to front. Keep the picker
-        // behind the fill host so its top dock consumes its fixed-height area first.
-        host.Controls.SetChildIndex(picker, host.Controls.Count - 1);
-
-        _channelsPanel.Dock = DockStyle.Fill;
-        _channelsPanel.BackColor = Theme.Panel;
-        componentHost.Controls.Add(_channelsPanel);
-        var channels = new TableLayoutPanel
+            _harmonyPanel.Visible = _colorEditorExpanded && expanded;
+            _content.RowStyles[14].Height = _colorEditorExpanded && expanded
+                ? _harmonyPanel.RowStyles[0].Height + InspectorHeight(48) : 0;
+            UpdatePanelHeight();
+        }
+        finally
         {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 3,
-            RowCount = 4,
-            Margin = Padding.Empty
-        };
-        channels.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
-        channels.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        channels.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
-        for (var i = 0; i < 4; i++) channels.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        _channelsPanel.Controls.Add(channels);
-
-        for (var i = 0; i < 4; i++) ConfigureChannelRow(channels, i);
-
+            _content.ResumeLayout(performLayout: true);
+        }
+        _harmonyToggle.Icon = expanded ? SvgIconKind.ChevronDown : SvgIconKind.ChevronRight;
+        Theme.StyleToolbarButton(_harmonyToggle, expanded);
+        _harmonyToggle.AccessibleDescription = UiLocalization.T(
+            expanded ? "Color harmony expanded" : "Color harmony collapsed");
     }
 
     private void BuildPersistentHex(TableLayoutPanel content)
@@ -695,38 +814,58 @@ internal sealed class MaterialEditorPanel : UserControl
         _hexPanel.Dock = DockStyle.Fill;
         _hexPanel.Margin = Padding.Empty;
         _hexPanel.BackColor = Theme.Panel;
-        _hexPanel.Visible = true;
         content.Controls.Add(_hexPanel, 0, 7);
         var hexRow = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 2,
-            RowCount = 1,
-            Margin = Padding.Empty,
-            Padding = new Padding(0, Theme.InspectorRowMarginVertical, 0, Theme.InspectorRowMarginVertical)
+            Dock = DockStyle.Fill, BackColor = Theme.Panel, Margin = Padding.Empty,
+            Padding = new Padding(0, 6, 0, 6), ColumnCount = 3, RowCount = 1
         };
         hexRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        hexRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
-        hexRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
-        hexRow.Controls.Add(CreateFieldLabel("Hex"), 0, 0);
+        hexRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 40));
+        hexRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        hexRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 40));
+        _currentColor.Dock = DockStyle.Fill;
+        _currentColor.Margin = new Padding(0, 0, 8, 0);
+        _currentColor.AccessibleName = "Current color";
+        _currentColor.Click += (_, _) => TogglePalettePopup(_currentColor);
+        _toolTip.SetToolTip(_currentColor, "Colors");
+        hexRow.Controls.Add(_currentColor, 0, 0);
         _hexText.Dock = DockStyle.Fill;
         _hexText.Margin = Padding.Empty;
         _hexText.AccessibleName = "Hex color";
         _hexText.CharacterCasing = CharacterCasing.Upper;
+        _hexText.PrefixText = "HEX";
         _hexText.MaxLength = 9;
         Theme.StyleTextBox(_hexText);
         _hexText.KeyDown += HexTextKeyDown;
         _hexText.Leave += (_, _) => CommitHexText();
         hexRow.Controls.Add(_hexText, 1, 0);
+        _copyHex.Dock = DockStyle.Fill;
+        _copyHex.Margin = new Padding(8, 0, 0, 0);
+        _copyHex.AccessibleName = "Copy HEX color";
+        Theme.StyleStandardButton(_copyHex);
+        _toolTip.SetToolTip(_copyHex, "Copy HEX color");
+        _copyHex.Click += (_, _) =>
+        {
+            try
+            {
+                Clipboard.SetText(DisplayHex(EditedColor));
+                _toolTip.SetToolTip(_copyHex, UiLocalization.T("Color copied"));
+            }
+            catch (System.Runtime.InteropServices.ExternalException)
+            {
+                _toolTip.SetToolTip(_copyHex, UiLocalization.T("Clipboard is busy. Try again."));
+            }
+        };
+        hexRow.Controls.Add(_copyHex, 2, 0);
         _hexPanel.Controls.Add(hexRow);
         void LayoutHexRow()
         {
-            var gap = Math.Max(1, (int)Math.Round(Theme.InspectorRowMarginVertical * _hexText.DeviceDpi / 96f));
+            var gap = Math.Max(1, (int)Math.Round(6f * _hexText.DeviceDpi / 96f));
             hexRow.Padding = new Padding(0, gap, 0, gap);
-            var height = Math.Max(InspectorHeight(Theme.ControlHeight + Theme.InspectorRowMarginVertical * 2),
-                _hexText.PreferredFieldHeight + hexRow.Padding.Vertical);
-            if (Math.Abs(content.RowStyles[7].Height - height) <= 0.1f) return;
+            var height = Math.Max(InspectorHeight(Theme.ControlHeight) + gap * 2,
+                _hexText.PreferredFieldHeight + gap * 2);
+            if (Math.Abs(content.RowStyles[7].Height - height) < 0.1f) return;
             content.RowStyles[7].Height = height;
             UpdatePanelHeight();
         }
@@ -736,7 +875,7 @@ internal sealed class MaterialEditorPanel : UserControl
         LayoutHexRow();
     }
 
-    private void ConfigureChannelRow(TableLayoutPanel channels, int index)
+    private void ConfigureChannelEditor(int index)
     {
         var label = _channelLabels[index];
         label.Dock = DockStyle.Fill;
@@ -746,31 +885,24 @@ internal sealed class MaterialEditorPanel : UserControl
         label.Font = Theme.UiFont(8.5f);
         label.Margin = Padding.Empty;
         label.AutoEllipsis = true;
-        channels.Controls.Add(label, 0, index);
-
         var slider = _channelSliders[index];
         slider.Dock = DockStyle.Fill;
-        slider.Margin = new Padding(0, 3, 4, 3);
         slider.GradientColor = amount => ChannelGradient(index, amount);
         slider.ValueChanged += (_, _) => ChannelSliderChanged(index);
         slider.InteractionStarted += (_, _) => BeginColorContinuousEdit();
         slider.InteractionCompleted += (_, _) => CompleteColorContinuousEdit();
         slider.InteractionCanceled += (_, _) => CancelColorContinuousEdit();
-        channels.Controls.Add(slider, 1, index);
-
         var value = _channelValues[index];
         value.Minimum = 0;
         value.Maximum = 255;
         value.DecimalPlaces = 0;
         value.Increment = 1;
         value.Dock = DockStyle.Fill;
-        value.Margin = new Padding(0, 3, 0, 3);
         Theme.StyleNumeric(value);
         value.ValueChanged += (_, _) => ChannelNumericChanged(index);
         value.InteractionStarted += (_, _) => BeginColorContinuousEdit();
         value.InteractionCompleted += (_, _) => CompleteColorContinuousEdit();
         value.InteractionCanceled += (_, _) => CancelColorContinuousEdit();
-        channels.Controls.Add(value, 2, index);
     }
 
     private void BuildPalettePopup()
@@ -932,15 +1064,20 @@ internal sealed class MaterialEditorPanel : UserControl
 
     private void TogglePalettePopup()
     {
-        DropDownToggle.Toggle(_paletteDropDown, ShowPalettePopup);
+        TogglePalettePopup(_paletteButton);
     }
 
-    private void ShowPalettePopup()
+    private void TogglePalettePopup(Control anchor)
+    {
+        DropDownToggle.Toggle(_paletteDropDown, () => ShowPalettePopup(anchor));
+    }
+
+    private void ShowPalettePopup(Control source)
     {
         RefreshRuntimePalettes();
         _gradientPresetGrid.SetSelection(_gradientKind, _gradientStops);
-        var anchor = _paletteButton.RectangleToScreen(_paletteButton.ClientRectangle);
-        var workingArea = Screen.FromControl(_paletteButton).WorkingArea;
+        var anchor = source.RectangleToScreen(source.ClientRectangle);
+        var workingArea = Screen.FromControl(source).WorkingArea;
         var x = Math.Clamp(anchor.Right - _paletteDropDown.Width, workingArea.Left,
             Math.Max(workingArea.Left, workingArea.Right - _paletteDropDown.Width));
         var y = anchor.Bottom;
@@ -1080,7 +1217,7 @@ internal sealed class MaterialEditorPanel : UserControl
         for (var index = 0; index < 3; index++) grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28));
-        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
         grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
         _gradientPanel.Controls.Add(grid);
@@ -1165,7 +1302,7 @@ internal sealed class MaterialEditorPanel : UserControl
         _gradientStopTarget.Margin = new Padding(0, 3, 0, 3);
         _gradientStopTarget.Click += (_, _) =>
         {
-            SetColorEditorExpanded(expanded: true);
+            RefreshColorEditorLayout();
             SelectGradientStop(_selectedGradientStop);
         };
         _gradientStopTarget.AccessibleName = "Selected gradient stop color";
@@ -1201,6 +1338,7 @@ internal sealed class MaterialEditorPanel : UserControl
 
     private void ConfigureGradientModeButton(Button button, GradientKind kind, string toolTip)
     {
+        if (button is SegmentedButton segmented) segmented.ShowSelectionIndicator = true;
         button.Dock = DockStyle.Fill;
         button.AccessibleName = kind switch
         {
@@ -1316,35 +1454,35 @@ internal sealed class MaterialEditorPanel : UserControl
         if (changed) UpdateEditorFromColor();
     }
 
-    private void SetColorEditorExpanded(bool expanded)
+    private void RefreshColorEditorLayout()
     {
         if (_content is null) return;
-        _colorEditorExpanded = expanded;
+        const bool expanded = true;
         _content.SuspendLayout();
         try
         {
-            _content.RowStyles[5].Height = expanded ? InspectorHeight(Theme.InspectorRowHeight + 8) : 0;
-            _content.RowStyles[6].Height = expanded ? InspectorHeight(290) : 0;
-            _content.RowStyles[7].Height = Math.Max(InspectorHeight(Theme.InspectorRowHeight), _hexText.PreferredFieldHeight + (int)Math.Ceiling(Theme.InspectorRowMarginVertical * 2f * _hexText.DeviceDpi / 96f));
+            _content.RowStyles[5].Height = 0;
+            _content.RowStyles[6].Height = expanded ? InspectorHeight(232) : 0;
+            _content.RowStyles[9].Height = expanded ? InspectorHeight(80) : 0;
+            _content.RowStyles[10].Height = expanded ? InspectorHeight(44) : 0;
+            _content.RowStyles[11].Height = expanded && _channelsExpanded ? InspectorHeight(100) : 0;
+            _content.RowStyles[13].Height = expanded ? InspectorHeight(40) : 0;
+            _content.RowStyles[14].Height = expanded && _harmonyExpanded
+                ? _harmonyPanel.RowStyles[0].Height + InspectorHeight(48) : 0;
             foreach (Control control in _content.Controls)
             {
                 var row = _content.GetRow(control);
-                if (row is 5 or 6) control.Visible = expanded;
+                if (row is 6 or 9 or 10 or 13) control.Visible = expanded;
+                if (row == 12) control.Visible = expanded && RecentPalette.Count > 0;
+                if (row == 11) control.Visible = expanded && _channelsExpanded;
+                if (row == 14) control.Visible = expanded && _harmonyExpanded;
             }
-            _colorEditorToggle.Text = UiLocalization.T("Color");
-            if (_colorEditorToggle is SvgIconButton iconButton)
-            {
-                iconButton.Icon = expanded ? SvgIconKind.ChevronUp : SvgIconKind.ChevronDown;
-            }
-            _colorEditorToggle.AccessibleDescription = UiLocalization.T(
-                expanded ? "Color editor expanded" : "Color editor collapsed");
-            Theme.StyleToolbarButton(_colorEditorToggle, expanded);
+            UpdateInlineRecentLayout();
         }
         finally
         {
             _content.ResumeLayout(performLayout: true);
         }
-
         UpdatePanelHeight();
     }
 
@@ -1353,7 +1491,7 @@ internal sealed class MaterialEditorPanel : UserControl
         // The title row is scaled by WinForms and never collapsed. Use its ratio
         // so visibility changes preserve the current DPI instead of restoring 96-DPI rows.
         var scale = _content is null ? 1f
-            : _content.RowStyles[0].Height / Theme.InspectorTitleHeight;
+            : _content.RowStyles[0].Height / (InspectorModuleStyle.PageHeaderHeight + 12);
         return logicalHeight * scale;
     }
 
@@ -1423,7 +1561,7 @@ internal sealed class MaterialEditorPanel : UserControl
                 if (grid.GetRow(control) > 0) control.Visible = expanded;
             }
 
-            _content.RowStyles[2].Height = _textObjectMode ? 0 : InspectorHeight(expanded ? 126 : 34);
+            _content.RowStyles[2].Height = _textObjectMode ? 0 : InspectorHeight(expanded ? 132 : 40);
         }
         finally
         {
@@ -1659,7 +1797,7 @@ internal sealed class MaterialEditorPanel : UserControl
 
     private void SelectTarget(bool fill)
     {
-        SetColorEditorExpanded(expanded: true);
+        RefreshColorEditorLayout();
         var gradientPreviewOnStroke = !fill;
         if (_editingGradientTarget == GradientColorTarget.None
             && _editingFill == fill
@@ -1690,7 +1828,7 @@ internal sealed class MaterialEditorPanel : UserControl
 
         _colorMode = mode;
         RefreshModeButtons();
-        _channelsPanel.Visible = true;
+        _channelsPanel.Visible = _channelsExpanded;
         _channelsPanel.BringToFront();
         ConfigureChannelMode();
         UpdateEditorFromColor();
@@ -1732,7 +1870,8 @@ internal sealed class MaterialEditorPanel : UserControl
         _updatingComponents = true;
         for (var i = 0; i < 3; i++)
         {
-            _channelLabels[i].Text = UiLocalization.T(labels[i]);
+            _channelLabels[i].Text = _colorMode == ColorMode.Rgb ? new[] { "R", "G", "B" }[i]
+                : UiLocalization.T(_colorMode == ColorMode.Hsv && i == 2 ? "HSV value" : labels[i]);
             _channelLabels[i].AccessibleName = UiLocalization.T(_colorMode == ColorMode.Lab ? accessibleNames[i] : labels[i]);
             _channelSliders[i].AccessibleName = UiLocalization.T(accessibleNames[i]);
             _channelValues[i].AccessibleName = UiLocalization.T(accessibleNames[i]);
@@ -1749,7 +1888,7 @@ internal sealed class MaterialEditorPanel : UserControl
                 ? i == 0 ? "degrees" : "percent"
                 : string.Empty;
         }
-        _channelLabels[3].Text = UiLocalization.T("Alpha");
+        _channelLabels[3].Text = UiLocalization.T("Opacity");
         _channelLabels[3].AccessibleName = UiLocalization.T("Alpha");
         _channelSliders[3].AccessibleName = UiLocalization.T("Alpha");
         _toolTip.SetToolTip(_channelLabels[3], UiLocalization.T("Alpha"));
@@ -1758,10 +1897,11 @@ internal sealed class MaterialEditorPanel : UserControl
         _channelSliders[3].Maximum = 255;
         _channelValues[3].AccessibleName = UiLocalization.T("Alpha");
         _channelValues[3].Minimum = 0;
-        _channelValues[3].Maximum = 255;
-        _channelValues[3].DecimalPlaces = 0;
+        _channelValues[3].Maximum = 100;
+        _channelValues[3].DecimalPlaces = 1;
         _channelValues[3].Increment = 1;
-        _channelValues[3].Suffix = string.Empty;
+        _channelValues[3].Suffix = "%";
+        _channelValues[3].ShowSuffix = true;
         ConfigureTraditionalPickerMode(labels);
         _updatingComponents = false;
     }
@@ -1797,7 +1937,7 @@ internal sealed class MaterialEditorPanel : UserControl
                 SetChannelValues(color.R, color.G, color.B, color.A);
                 break;
         }
-        _hexText.Text = ToHex(color);
+        _hexText.Text = DisplayHex(color);
         SetHexInvalid(false);
         _updatingComponents = false;
         if (refreshTraditionalPicker) UpdateTraditionalPicker();
@@ -1813,7 +1953,7 @@ internal sealed class MaterialEditorPanel : UserControl
         {
             var next = Math.Clamp(values[i], _channelSliders[i].Minimum, _channelSliders[i].Maximum);
             _channelSliders[i].Value = next;
-            _channelValues[i].Value = next;
+            _channelValues[i].Value = i == 3 ? AlphaPercent(next) : next;
         }
     }
 
@@ -1830,15 +1970,15 @@ internal sealed class MaterialEditorPanel : UserControl
                 _channelValues[i].Maximum);
         }
         _channelSliders[3].Value = alpha;
-        _channelValues[3].Value = alpha;
+        _channelValues[3].Value = AlphaPercent(alpha);
     }
 
     private void ChannelSliderChanged(int index)
     {
         if (_updatingComponents) return;
         _updatingComponents = true;
-        _channelValues[index].Value = _colorMode == ColorMode.Lab && index < 3
-            ? _channelSliders[index].Value / 10m
+        _channelValues[index].Value = index == 3 ? AlphaPercent(_channelSliders[index].Value)
+            : _colorMode == ColorMode.Lab ? _channelSliders[index].Value / 10m
             : _channelSliders[index].Value;
         _updatingComponents = false;
         ApplyColorComponents(index);
@@ -1848,9 +1988,11 @@ internal sealed class MaterialEditorPanel : UserControl
     {
         if (_updatingComponents) return;
         _updatingComponents = true;
-        _channelSliders[index].Value = _colorMode == ColorMode.Lab && index < 3
-            ? (int)Math.Round((double)_channelValues[index].Value * 10, MidpointRounding.AwayFromZero)
-            : (int)_channelValues[index].Value;
+        _channelSliders[index].Value = index == 3
+            ? (int)Math.Round(_channelValues[index].Value * 255m / 100m, MidpointRounding.AwayFromZero)
+            : _colorMode == ColorMode.Lab
+                ? (int)Math.Round((double)_channelValues[index].Value * 10, MidpointRounding.AwayFromZero)
+                : (int)_channelValues[index].Value;
         _updatingComponents = false;
         ApplyColorComponents(index);
     }
@@ -1955,8 +2097,13 @@ internal sealed class MaterialEditorPanel : UserControl
     {
         _traditionalPlane.SetValues(ComponentAmount(1), ComponentAmount(2));
         _primaryComponent.SetValue(ComponentAmount(0));
+        var wasUpdating = _updatingComponents;
+        _updatingComponents = true;
+        try { _hueComponent.Value = (int)Math.Round(ComponentAmount(0) * 360); }
+        finally { _updatingComponents = wasUpdating; }
         if (changedIndex is -1 or 0) _traditionalPlane.RefreshGradient();
         if (changedIndex is -1 or 1 or 2) _primaryComponent.RefreshGradient();
+        if (changedIndex is -1 or 1 or 2) _hueComponent.RefreshGradient();
     }
 
     private void ConfigureTraditionalPickerMode(string[] labels)
@@ -1974,6 +2121,14 @@ internal sealed class MaterialEditorPanel : UserControl
         _primaryComponent.AxisName = UiLocalization.T(labels[0]);
         _primaryComponent.AccessibleName = UiLocalization.T("Primary color component");
         _primaryComponent.HighAtTop = _colorMode is ColorMode.Rgb or ColorMode.Lab;
+        if (_pickerLayout is not null)
+        {
+            var horizontalHue = _colorMode is ColorMode.Hsv or ColorMode.Hsl;
+            _primaryComponent.Visible = !horizontalHue;
+            _hueComponent.Visible = horizontalHue;
+            _pickerLayout.ColumnStyles[1].Width = horizontalHue ? 0 : InspectorHeight(24);
+            _pickerLayout.RowStyles[1].Height = horizontalHue ? InspectorHeight(36) : 0;
+        }
         _toolTip.SetToolTip(
             _traditionalPlane,
             $"{UiLocalization.T(labels[1])} / {UiLocalization.T(labels[2])}");
@@ -1999,7 +2154,7 @@ internal sealed class MaterialEditorPanel : UserControl
         var current = EditedColor;
         if (current.ToArgb() == color.ToArgb())
         {
-            _hexText.Text = ToHex(color);
+            _hexText.Text = DisplayHex(color);
             UpdateColorSelectionIndicators();
             return false;
         }
@@ -2013,7 +2168,7 @@ internal sealed class MaterialEditorPanel : UserControl
         else if (_editingFill) _fill = color;
         else _stroke = color;
         _opacity = color.A / 255f;
-        _hexText.Text = ToHex(color);
+        _hexText.Text = DisplayHex(color);
         SetHexInvalid(false);
         UpdateTargetPresentation();
         UpdateColorSelectionIndicators();
@@ -2094,7 +2249,7 @@ internal sealed class MaterialEditorPanel : UserControl
         }
         else if (e.KeyCode == Keys.Escape)
         {
-            _hexText.Text = ToHex(EditedColor);
+            _hexText.Text = DisplayHex(EditedColor);
             SetHexInvalid(false);
             e.Handled = true;
             e.SuppressKeyPress = true;
@@ -2112,7 +2267,7 @@ internal sealed class MaterialEditorPanel : UserControl
 
         SetHexInvalid(false);
         if (SetEditedColor(parsed, addRecentForDiscreteEdit: true)) UpdateEditorFromColor();
-        else _hexText.Text = ToHex(parsed);
+        else _hexText.Text = DisplayHex(parsed);
     }
 
     private void SetHexInvalid(bool invalid)
@@ -2166,6 +2321,8 @@ internal sealed class MaterialEditorPanel : UserControl
     private void RefreshRuntimePalettes()
     {
         _recentGrid.SetColors(RecentPalette);
+        _inlineRecentGrid.SetColors(RecentPalette.Take(8));
+        UpdateInlineRecentLayout();
         _recentGradientGrid.SetPresets(RecentGradientPresets);
         _customGrid.SetColors(CustomPalette);
         _gradientPresetGrid.SetPresets(AllGradientPresets());
@@ -2263,6 +2420,8 @@ internal sealed class MaterialEditorPanel : UserControl
         var color = Opaque(EditedColor);
         _builtInGrid.SelectedColor = color;
         _recentGrid.SelectedColor = color;
+        _inlineRecentGrid.SelectedColor = color;
+        _currentColor.SwatchColor = EditedColor;
         _customGrid.SelectedColor = color;
     }
 
@@ -2445,6 +2604,9 @@ internal sealed class MaterialEditorPanel : UserControl
     private static Color Opaque(Color color) => Color.FromArgb(color.R, color.G, color.B);
 
     private static string ToHex(Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}{color.A:X2}";
+    private static string DisplayHex(Color color) => color.A == 255
+        ? $"#{color.R:X2}{color.G:X2}{color.B:X2}" : ToHex(color);
+    private static decimal AlphaPercent(int alpha) => Math.Round(alpha * 100m / 255m, 1);
 
     private static bool TryParseHex(string text, out Color color)
     {

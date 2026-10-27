@@ -19,19 +19,21 @@ internal static class RuntimeInstaller
 
     public static bool IsRuntimeValid(string runtimeDirectory)
     {
-        if (!File.Exists(Path.Combine(runtimeDirectory, "dotnet.exe"))) return false;
-        var desktopRoot = Path.Combine(runtimeDirectory, "shared", "Microsoft.WindowsDesktop.App");
         try
         {
+            if (!IsNonEmptyFile(Path.Combine(runtimeDirectory, "dotnet.exe"))) return false;
+            var desktopRoot = Path.Combine(runtimeDirectory, "shared", "Microsoft.WindowsDesktop.App");
             if (!Directory.Exists(desktopRoot)) return false;
             foreach (var directory in Directory.EnumerateDirectories(desktopRoot)
                          .OrderByDescending(path => ParseVersion(Path.GetFileName(path))))
             {
                 var versionName = Path.GetFileName(directory);
                 if (!Version.TryParse(versionName, out var version) || version.Major != 8) continue;
-                if (File.Exists(Path.Combine(directory, "System.Windows.Forms.dll"))
-                    && File.Exists(Path.Combine(runtimeDirectory, "shared", "Microsoft.NETCore.App", versionName, "coreclr.dll"))
-                    && File.Exists(Path.Combine(runtimeDirectory, "host", "fxr", versionName, "hostfxr.dll")))
+                var coreDirectory = Path.Combine(runtimeDirectory, "shared", "Microsoft.NETCore.App", versionName);
+                if (IsNonEmptyFile(Path.Combine(directory, "System.Windows.Forms.dll"))
+                    && IsNonEmptyFile(Path.Combine(coreDirectory, "coreclr.dll"))
+                    && IsNonEmptyFile(Path.Combine(coreDirectory, "hostpolicy.dll"))
+                    && IsNonEmptyFile(Path.Combine(runtimeDirectory, "host", "fxr", versionName, "hostfxr.dll")))
                 {
                     return true;
                 }
@@ -42,6 +44,12 @@ internal static class RuntimeInstaller
             return false;
         }
         return false;
+    }
+
+    private static bool IsNonEmptyFile(string path)
+    {
+        var file = new FileInfo(path);
+        return file.Exists && file.Length > 0;
     }
 
     public static void EnsureInstalled(
@@ -135,20 +143,37 @@ internal static class RuntimeInstaller
             }
 
             var runtimeDirectory = Path.Combine(root, ".Runtime");
-            File.WriteAllText(Path.Combine(CreateDirectory(runtimeDirectory), "dotnet.exe"), string.Empty);
-            File.WriteAllText(Path.Combine(
-                CreateDirectory(Path.Combine(runtimeDirectory, "shared", "Microsoft.WindowsDesktop.App", "8.0.12")),
-                "System.Windows.Forms.dll"), string.Empty);
-            File.WriteAllText(Path.Combine(
-                CreateDirectory(Path.Combine(runtimeDirectory, "shared", "Microsoft.NETCore.App", "8.0.12")),
-                "coreclr.dll"), string.Empty);
-            File.WriteAllText(Path.Combine(
-                CreateDirectory(Path.Combine(runtimeDirectory, "host", "fxr", "8.0.12")),
-                "hostfxr.dll"), string.Empty);
+            var coreDirectory = Path.Combine(runtimeDirectory, "shared", "Microsoft.NETCore.App", "8.0.12");
+            var requiredFiles = new[]
+            {
+                Path.Combine(CreateDirectory(runtimeDirectory), "dotnet.exe"),
+                Path.Combine(
+                    CreateDirectory(Path.Combine(runtimeDirectory, "shared", "Microsoft.WindowsDesktop.App", "8.0.12")),
+                    "System.Windows.Forms.dll"),
+                Path.Combine(CreateDirectory(coreDirectory), "coreclr.dll"),
+                Path.Combine(coreDirectory, "hostpolicy.dll"),
+                Path.Combine(
+                    CreateDirectory(Path.Combine(runtimeDirectory, "host", "fxr", "8.0.12")),
+                    "hostfxr.dll")
+            };
+            var fixtureContent = new byte[] { 1 };
+            foreach (var path in requiredFiles) File.WriteAllBytes(path, fixtureContent);
+            if (!IsRuntimeValid(runtimeDirectory)) return false;
+
+            foreach (var path in requiredFiles)
+            {
+                File.Delete(path);
+                if (IsRuntimeValid(runtimeDirectory)) return false;
+                File.WriteAllBytes(path, Array.Empty<byte>());
+                if (IsRuntimeValid(runtimeDirectory)) return false;
+                File.WriteAllBytes(path, fixtureContent);
+                if (!IsRuntimeValid(runtimeDirectory)) return false;
+            }
+
             var sentinel = Path.Combine(runtimeDirectory, ".existing-runtime-sentinel");
             File.WriteAllText(sentinel, "existing");
 
-            EnsureInstalled(root, progress: null, CancellationToken.None);
+            EnsureInstalled(root, progress: null, new CancellationToken(canceled: true));
             return IsRuntimeValid(runtimeDirectory) && File.Exists(sentinel);
         }
         catch

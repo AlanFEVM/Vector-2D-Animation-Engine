@@ -1192,7 +1192,17 @@ internal sealed partial class MainForm : Form
         _timeline.FrameWidthCommitted += (_, _) => PersistTimelineFrameWidth();
         _timeline.FrameHeightCommitted += (_, _) => PersistTimelineFrameHeight();
         _timeline.AutoKeyframeChanged += (_, _) => PersistTimelineAutoKeyframe();
-        _timeline.SelectedTweenChanged += (_, _) => RefreshTweenCurveInspector();
+        _timeline.SelectedTweenChanged += (_, _) =>
+        {
+            RefreshTweenCurveInspector();
+            if (TryResolveSelectedTimelineTween(out var target))
+            {
+                var category = target.SceneDefinition?.FindShot(target.Track.TargetId) is not null
+                    ? InspectorCategory.Camera : InspectorCategory.None;
+                RevealInspectorCategory(category, "timeline tween selected");
+            }
+            LayoutInspectorCategoryRail();
+        };
         _timeline.CommandRequested += (_, e) => HandleTimelineCommand(e.Command, e.Cells);
         _timeline.FrameTransformRequested += (_, e) => TransformTimelineFrames(e);
         _timeline.LayerMoveRequested += (_, e) => MoveTimelineLayer(
@@ -1782,9 +1792,9 @@ internal sealed partial class MainForm : Form
 
     private bool SaveFolderProjectAs(string manifestPath)
     {
-        // 另存为传统文件夹工程后离开单文件模式。
+        if (!SaveProjectTo(manifestPath)) return false;
         _projectPackagePath = "";
-        return SaveProjectTo(manifestPath);
+        return true;
     }
 
     private bool SaveProjectTo(string manifestPath)
@@ -1904,6 +1914,7 @@ internal sealed partial class MainForm : Form
         if (_projectDirty == dirty) return;
         _projectDirty = dirty;
         UpdateProjectTitle();
+        if (_documentInspectorPage.Visible) UpdateDocumentInfoPanel();
     }
 
     private void UpdateProjectTitle()

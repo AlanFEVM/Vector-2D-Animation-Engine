@@ -7,6 +7,20 @@ internal sealed class ModernTextInput : UserControl
 {
     private readonly TextBox _editor = new() { BorderStyle = BorderStyle.None, AutoSize = true };
     private bool _hovered;
+    private string _prefixText = string.Empty;
+
+    public string PrefixText
+    {
+        get => _prefixText;
+        set
+        {
+            value ??= string.Empty;
+            if (_prefixText == value) return;
+            _prefixText = value;
+            PerformLayout();
+            Invalidate();
+        }
+    }
 
     public ModernTextInput()
     {
@@ -58,6 +72,7 @@ internal sealed class ModernTextInput : UserControl
     public int MaxLength { get => _editor.MaxLength; set => _editor.MaxLength = value; }
     public CharacterCasing CharacterCasing { get => _editor.CharacterCasing; set => _editor.CharacterCasing = value; }
     public bool ReadOnly { get => _editor.ReadOnly; set => _editor.ReadOnly = value; }
+    public bool UseSystemPasswordChar { get => _editor.UseSystemPasswordChar; set => _editor.UseSystemPasswordChar = value; }
     public void SelectAll() => _editor.SelectAll();
 
     internal int PreferredFieldHeight => Math.Max(
@@ -87,6 +102,9 @@ internal sealed class ModernTextInput : UserControl
         _editor.Font = Font;
         var editorHeight = Math.Min(_editor.PreferredHeight, Math.Max(1, ClientSize.Height - 4));
         var leftInset = SearchAppearance ? (int)Math.Ceiling(32f * DeviceDpi / 96f) : inset;
+        if (!SearchAppearance && _prefixText.Length > 0)
+            leftInset += TextRenderer.MeasureText(_prefixText, Font, Size.Empty,
+                TextFormatFlags.NoPadding).Width + inset;
         _editor.SetBounds(leftInset, Math.Max(2, (ClientSize.Height - editorHeight) / 2),
             Math.Max(1, ClientSize.Width - leftInset - inset), editorHeight);
         _editor.AccessibleName = AccessibleName;
@@ -147,6 +165,15 @@ internal sealed class ModernTextInput : UserControl
                 e.Graphics.Restore(state);
             }
             else Theme.PaintUiSurface(e.Graphics, fill, border, surfaceBounds);
+        }
+        if (!SearchAppearance && _prefixText.Length > 0)
+        {
+            var inset = Math.Max(2, (int)Math.Round(8f * DeviceDpi / 96f));
+            TextRenderer.DrawText(e.Graphics, _prefixText, Font,
+                new Rectangle(inset, 0, Math.Max(0, _editor.Left - inset * 2), Height),
+                highContrast ? _editor.ForeColor : Enabled ? Theme.Muted : Theme.DisabledText,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine
+                | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
         }
         if (SearchAppearance)
         {

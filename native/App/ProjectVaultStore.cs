@@ -1578,6 +1578,8 @@ internal static class ProjectVaultStore
                 || !IsSafeStableId(layer.Id)
                 || layer.Name is null
                 || layer.MaskLayerId is null
+                || !float.IsFinite(layer.ParallaxDepth)
+                || Math.Abs(layer.ParallaxDepth) > SceneShotSettings.MaximumPosition
                 || !Enum.IsDefined(layer.Kind)
                 || !Enum.IsDefined(layer.BlendMode)))
         {

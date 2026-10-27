@@ -15,7 +15,8 @@ internal static class Program
             ["--bench-timeline"] = new("Running timeline regression benchmark", Benchmark.RunTimelineRegression),
             ["--bench-render"] = new("Running stage renderer regression benchmark", Benchmark.RunStageRendererRegression),
             ["--bench-gpu-optics"] = new("Running GPU optical parity benchmark", Benchmark.RunGpuOpticsRegression),
-            ["--bench-collision"] = new("Running collision-project performance benchmark", Benchmark.RunCollisionProjectPerformance)
+            ["--bench-collision"] = new("Running collision-project performance benchmark", Benchmark.RunCollisionProjectPerformance),
+            ["--bench-selection-perf"] = new("Running large selection performance regression", Benchmark.RunLargeSelectionFrameRateRegression)
         };
 
     [STAThread]
@@ -226,6 +227,12 @@ internal static class Program
         if (!string.Equals(args[0], "--bench-gpu-optics", StringComparison.OrdinalIgnoreCase))
             Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", "1");
         try { command.Execute(); }
+        catch (Exception exception)
+        {
+            AppLog.Error($"Benchmark failed: {args[0]}", exception);
+            Console.Error.WriteLine(exception);
+            Environment.ExitCode = 1;
+        }
         finally { Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", priorGpu); }
         return true;
     }

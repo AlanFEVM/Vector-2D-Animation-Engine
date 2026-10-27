@@ -13,6 +13,8 @@ internal sealed class SceneLayerDefinition
     public LayerBlendMode BlendMode { get; set; } = LayerBlendMode.Normal;
     public int ColorArgb { get; set; } = Color.FromArgb(79, 195, 247).ToArgb();
     public bool Outline { get; set; }
+    public float ParallaxDepth { get; internal set; }
+    public bool ParallaxEnabled { get; internal set; } = true;
     internal VectorScene? MaskScene { get; set; }
 }
 
@@ -34,6 +36,8 @@ internal sealed record SceneLayerSnapshotItem(
     public SceneLayerKind Kind { get; init; }
     public string MaskLayerId { get; init; } = "";
     public VectorSceneSnapshot? MaskScene { get; init; }
+    public float ParallaxDepth { get; init; }
+    public bool ParallaxEnabled { get; init; } = true;
 }
 
 internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDefinition
@@ -844,7 +848,9 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
             {
                 Kind = layer.Kind,
                 MaskLayerId = layer.MaskLayerId,
-                MaskScene = layer.MaskScene?.CreateSnapshot()
+                MaskScene = layer.MaskScene?.CreateSnapshot(),
+                ParallaxDepth = layer.ParallaxDepth,
+                ParallaxEnabled = layer.ParallaxEnabled
             }).ToArray(),
             ActiveLayerId = ActiveLayerId,
             InstanceLayerIds = _instances.ToDictionary(instance => instance.Id, instance => instance.SceneLayerId, StringComparer.Ordinal)
@@ -868,7 +874,10 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
                 Outline = layer.Outline,
                 Kind = Enum.IsDefined(layer.Kind) ? layer.Kind : SceneLayerKind.Content,
                 MaskLayerId = layer.MaskLayerId ?? "",
-                MaskScene = RestoreMaskScene(layer.Kind, layer.MaskScene)
+                MaskScene = RestoreMaskScene(layer.Kind, layer.MaskScene),
+                ParallaxDepth = float.IsFinite(layer.ParallaxDepth)
+                    ? Math.Clamp(layer.ParallaxDepth, -SceneShotSettings.MaximumPosition, SceneShotSettings.MaximumPosition) : 0,
+                ParallaxEnabled = layer.ParallaxEnabled
             });
         }
 
@@ -929,6 +938,8 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
             Name = string.IsNullOrWhiteSpace(name) ? $"Mask {_layers.Count + 1:0000}" : name.Trim(),
             Kind = SceneLayerKind.Mask,
             ColorArgb = DefaultLayerColor(contentIndex).ToArgb(),
+            ParallaxDepth = contentLayer.ParallaxDepth,
+            ParallaxEnabled = contentLayer.ParallaxEnabled,
             MaskScene = CreateMaskScene(FrameCount)
         };
         _layers.Insert(Math.Max(0, contentIndex), maskLayer);
@@ -968,6 +979,8 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
         if (!string.Equals(contentLayer.MaskLayerId, maskLayer.Id, StringComparison.Ordinal))
         {
             contentLayer.MaskLayerId = maskLayer.Id;
+            maskLayer.ParallaxDepth = contentLayer.ParallaxDepth;
+            maskLayer.ParallaxEnabled = contentLayer.ParallaxEnabled;
             changed = true;
         }
         return changed;

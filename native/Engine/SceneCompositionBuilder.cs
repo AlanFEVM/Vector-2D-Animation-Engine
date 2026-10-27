@@ -376,7 +376,8 @@ internal static class SceneCompositionBuilder
             inheritedOpacity: 1f,
             synchronize: false,
             inheritedOutline: hostOutline,
-            inheritedOutlineColorArgb: hostOutline ? container.Scene.LayerColorArgb[hostLayer] : 0);
+            inheritedOutlineColorArgb: hostOutline ? container.Scene.LayerColorArgb[hostLayer] : 0,
+            bakeAppearanceGroups: true);
         if (layers.Any(layer => layer.Source.HasLayerEffects || layer.Filters.HasEnabled
             || layer.BlendMode != LayerBlendMode.Normal))
         {
@@ -762,7 +763,8 @@ internal static class SceneCompositionBuilder
         int inheritedOutlineColorArgb = 0,
         string inheritedParentGroupId = "",
         bool excludeEffectivelyLockedLayers = false,
-        IReadOnlyList<DistortWarp>? inheritedDistortions = null)
+        IReadOnlyList<DistortWarp>? inheritedDistortions = null,
+        bool bakeAppearanceGroups = false)
     {
         if (!ancestry.Add(drawingObject.Id)) return;
         try
@@ -790,7 +792,8 @@ internal static class SceneCompositionBuilder
                 state);
             // A child blend operates against the symbol's own transparent group,
             // then the symbol as a whole blends against its parent's backdrop.
-            var isolateAppearance = state.Filters.HasEnabled || state.BlendMode != LayerBlendMode.Normal || state.Alpha != 1f
+            var isolateAppearance = state.Filters.HasEnabled || state.BlendMode != LayerBlendMode.Normal
+                || !bakeAppearanceGroups && state.Alpha != 1f
                 || drawingObject.Instances.Any(child => IsDrawingObjectInstanceActive(drawingObject, child, localFrame)
                     && child.EvaluateState(localFrame).BlendMode != LayerBlendMode.Normal);
             if (isolateAppearance && source.LayerCount > 0)
@@ -841,7 +844,8 @@ internal static class SceneCompositionBuilder
                 var hostGroupId = "";
                 if (activeChildren.Length > 0 && (blendMode != LayerBlendMode.Normal
                     || sourceParentGroupId.Length == 0 && !string.IsNullOrWhiteSpace(source.LayerParentIds[sourceLayer])
-                    || source.LayerOpacity[sourceLayer] != 1f || inheritedOpacity != 1f))
+                    || !bakeAppearanceGroups
+                    && (source.LayerOpacity[sourceLayer] != 1f || inheritedOpacity != 1f)))
                 {
                     hostGroupId = Guid.NewGuid().ToString("N");
                     layers.Add(new CompositionLayer(
@@ -926,7 +930,8 @@ internal static class SceneCompositionBuilder
                         hostGroupId.Length > 0 ? hostGroupId
                             : sourceParentGroupId.Length > 0 ? sourceParentGroupId : inheritedParentGroupId,
                         excludeEffectivelyLockedLayers,
-                        compositionDistortions);
+                        compositionDistortions,
+                        bakeAppearanceGroups);
                 }
                 // Composition layers are stored front to back. Instances on a host
                 // layer therefore precede its local drawing in the flattened stack.

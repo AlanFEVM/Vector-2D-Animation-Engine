@@ -47,12 +47,29 @@ internal static class ProjectPackageStore
         Directory.CreateDirectory(pendingWorkspace);
         RejectReparsePoint(pendingWorkspace);
 
+        var originalImageBindings = project.ImageAssets
+            .Select(asset => (Asset: asset, asset.SourcePath, asset.ProjectRelativePath))
+            .ToArray();
+        var originalSvgBindings = project.ExternalSvgAssets
+            .Select(asset => (Asset: asset, asset.SourcePath, asset.ProjectRelativePath, asset.LastKnownSha256))
+            .ToArray();
+        var workspaceInstalled = false;
         try
         {
             // 先把工程原子提交到全新的待交换工作区；现有工作区保持不动，资产 SourcePath
             // 仍可从中读取。保存失败时当前工作区与容器都不受影响。
             var pendingManifest = Path.Combine(pendingWorkspace, PackageManifestFileName);
             ProjectVaultStore.Save(project, pendingManifest);
+
+            var finalImageBindings = project.ImageAssets
+                .Select(asset => (Asset: asset, SourcePath: Path.Combine(
+                    workspace, asset.ProjectRelativePath.Replace('/', Path.DirectorySeparatorChar))))
+                .ToArray();
+            var finalSvgBindings = project.ExternalSvgAssets
+                .Select(asset => (Asset: asset, SourcePath: Path.Combine(
+                    workspace, asset.ProjectRelativePath.Replace('/', Path.DirectorySeparatorChar))))
+                .ToArray();
+            var manifestPath = Path.Combine(workspace, PackageManifestFileName);
 
             // 打包待交换工作区，再原子替换容器文件。
             WritePackageAtomically(fullPackagePath, pendingWorkspace);
@@ -77,14 +94,29 @@ internal static class ProjectPackageStore
                 throw;
             }
 
+            workspaceInstalled = true;
+            foreach (var binding in finalImageBindings) binding.Asset.SourcePath = binding.SourcePath;
+            foreach (var binding in finalSvgBindings) binding.Asset.SourcePath = binding.SourcePath;
             DeleteDirectoryBestEffort(retiredWorkspace);
-            RebindAssetSourcePaths(project, workspace);
-            var manifestPath = Path.Combine(workspace, PackageManifestFileName);
             TouchWorkspace(workspace);
             return manifestPath;
         }
         catch
         {
+            if (!workspaceInstalled)
+            {
+                foreach (var binding in originalImageBindings)
+                {
+                    binding.Asset.SourcePath = binding.SourcePath;
+                    binding.Asset.ProjectRelativePath = binding.ProjectRelativePath;
+                }
+                foreach (var binding in originalSvgBindings)
+                {
+                    binding.Asset.SourcePath = binding.SourcePath;
+                    binding.Asset.ProjectRelativePath = binding.ProjectRelativePath;
+                    binding.Asset.LastKnownSha256 = binding.LastKnownSha256;
+                }
+            }
             DeleteDirectoryBestEffort(pendingWorkspace);
             throw;
         }
@@ -344,23 +376,6 @@ internal static class ProjectPackageStore
     private static string ToRelativeFileSystemPath(string relativePath)
     {
         return relativePath.Replace('/', Path.DirectorySeparatorChar);
-    }
-
-    private static void RebindAssetSourcePaths(VectorProject project, string workspace)
-    {
-        foreach (var asset in project.ImageAssets)
-        {
-            asset.SourcePath = Path.Combine(
-                workspace,
-                asset.ProjectRelativePath.Replace('/', Path.DirectorySeparatorChar));
-        }
-
-        foreach (var asset in project.ExternalSvgAssets)
-        {
-            asset.SourcePath = Path.Combine(
-                workspace,
-                asset.ProjectRelativePath.Replace('/', Path.DirectorySeparatorChar));
-        }
     }
 
     private static string GetWorkspaceDirectory(string fullPackagePath)

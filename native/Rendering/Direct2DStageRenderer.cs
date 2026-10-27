@@ -582,6 +582,10 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     public bool ImmediatePresentationEnabled => true;
     public double LastCacheMaintenanceMilliseconds { get; private set; }
     public double LastCommandMilliseconds { get; private set; }
+    // Diagnostic split of the command recording: the tile LOD detail pass and the
+    // selection overlay are the two passes that scale with selection size.
+    internal double DiagnosticLodDetailMilliseconds { get; private set; }
+    internal double DiagnosticSelectionMilliseconds { get; private set; }
     public double LastPresentMilliseconds { get; private set; }
     public double LastReference3DGridMilliseconds { get; private set; }
     public double LastReference3DSceneMilliseconds { get; private set; }
@@ -976,12 +980,24 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 DrawCollisionTerrainOverlay(stage, editableScene);
             }
 
-            if (editableStats.TileLod) LastLodDetailObjectDraws = DrawLodDetailObjects(stage);
+            if (editableStats.TileLod)
+            {
+                var detailStarted = Stopwatch.GetTimestamp();
+                LastLodDetailObjectDraws = DrawLodDetailObjects(stage);
+                DiagnosticLodDetailMilliseconds = Stopwatch.GetElapsedTime(detailStarted).TotalMilliseconds;
+            }
+            else
+            {
+                DiagnosticLodDetailMilliseconds = 0;
+            }
+
             if (!stage.PlaybackActive)
             {
                 if (!stage.MarqueeLodPreviewActive) DrawActiveMaskOutline(stage);
                 DrawLayerContentHighlight(stage);
+                var selectionStarted = Stopwatch.GetTimestamp();
                 DrawSelection(stage);
+                DiagnosticSelectionMilliseconds = Stopwatch.GetElapsedTime(selectionStarted).TotalMilliseconds;
                 DrawSelectionSweep(stage);
                 DrawMotionTrack(stage);
                 DrawFillEdgeBezierOverlay(stage);
@@ -1477,12 +1493,44 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         }
     }
 
+    internal string LastSceneDrawPath { get; private set; } = "";
+
+    // A scene can be expensive without holding thousands of objects: an imported artwork
+    // broken apart into a thousand curve-heavy paths costs more per frame than a ten
+    // thousand rectangle scene. While the camera moves those scenes use the same stage
+    // mosaic the dense scenes use, and the crisp object pass returns on the first frame
+    // whose camera stopped changing. Layer structure that only groups content (folder,
+    // symbol, isolation, opaque layers) composites identically in that mosaic; masks and
+    // real blend modes do not, so they keep the exact object path.
+    private const int InteractionTileLodMinimumObjects = 700;
+    private const long InteractionTileLodMinimumAtoms = 25_000;
+
+    private static bool UsesInteractionTileLod(StageControl stage, float pixelZoom)
+    {
+        var scene = stage.Scene;
+        return stage.CameraInMotion
+            && scene.ObjectCount >= InteractionTileLodMinimumObjects
+            && scene.VirtualAtomCount >= InteractionTileLodMinimumAtoms
+            && !scene.HasCompositeLayerEffects;
+    }
+
     private RenderStats DrawScene(
         StageControl stage,
         int objectDrawLimit,
         bool forceObjectRenderer = false)
     {
         var pixelZoom = EffectivePixelZoom(stage.Zoom);
+        var interactionTiles = !forceObjectRenderer && UsesInteractionTileLod(stage, pixelZoom);
+        LastSceneDrawPath = forceObjectRenderer ? "forced-objects"
+            : stage.IsUnderlayHostScene(stage.Scene) ? "underlay-host"
+            : stage.HasSceneCompositionMaskClips(stage.Scene) ? "mask-clip-objects"
+            : SceneRenderOrder.RequiresObjectRenderer(stage.Scene) ? "required-objects"
+            : stage.MarqueeLodPreviewActive && stage.Scene.ObjectCount > 0 ? "marquee-tiles"
+            : stage.ZoomLodPreviewActive && stage.Scene.ObjectCount >= SceneRenderOrder.DenseObjectLodMinimumVisibleObjects && !stage.Scene.HasDisplayLayerEffects ? "zoom-tiles"
+            : interactionTiles ? "interaction-tiles"
+            : stage.Scene.HasDisplayLayerEffects || pixelZoom >= 0.18f ? "detail-objects"
+            : stage.Scene.ObjectCount >= 5000 ? "dense-tiles"
+            : "collected-objects";
         if (stage.IsUnderlayHostScene(stage.Scene))
             return DrawObjects(stage, forceObjectRenderer ? int.MaxValue : objectDrawLimit);
         if (forceObjectRenderer)
@@ -1505,7 +1553,12 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 ? DrawOverviewTiles(stage)
                 : DrawTiles(stage);
         }
-        if (stage.Scene.HasDisplayLayerEffects || pixelZoom >= 0.18f) return DrawObjects(stage, objectDrawLimit);
+        if (stage.Scene.HasDisplayLayerEffects || pixelZoom >= 0.18f)
+        {
+            if (!interactionTiles) return DrawObjects(stage, objectDrawLimit);
+            var tiled = pixelZoom < 0.08f ? DrawOverviewTiles(stage) : DrawTiles(stage);
+            return tiled.TileDraws > 0 ? tiled : DrawObjects(stage, objectDrawLimit);
+        }
         if (stage.Scene.ObjectCount >= 5000)
         {
             return pixelZoom < 0.08f

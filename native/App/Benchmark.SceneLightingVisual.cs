@@ -179,9 +179,7 @@ internal static partial class Benchmark
                 Bitmap? capture = null;
                 try
                 {
-                    capture = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
-                    using var graphics = Graphics.FromImage(capture);
-                    graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size, CopyPixelOperation.SourceCopy);
+                    capture = CaptureBenchmarkWindow(stage);
                     var corners = new[]
                     {
                         new Point(2, 2), new Point(capture.Width - 3, 2),

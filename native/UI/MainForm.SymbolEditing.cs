@@ -63,7 +63,6 @@ internal sealed partial class MainForm
         _symbolEditingSession = new(scene.Id, rootId, symbol.Id, sceneFrame,
             ActiveDrawingObject()?.Id, sceneView, image, screenToLocal, parent);
         _activeDrawingObjectIndex = _drawingObjects.ToList().IndexOf(symbol);
-        _inspectorCategory = InspectorCategory.None;
         ShowWorkspace(WorkspaceView.SceneEditor);
         SetFrame(instance.ResolvePlaybackFrame(sceneFrame, parentFps, symbol.FrameCount));
         var center = Vector2.Transform(new Vector2(_stage.Width / 2f, _stage.Height / 2f), screenToLocal);

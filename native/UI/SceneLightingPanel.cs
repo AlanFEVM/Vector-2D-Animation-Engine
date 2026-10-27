@@ -62,7 +62,7 @@ internal sealed class SceneLightCommandEventArgs(string lightId) : EventArgs
 
 internal sealed class SceneLightingPanel : UserControl
 {
-    private const int PanelHeight = 424;
+    private const int PanelHeight = 608;
     private const decimal SpatialLimit = 5_000_000m;
 
     private readonly ListBox _lights = new();
@@ -72,7 +72,7 @@ internal sealed class SceneLightingPanel : UserControl
     private readonly SvgIconButton _reset = new(SvgIconKind.RestoreSize);
     private readonly AnimatedContextMenuStrip _addMenu = new();
     private readonly Dictionary<SceneLightKind, Bitmap> _addMenuLightIcons = [];
-    private readonly TextBox _name = new();
+    private readonly ModernTextInput _name = new();
     private readonly ComboBox _kind = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ModernToggleSwitch _enabled = new();
     private readonly ColorTargetButton _color = new("Color");
@@ -198,20 +198,25 @@ internal sealed class SceneLightingPanel : UserControl
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 1,
-            RowCount = 10,
+            RowCount = 15,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         Controls.Add(root);
 
         root.Controls.Add(BuildHeader(), 0, 0);
@@ -226,16 +231,23 @@ internal sealed class SceneLightingPanel : UserControl
         root.Controls.Add(_lights, 0, 1);
         root.Controls.Add(BuildNameRow(), 0, 2);
         root.Controls.Add(BuildTypeRow(), 0, 3);
+        root.Controls.Add(_enabled, 0, 4);
 
         _color.Dock = DockStyle.Fill;
-        _color.Margin = new Padding(66, 3, 0, 3);
         _color.AccessibleName = "Light color";
-        root.Controls.Add(_color, 0, 4);
-        root.Controls.Add(BuildPairRow("Intensity", _intensity, "Range", _range), 0, 5);
-        root.Controls.Add(BuildAxisRow("Position", _position), 0, 6);
-        root.Controls.Add(BuildAxisRow("Direction", _rotation), 0, 7);
-        root.Controls.Add(BuildPairRow("Area width", _areaWidth, "Height", _areaHeight), 0, 8);
-        root.Controls.Add(BuildShadowRow(), 0, 9);
+        root.Controls.Add(FieldRow("Color", _color), 0, 5);
+        root.Controls.Add(FieldRow("Intensity", _intensity), 0, 6);
+        root.Controls.Add(FieldRow("Range", _range), 0, 7);
+        root.Controls.Add(BuildAxisRow("Position", _position), 0, 8);
+        root.Controls.Add(BuildAxisRow("Direction", _rotation), 0, 9);
+        root.Controls.Add(FieldRow("Area width", _areaWidth), 0, 10);
+        root.Controls.Add(FieldRow("Height", _areaHeight), 0, 11);
+        _castShadows.Dock = DockStyle.Fill;
+        _castShadows.Margin = new Padding(0, 2, 4, 2);
+        _castShadows.AccessibleName = "Cast shadows";
+        root.Controls.Add(_castShadows, 0, 12);
+        root.Controls.Add(FieldRow("Strength", _shadowStrength), 0, 13);
+        root.Controls.Add(FieldRow("Softness", _shadowSoftness), 0, 14);
     }
 
     private Control BuildHeader()
@@ -273,28 +285,12 @@ internal sealed class SceneLightingPanel : UserControl
 
     private Control BuildTypeRow()
     {
-        Theme.StyleComboBox(_kind);
         _kind.Dock = DockStyle.Fill;
-        _kind.Margin = new Padding(2, 2, 4, 2);
         _kind.AccessibleName = "Light type";
         _enabled.Dock = DockStyle.Fill;
         _enabled.Margin = new Padding(4, 1, 0, 1);
         _enabled.AccessibleName = "Light enabled";
-        var row = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 3,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
-        row.Controls.Add(FieldLabel("Type"), 0, 0);
-        row.Controls.Add(_kind, 1, 0);
-        row.Controls.Add(_enabled, 2, 0);
-        return row;
+        return FieldRow("Type", _kind);
     }
 
     private Control BuildAxisRow(string label, IReadOnlyList<ModernNumericUpDown> inputs)
@@ -318,63 +314,6 @@ internal sealed class SceneLightingPanel : UserControl
             Theme.StyleNumeric(input);
             row.Controls.Add(input, index + 1, 0);
         }
-        return row;
-    }
-
-    private Control BuildPairRow(string firstLabel, Control first, string secondLabel, Control second)
-    {
-        var row = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 4,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        row.Controls.Add(FieldLabel(firstLabel), 0, 0);
-        row.Controls.Add(FieldLabel(secondLabel), 2, 0);
-        first.Dock = DockStyle.Fill;
-        first.Margin = new Padding(2, 3, 3, 3);
-        second.Dock = DockStyle.Fill;
-        second.Margin = new Padding(2, 3, 0, 3);
-        row.Controls.Add(first, 1, 0);
-        row.Controls.Add(second, 3, 0);
-        return row;
-    }
-
-    private Control BuildShadowRow()
-    {
-        _castShadows.Dock = DockStyle.Fill;
-        _castShadows.Margin = new Padding(0, 2, 4, 2);
-        _castShadows.AccessibleName = "Cast shadows";
-        Theme.StyleNumeric(_shadowStrength);
-        Theme.StyleNumeric(_shadowSoftness);
-        var row = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 5,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 29));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 29));
-        row.Controls.Add(_castShadows, 0, 0);
-        row.Controls.Add(FieldLabel("Strength"), 1, 0);
-        _shadowStrength.Dock = DockStyle.Fill;
-        _shadowStrength.Margin = new Padding(2, 3, 3, 3);
-        row.Controls.Add(_shadowStrength, 2, 0);
-        row.Controls.Add(FieldLabel("Softness"), 3, 0);
-        _shadowSoftness.Dock = DockStyle.Fill;
-        _shadowSoftness.Margin = new Padding(2, 3, 0, 3);
-        row.Controls.Add(_shadowSoftness, 4, 0);
         return row;
     }
 
@@ -418,7 +357,6 @@ internal sealed class SceneLightingPanel : UserControl
 
     private void HookNumeric(ModernNumericUpDown input, SceneLightChangedFields field)
     {
-        Theme.StyleNumeric(input);
         input.ValueChanged += (_, _) => RaiseChanged(field);
         input.InteractionStarted += (_, _) => BeginInteraction();
         input.InteractionCompleted += (_, _) => CompleteInteraction();
@@ -821,24 +759,17 @@ internal sealed class SceneLightingPanel : UserControl
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
         row.Controls.Add(FieldLabel(label), 0, 0);
+        value.Dock = DockStyle.Fill;
+        if (value is TextBox textBox) textBox.AutoSize = false;
+        InspectorModuleStyle.StyleField(value);
         row.Controls.Add(value, 1, 0);
         return row;
     }
 
-    private static Label FieldLabel(string text) => new()
-    {
-        Text = text,
-        Dock = DockStyle.Fill,
-        ForeColor = Theme.Muted,
-        BackColor = Color.Transparent,
-        Font = Theme.UiFont(8.5f),
-        TextAlign = ContentAlignment.MiddleLeft,
-        AutoEllipsis = true,
-        Margin = new Padding(0, 2, 4, 2)
-    };
+    private static Label FieldLabel(string text) => InspectorModuleStyle.CreateFieldLabel(text);
 
     private static ModernNumericUpDown PercentInput(string accessibleName, decimal maximum = 100m) => new()
     {

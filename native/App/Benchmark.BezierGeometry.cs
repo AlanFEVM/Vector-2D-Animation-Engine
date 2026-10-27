@@ -164,16 +164,17 @@ internal static partial class Benchmark
         var control1 = PointF.Empty;
         var control2 = PointF.Empty;
         var end = PointF.Empty;
-        var exposesVirtualBezierHandles = boundary.Key.Kind == DrawingElementKind.BoundaryStroke
+        var exposesVirtualEndpointHandles = boundary.Key.Kind == DrawingElementKind.BoundaryStroke
             && stage.TryGetEditableBezierWorldPoints(boundary, out start, out control1, out control2, out end)
             && stage.HitTestLineElementHandle(ToScreen(start), boundary) == EditHandleKind.LineStart
             && stage.HitTestLineElementHandle(ToScreen(end), boundary) == EditHandleKind.LineEnd
-            && stage.HitTestLineElementHandle(ToScreen(control1), boundary) == EditHandleKind.BezierControl
-            && stage.HitTestLineElementHandle(ToScreen(control2), boundary) == EditHandleKind.BezierControl2
-            && stage.HitTestHandle(ToScreen(control1), rectangle) == EditHandleKind.BezierControl;
-        if (!exposesVirtualBezierHandles)
+            && !stage.ShouldShowEditableSegmentControlHandles(boundary, start, control1, control2, end)
+            && stage.HitTestLineElementHandle(ToScreen(control1), boundary) == EditHandleKind.None
+            && stage.HitTestLineElementHandle(ToScreen(control2), boundary) == EditHandleKind.None
+            && stage.HitTestHandle(ToScreen(control1), rectangle) == EditHandleKind.None;
+        if (!exposesVirtualEndpointHandles)
         {
-            throw new InvalidOperationException("A shape boundary did not expose editable endpoint and curve handles before materialization.");
+            throw new InvalidOperationException("A straight shape boundary lost its endpoint handles or intercepted body presses with hidden curve handles.");
         }
 
         var rectangleSnapshot = scene.CreateSnapshot();
@@ -740,7 +741,7 @@ internal static partial class Benchmark
             || !inactiveAnchorHit.IsValid
             || inactiveAnchorHit.Handle is not (EditHandleKind.LineStart or EditHandleKind.LineEnd)
             || inactiveControlHit.PartIndex != inactiveSegment.PartIndex
-            || inactiveControlHit.Handle != EditHandleKind.BezierControl
+            || inactiveControlHit.Handle != EditHandleKind.None
             || !MainForm.IsFillEdgeBezierAnchorInsertionGesture(MouseButtons.Left, controlPressed: true, curveHit)
             || MainForm.IsFillEdgeBezierAnchorInsertionGesture(MouseButtons.Left, controlPressed: false, curveHit)
             || MainForm.IsFillEdgeBezierAnchorInsertionGesture(MouseButtons.Right, controlPressed: true, curveHit)
@@ -756,6 +757,25 @@ internal static partial class Benchmark
         {
             throw new InvalidOperationException(
                 $"The fill-edge cubic overlay or Ctrl anchor gestures were inconsistent: active={restoredSegment.PartIndex}, curve={curveHit}, control={controlHit}, start={startHit}, end={endHit}, inactive={inactiveSegment.PartIndex}, anchor={inactiveAnchorHit}, inactiveControl={inactiveControlHit}.");
+        }
+
+        var inactiveCurvedSegment = new FillEdgeBezierOverlaySegment(
+            98,
+            new PointF(-100, 0),
+            new PointF(-100, -200),
+            new PointF(100, -200),
+            new PointF(100, 0));
+        fillStage.SetFillEdgeBezierOverlay(fill, [inactiveCurvedSegment], -1);
+        var inactiveCurvedControlHit = fillStage.HitTestFillEdgeBezierOverlay(
+            Point.Round(fillStage.WorldToScreen(inactiveCurvedSegment.Control1.X, inactiveCurvedSegment.Control1.Y)));
+        var inactiveCurvedBodyHit = fillStage.HitTestFillEdgeBezierOverlay(
+            Point.Round(fillStage.WorldToScreen(0, -150)));
+        if (inactiveCurvedControlHit.PartIndex != inactiveCurvedSegment.PartIndex
+            || inactiveCurvedControlHit.Handle != EditHandleKind.BezierControl
+            || inactiveCurvedBodyHit.PartIndex != inactiveCurvedSegment.PartIndex
+            || inactiveCurvedBodyHit.Handle != EditHandleKind.None)
+        {
+            throw new InvalidOperationException("An inactive curved segment did not distinguish its off-body control from its curve body.");
         }
 
         var ownedOverlaySegments = (FillEdgeBezierOverlaySegment[])overlaySegments.Clone();
@@ -825,11 +845,11 @@ internal static partial class Benchmark
         var shortEndHit = fillStage.HitTestFillEdgeBezierOverlay(
             Point.Round(fillStage.WorldToScreen(shortSegment.End.X, shortSegment.End.Y)));
         if (shortStartHit.Handle != EditHandleKind.LineStart
-            || shortControlHit.Handle != EditHandleKind.BezierControl
+            || shortControlHit.Handle != EditHandleKind.None
             || shortEndHit.Handle != EditHandleKind.LineEnd)
         {
             throw new InvalidOperationException(
-                $"Overlapping short-segment handles did not choose the nearest anchor/control: start={shortStartHit}, control={shortControlHit}, end={shortEndHit}.");
+                $"A short straight segment lost endpoint handles or intercepted its body with a hidden control: start={shortStartHit}, body={shortControlHit}, end={shortEndHit}.");
         }
         fillStage.ClearFillEdgeBezierOverlay();
 
@@ -888,7 +908,7 @@ internal static partial class Benchmark
             || exposedParts.Any(part => part.SourcePartIndex is 0 or 1)
             || coveredControlHit.IsValid
             || exposedControlHit.PartIndex != exposedParts[0].PieceIndex
-            || exposedControlHit.Handle != EditHandleKind.BezierControl)
+            || exposedControlHit.Handle != EditHandleKind.None)
         {
             throw new InvalidOperationException(
                 $"A partially outlined fill did not expose only its open edges: total={coverageParts.Length}, exposed={string.Join(',', exposedParts.Select(part => part.SourcePartIndex))}, coveredHit={coveredControlHit}, exposedHit={exposedControlHit}.");
@@ -1282,7 +1302,8 @@ internal static partial class Benchmark
             || !outerTop.StartIsVirtualAnchor
             || !outerLeft.EndIsVirtualAnchor
             || !partitionStage.FillEdgeBezierOverlayVisible
-            || partitionControlHit.Handle != EditHandleKind.BezierControl
+            || partitionControlHit.PartIndex != outerBoundaryParts[0].PieceIndex
+            || partitionControlHit.Handle != EditHandleKind.None
             || outerTopIntersectionHit.PartIndex != outerTop.PieceIndex
             || outerTopIntersectionHit.Handle != EditHandleKind.LineStart
             || outerLeftIntersectionHit.PartIndex != outerLeft.PieceIndex
@@ -1987,12 +2008,19 @@ internal static partial class Benchmark
             new PointF(80, -87),
             new PointF(60, -13),
             keepStraight: true);
+        var unchangedCombinedRevision = combinedIntersectionScene.GeometryRevision;
+        var unchangedCombinedCurves = combinedIntersectionScene.GetEditableFillBezierSegmentParts(combinedIntersectionFill)
+            .Select(part => part.Curve).ToArray();
+        if (combinedIntersectionScene.UpdateFillBoundaryLineLinks(combinedBoundaryLinks, rebuildGeometryIndex: false)
+            || combinedIntersectionScene.GeometryRevision != unchangedCombinedRevision
+            || !combinedIntersectionScene.GetEditableFillBezierSegmentParts(combinedIntersectionFill)
+                .Select(part => part.Curve).SequenceEqual(unchangedCombinedCurves))
+        {
+            throw new InvalidOperationException("An unchanged coincident boundary link rewrote its fill geometry.");
+        }
         PathBezierSegmentPart combinedMovedFill = default;
         if (combinedIntersection.PathAnchors.Length != 1
             || combinedBoundaryLinks.Length != 1
-            || !combinedIntersectionScene.UpdateFillBoundaryLineLinks(
-                combinedBoundaryLinks,
-                rebuildGeometryIndex: false)
             || !combinedIntersectionScene.UpdateSharedBoundaryIntersection(
                 combinedIntersection,
                 combinedMovedAnchor)
@@ -2236,10 +2264,11 @@ internal static partial class Benchmark
             : FillEdgeBezierOverlayHit.None;
         if (editableCoveredParts.Length != coverageParts.Length
             || !coverageStage.FillEdgeBezierOverlayVisible
-            || editableCoveredControlHit.Handle != EditHandleKind.BezierControl)
+            || editableCoveredControlHit.PartIndex != editableCoveredParts[0].PieceIndex
+            || editableCoveredControlHit.Handle != EditHandleKind.None)
         {
             throw new InvalidOperationException(
-                "Selecting a fill did not restore Bezier controls hidden by its synchronized coincident stroke.");
+                "Selecting a fill did not restore its editable straight boundaries hidden by synchronized coincident strokes.");
         }
 
         fillScene.RestoreSnapshot(originalSnapshot);
@@ -2306,6 +2335,7 @@ internal static partial class Benchmark
 
         using (var outlinedStage = new StageControl(outlinedScene) { Size = new Size(640, 420) })
         {
+            outlinedStage.SetVisibleWorldWidth(800);
             outlinedStage.SetSelection([outlinedFill], outlinedFill);
             outlinedStage.SetSelectedElement(curvedBoundary);
             outlinedStage.SetFillEdgeBezierOverlay(

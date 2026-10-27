@@ -3,11 +3,13 @@ namespace VectorAnimationEngine;
 /// <summary>Displays host-provided text without inspecting the project or selection.</summary>
 internal sealed class SelectionSummaryPanel : UserControl
 {
-    private readonly Label[] _rows = Enumerable.Range(0, 4).Select(_ => new Label
+    private readonly Label[] _rows = Enumerable.Range(0, 4).Select(_ =>
     {
-        Dock = DockStyle.Fill, ForeColor = Theme.Text, BackColor = Theme.Panel,
-        Font = Theme.UiFont(), TextAlign = ContentAlignment.MiddleLeft,
-        AutoEllipsis = true, Margin = Padding.Empty
+        var label = InspectorModuleStyle.CreateTextLabel();
+        label.Dock = DockStyle.Fill;
+        label.BackColor = Theme.Panel;
+        label.Margin = Padding.Empty;
+        return label;
     }).ToArray();
 
     public SelectionSummaryPanel()
@@ -50,5 +52,6 @@ internal sealed class SelectionSummaryPanel : UserControl
     private void SetRow(int index, string value)
     {
         if (_rows[index].Text != value) _rows[index].Text = value;
+        _rows[index].AccessibleDescription = value;
     }
 }

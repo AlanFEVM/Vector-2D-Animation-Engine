@@ -114,6 +114,9 @@ internal sealed class ColorComponentSlider : Control
     public event EventHandler? InteractionCompleted;
     public event EventHandler? InteractionCanceled;
 
+    [DefaultValue(false)]
+    public bool CircularThumb { get; set; }
+
     public void RefreshGradient()
     {
         _gradientDirty = true;
@@ -147,26 +150,37 @@ internal sealed class ColorComponentSlider : Control
             e.Graphics.FillPath(disabledOverlay, surface);
         }
 
-        using (var border = new Pen(!Enabled
-                   ? Theme.Border
-                   : _hovered || Focused
-                       ? Theme.BorderHover
-                       : Theme.Border))
+        using (var border = new Pen(CircularThumb ? Theme.ControlOutline : !Enabled
+                   ? Theme.Border : _hovered || Focused ? Theme.BorderHover : Theme.Border))
         {
             e.Graphics.DrawPath(border, surface);
         }
 
         var ratio = _maximum <= _minimum ? 0f : (_value - _minimum) / (float)(_maximum - _minimum);
         var thumbX = rail.Left + ratio * Math.Max(0, rail.Width - 1);
-        var thumbSurfaceOffset = _pointerSurfaceActive
-            ? ResolvePointerSurfaceOffset(thumbX, _pointerSurfaceX)
-            : 0f;
-        using var shadow = new Pen(
-            Enabled ? Color.FromArgb(210, Color.Black) : Color.FromArgb(190, Theme.PanelStrong),
-            3f);
-        using var thumb = new Pen(Enabled ? Color.White : Theme.DisabledText, 1f);
-        e.Graphics.DrawLine(shadow, thumbX, rail.Top - 2f - thumbSurfaceOffset, thumbX, rail.Bottom + 2f + thumbSurfaceOffset);
-        e.Graphics.DrawLine(thumb, thumbX, rail.Top - 2f - thumbSurfaceOffset, thumbX, rail.Bottom + 2f + thumbSurfaceOffset);
+        if (CircularThumb)
+        {
+            var scale = DeviceDpi / 96f;
+            var diameter = Math.Min(18f * scale, Math.Max(1f, ClientSize.Height - 4f * scale));
+            var bounds = new RectangleF(thumbX - diameter / 2f,
+                rail.Top + (rail.Height - 1 - diameter) / 2f, diameter, diameter);
+            using var fill = new SolidBrush(SystemInformation.HighContrast
+                ? SystemColors.Window : Enabled ? Theme.Field : Theme.DisabledSurface);
+            using var outline = new Pen(SystemInformation.HighContrast
+                ? SystemColors.WindowText : Enabled ? Theme.Text : Theme.DisabledText, 1.5f * scale);
+            e.Graphics.FillEllipse(fill, bounds);
+            e.Graphics.DrawEllipse(outline, bounds);
+        }
+        else
+        {
+            var thumbSurfaceOffset = _pointerSurfaceActive
+                ? ResolvePointerSurfaceOffset(thumbX, _pointerSurfaceX) : 0f;
+            using var shadow = new Pen(
+                Enabled ? Color.FromArgb(210, Color.Black) : Color.FromArgb(190, Theme.PanelStrong), 3f);
+            using var thumb = new Pen(Enabled ? Color.White : Theme.DisabledText, 1f);
+            e.Graphics.DrawLine(shadow, thumbX, rail.Top - 2f - thumbSurfaceOffset, thumbX, rail.Bottom + 2f + thumbSurfaceOffset);
+            e.Graphics.DrawLine(thumb, thumbX, rail.Top - 2f - thumbSurfaceOffset, thumbX, rail.Bottom + 2f + thumbSurfaceOffset);
+        }
 
         if (Enabled && Focused && ShowFocusCues)
         {
@@ -369,6 +383,20 @@ internal sealed class ColorComponentSlider : Control
 
     private GraphicsPath CreateSurfacePath(Rectangle rail)
     {
+        if (CircularThumb)
+        {
+            var rounded = new GraphicsPath();
+            var diameter = Math.Min(rail.Height - 1, rail.Width - 1);
+            if (diameter <= 0)
+                rounded.AddRectangle(rail);
+            else
+            {
+                rounded.AddArc(rail.Left, rail.Top, diameter, diameter, 90, 180);
+                rounded.AddArc(rail.Right - 1 - diameter, rail.Top, diameter, diameter, 270, 180);
+                rounded.CloseFigure();
+            }
+            return rounded;
+        }
         var width = Math.Max(1, rail.Width);
         var points = new PointF[width * 2];
         var bottom = rail.Bottom - 1;
@@ -410,8 +438,8 @@ internal sealed class ColorComponentSlider : Control
 
     private Rectangle RailBounds()
     {
-        const int horizontalPadding = 7;
-        const int height = 14;
+        var horizontalPadding = CircularThumb ? (int)Math.Ceiling(11f * DeviceDpi / 96f) : 7;
+        var height = CircularThumb ? (int)Math.Ceiling(10f * DeviceDpi / 96f) : 14;
         return new Rectangle(
             horizontalPadding,
             Math.Max(0, (ClientSize.Height - height) / 2),
@@ -3063,6 +3091,8 @@ internal sealed class GradientStopStrip : Control
 
 internal sealed class ColorTargetButton : Control
 {
+    public bool OutlineSwatch { get; set; }
+
     private bool _selected;
     private bool _hovered;
     private Color _swatchColor = Color.White;
@@ -3139,7 +3169,7 @@ internal sealed class ColorTargetButton : Control
         var background = !Enabled
             ? Theme.DisabledSurface
             : Selected
-                ? Theme.Mix(Theme.PanelStrong, Theme.AccentSurface, 0.28f)
+                ? Theme.Mix(Theme.PanelStrong, Theme.AccentSurface, 0.50f)
                 : _hovered
                     ? Theme.PanelHover
                     : Theme.PanelStrong;
@@ -3153,21 +3183,40 @@ internal sealed class ColorTargetButton : Control
         var hasDetail = !string.IsNullOrWhiteSpace(DetailText);
         var narrow = hasDetail && Width < 140 * DeviceDpi / 96f;
         var swatchSize = Math.Min(Height - inset * 2, (int)Math.Round((narrow ? 12 : 24) * DeviceDpi / 96f));
-        var swatch = new Rectangle(inset, narrow ? inset : (Height - swatchSize) / 2, Math.Max(1, swatchSize), Math.Max(1, swatchSize));
-        DrawChecker(e.Graphics, swatch);
-        if (_gradientKind == GradientKind.Solid)
+        var swatch = new Rectangle(string.IsNullOrEmpty(Text) ? (Width - swatchSize) / 2 : inset,
+            narrow ? inset : (Height - swatchSize) / 2, Math.Max(1, swatchSize), Math.Max(1, swatchSize));
+        var outlineSwatch = OutlineSwatch && _gradientKind == GradientKind.Solid;
+        if (outlineSwatch)
         {
+            var scale = DeviceDpi / 96f;
+            using var outline = new Pen(Enabled ? SwatchColor : Theme.DisabledText, 2.5f * scale);
+            var bounds = RectangleF.Inflate(swatch, -2f * scale, -2f * scale);
+            if (bounds.Width > 0 && bounds.Height > 0)
+            {
+                using var backing = new Pen(Theme.ControlOutline, 4.5f * scale);
+                e.Graphics.DrawRectangle(backing, bounds.X, bounds.Y, bounds.Width, bounds.Height);
+                e.Graphics.DrawRectangle(outline, bounds.X, bounds.Y, bounds.Width, bounds.Height);
+            }
+        }
+        else if (_gradientKind == GradientKind.Solid)
+        {
+            DrawChecker(e.Graphics, swatch);
             using var colorBrush = new SolidBrush(SwatchColor);
             e.Graphics.FillRectangle(colorBrush, swatch);
         }
         else
         {
+            DrawChecker(e.Graphics, swatch);
             GradientPreviewRenderer.Draw(e.Graphics, swatch, _gradientKind, _gradientStops);
         }
         var swatchBorderColor = Theme.ControlOutline;
-        using (var swatchBorder = new Pen(swatchBorderColor)) e.Graphics.DrawRectangle(swatchBorder, swatch);
-        Theme.PaintControlCorners(this, e.Graphics,
-            new Rectangle(swatch.X, swatch.Y, swatch.Width + 1, swatch.Height + 1), background, swatchBorderColor);
+        if (!outlineSwatch)
+        {
+            using var swatchBorder = new Pen(swatchBorderColor);
+            e.Graphics.DrawRectangle(swatchBorder, swatch);
+            Theme.PaintControlCorners(this, e.Graphics,
+                new Rectangle(swatch.X, swatch.Y, swatch.Width + 1, swatch.Height + 1), background, swatchBorderColor);
+        }
 
         var textLeft = swatch.Right + inset;
         var textWidth = Math.Max(0, Width - textLeft - inset);
@@ -3272,6 +3321,8 @@ internal sealed class ColorTargetButton : Control
 
 internal sealed class ColorPaletteGrid : Control
 {
+    public bool InheritSurface { get; set; }
+
     private readonly List<Color> _colors = [];
     private int _hoverIndex = -1;
     private int _focusIndex = -1;
@@ -3367,7 +3418,7 @@ internal sealed class ColorPaletteGrid : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        e.Graphics.Clear(BackColor);
+        e.Graphics.Clear(InheritSurface ? Parent?.BackColor ?? BackColor : BackColor);
         var isEmpty = _colors.Count == 0 && !string.IsNullOrWhiteSpace(_emptyText);
         if (!isEmpty)
         {
@@ -3538,6 +3589,8 @@ internal sealed class ColorPaletteGrid : Control
             selected || hovered || focused ? Theme.ReadableUiColor(color, preferredBorder) : Theme.ControlOutline,
             selected ? 2f : 1f);
         graphics.DrawRectangle(border, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
+        Theme.PaintControlCorners(this, graphics, bounds,
+            InheritSurface ? Parent?.BackColor ?? BackColor : BackColor, border.Color);
         if (selected)
         {
             using var inner = new Pen(Color.FromArgb(220, Theme.ReadableUiColor(color, Theme.AccentText)));

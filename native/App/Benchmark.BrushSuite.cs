@@ -229,8 +229,8 @@ internal static partial class Benchmark
             && workspace.Color.ToArgb() == dialog.Color.ToArgb(),
             "RGB edits changed picker color or duplicate event suppression.");
 
-        var dialogHex = (TextBox)RequireField(dialog.GetType(), "_hex").GetValue(dialog)!;
-        var workspaceHex = (TextBox)RequireField(workspace.GetType(), "_hex").GetValue(workspace)!;
+        var dialogHex = (ModernTextInput)RequireField(dialog.GetType(), "_hex").GetValue(dialog)!;
+        var workspaceHex = (ModernTextInput)RequireField(workspace.GetType(), "_hex").GetValue(workspace)!;
         dialogHex.Text = "#ABCDEF";
         workspaceHex.Text = "#ABCDEF";
         AssertTimeline(dialogChanges == 2 && workspaceChanges == 2,

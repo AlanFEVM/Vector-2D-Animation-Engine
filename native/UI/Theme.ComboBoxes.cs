@@ -140,7 +140,7 @@ internal static partial class Theme
             flags |= rtl ? TextFormatFlags.Right | TextFormatFlags.RightToLeft : TextFormatFlags.Left;
             var label = _box.SelectedIndex >= 0 ? _box.GetItemText(_box.SelectedItem) : _box.Text;
             using var selectionFont = _selectionFontSize is float fontSize ? UiFont(fontSize) : null;
-            TextRenderer.DrawText(graphics, UiLocalization.T(label), selectionFont ?? _box.Font, bounds, foreground, flags);
+            TextRenderer.DrawText(graphics, UiLocalization.T(label), selectionFont ?? _box.Font, bounds, foreground, background, flags);
             var x = rtl ? arrowWidth / 2f : _box.ClientSize.Width - arrowWidth / 2f;
             var y = _box.ClientSize.Height / 2f;
             var arrowColor = highContrast ? foreground

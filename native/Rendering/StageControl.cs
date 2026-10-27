@@ -1071,6 +1071,18 @@ internal sealed partial class StageControl : Control
     public bool SelectionSweepVisible => _selectionSweepContours.Length > 0 && _selectionSweepProgress < 1f;
     public IReadOnlyList<PointF[]> SelectionSweepContours => _selectionSweepContours;
     public float SelectionSweepProgress => _selectionSweepProgress;
+    private const int LargeSelectionLodDetailLimit = 128;
+    private float _paintedCameraX;
+    private float _paintedCameraY;
+    private float _paintedCameraZoom;
+
+    /// <summary>
+    /// True while the camera differs from the camera of the last presented frame, i.e.
+    /// the user is still panning or zooming. Interaction LOD uses it so the reduced
+    /// representation only covers frames that are about to be replaced anyway.
+    /// </summary>
+    internal bool CameraInMotion =>
+        _paintedCameraX != CameraX || _paintedCameraY != CameraY || _paintedCameraZoom != Zoom;
     public float CameraX { get; private set; }
     public float CameraY { get; private set; }
     public float Zoom { get; private set; } = 1;
@@ -1099,6 +1111,9 @@ internal sealed partial class StageControl : Control
     internal int LastDirect2DLodBitmapSubmissions => _direct2DRenderer.LastLodBitmapSubmissions;
     internal int LastDirect2DLodBitmapBuilds => _direct2DRenderer.LastLodBitmapBuilds;
     internal int LastDirect2DLodDetailObjectDraws => _direct2DRenderer.LastLodDetailObjectDraws;
+    internal double LastDirect2DLodDetailMilliseconds => _direct2DRenderer.DiagnosticLodDetailMilliseconds;
+    internal double LastDirect2DSelectionMilliseconds => _direct2DRenderer.DiagnosticSelectionMilliseconds;
+    internal string LastDirect2DSceneDrawPath => _direct2DRenderer.LastSceneDrawPath;
     internal int LastDirect2DGradientBrushCacheBuilds => _direct2DRenderer.LastGradientBrushCacheBuilds;
     internal int LastDirect2DGradientBrushCacheReuses => _direct2DRenderer.LastGradientBrushCacheReuses;
     internal int LastDirect2DShapeGradientBitmapCacheBuilds => _direct2DRenderer.LastShapeGradientBitmapCacheBuilds;
@@ -1217,6 +1232,9 @@ internal sealed partial class StageControl : Control
     internal bool SelectionHighlightAnimating => _selectionHighlightTimer.Enabled;
     internal float SelectionHighlightPulse => 0.5f + 0.5f * MathF.Sin(_selectionHighlightPhase * MathF.Tau);
     internal double LastFrameRenderMilliseconds => _lastFrameRenderMilliseconds;
+    // Benchmarks must know whether a refresh actually painted; a skipped paint would
+    // otherwise be reported as an impossible frame time.
+    internal long RenderedFrameCount { get; private set; }
     internal long BasePresentationRevision => _basePresentationRevision;
     internal bool Reference3DPlaybackActive { get; private set; }
     internal bool PlaybackActive { get; private set; }
@@ -3095,6 +3113,10 @@ internal sealed partial class StageControl : Control
             var presentedAt = Stopwatch.GetTimestamp();
             _lastFramePresentedAt = presentedAt;
             _lastFrameRenderMilliseconds = ElapsedMilliseconds(frameStarted, presentedAt);
+            RenderedFrameCount++;
+            _paintedCameraX = CameraX;
+            _paintedCameraY = CameraY;
+            _paintedCameraZoom = Zoom;
             _presentedSelectionDragPreviewRevision = renderedSelectionDragPreviewRevision;
             _basePresentationInvalidationPending = false;
             _interactiveFrameRequested = false;
@@ -4800,6 +4822,15 @@ internal sealed partial class StageControl : Control
     internal IReadOnlyList<int> GetLodDetailObjectIndices()
     {
         if (ZoomLodPreviewActive) return Array.Empty<int>();
+        // While the camera is moving, a large selection keeps its tile-mosaic appearance.
+        // Redrawing hundreds of selected objects crisply on top of the mosaic cost more
+        // than the highlight overlay itself once a selection spans many objects; the
+        // crisp pass returns on the first frame where the camera stops changing.
+        if (SelectedObjects.Count + SelectedElements.Count >= LargeSelectionLodDetailLimit
+            && CameraInMotion)
+        {
+            return Array.Empty<int>();
+        }
 
         List<int>? detail = null;
         HashSet<int>? seen = null;

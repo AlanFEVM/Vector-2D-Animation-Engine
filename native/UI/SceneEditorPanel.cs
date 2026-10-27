@@ -37,36 +37,45 @@ internal sealed class SceneEditorPanel : UserControl
 {
     private readonly Label _sceneName = InfoLabel();
     private readonly ComboBox _cameraProjection = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    private readonly Label _projectionLabel = InspectorModuleStyle.CreateFieldLabel("Camera projection");
     private readonly ListBox _scenes = new();
     private readonly ListBox _instances = new();
-    private readonly Button _addScene = new() { Text = "+ Scene", Width = 82, Height = 28 };
-    private readonly Button _addInstance = new() { Text = "+ Instance", Width = 92, Height = 28 };
+    private readonly Button _addScene = new SvgIconButton(SvgIconKind.Add) { Text = "Scene", AccessibleName = "+ Scene", Width = 82, Height = 28 };
+    private readonly Button _addInstance = new SvgIconButton(SvgIconKind.Add) { Text = "Instance", AccessibleName = "+ Instance", Width = 104, Height = 28 };
     private IReadOnlyList<SceneDefinition> _sceneDefinitions = [];
     private IReadOnlyList<DrawingObjectDefinition> _drawingObjectDefinitions = [];
     private int _activeSceneIndex;
     private bool _updating;
+    private bool _experimental3DEnabled;
+    private readonly Label _pageTitle = InspectorModuleStyle.CreateTitle("Scene & Animation", primary: true);
+    private readonly Label _sceneHeading = InfoLabel();
+    private readonly Label _instanceHeading = InfoLabel();
+    private readonly Panel _emptyInstances = new();
+    private readonly Label _emptyTitle = InfoLabel();
+    private readonly Label _emptyHint = InfoLabel();
+    private readonly Button _emptyAdd = new SvgIconButton(SvgIconKind.Add) { Text = "Add instance" };
 
     internal void SetExperimental3DEnabled(bool enabled)
     {
+        _experimental3DEnabled = enabled;
         _cameraProjection.Enabled = enabled;
         _cameraProjection.Visible = enabled;
-        if (_cameraProjection.Parent is TableLayoutPanel content)
-        {
-            var row = content.GetRow(_cameraProjection);
-            var label = content.GetControlFromPosition(0, row);
-            if (label is not null) label.Visible = enabled;
-            content.RowStyles[row].Height = enabled ? 40 : 0;
-            if (content.Parent is TableLayoutPanel root) root.RowStyles[root.GetRow(content)].Height = enabled ? 88 : 48;
-        }
+        _projectionLabel.Visible = enabled;
+        Height = PreferredPanelHeight;
+        PerformLayout();
     }
 
     public SceneEditorPanel()
     {
         BackColor = Theme.Panel;
-        Padding = new Padding(4, 10, 8, 16);
-        MinimumSize = new Size(240, 260);
+        Font = Theme.UiFont();
+        Padding = Padding.Empty;
+        MinimumSize = new Size(0, 260);
+        SetStyle(ControlStyles.ResizeRedraw | ControlStyles.OptimizedDoubleBuffer, true);
         _cameraProjection.Items.AddRange(["Orthographic", "Perspective"]);
-        Theme.StyleComboBox(_cameraProjection);
+        InspectorModuleStyle.StyleField(_cameraProjection);
+        _projectionLabel.Dock = DockStyle.None;
+        _cameraProjection.AccessibleName = "Camera projection";
 
         BuildUi();
         RefreshText();
@@ -78,7 +87,8 @@ internal sealed class SceneEditorPanel : UserControl
     public event EventHandler<SceneSelectionChangedEventArgs>? SceneSelectionChanged;
     public event EventHandler<DrawingObjectOpenRequestedEventArgs>? DrawingObjectOpenRequested;
 
-    public int PreferredPanelHeight => 340;
+    public int PreferredPanelHeight => ScaleMetric(376 + Math.Clamp(_sceneDefinitions.Count, 1, 3) * 54
+        + (_experimental3DEnabled ? 40 : 0));
 
     public void BindProject(
         IReadOnlyList<SceneDefinition> scenes,
@@ -92,63 +102,46 @@ internal sealed class SceneEditorPanel : UserControl
         _drawingObjectDefinitions = drawingObjects;
         RefreshLists(selectedInstanceSceneId, selectedInstanceId);
         RefreshText();
+        _sceneHeading.Text = $"{UiLocalization.T("Scenes")}  {scenes.Count}";
+        _instanceHeading.Text = $"{UiLocalization.T("Scene Instances")}  {ActiveSceneDefinition()?.Instances.Count ?? 0}";
+        var empty = ActiveSceneDefinition()?.Instances.Count is not > 0;
+        _emptyInstances.Visible = empty;
+        _instances.Visible = !empty;
+        Height = PreferredPanelHeight;
+        PerformLayout();
     }
 
     private void BuildUi()
     {
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 1,
-            RowCount = 3,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorTitleHeight));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        Controls.Add(root);
-
-        var title = InspectorModuleStyle.CreateTitle("Scene & Animation");
-        root.Controls.Add(title, 0, 0);
-
-        var content = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 2,
-            RowCount = 2,
-            Padding = new Padding(4, 8, 0, 0), Margin = Padding.Empty
-        };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var i = 0; i < 2; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        root.Controls.Add(content, 0, 1);
-
-        AddRow(content, "Scene", _sceneName, 0);
-        AddRow(content, "Camera", _cameraProjection, 1);
-
-        var managers = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 1,
-            RowCount = 4,
-            Padding = new Padding(4, 8, 0, 0), Margin = Padding.Empty
-        };
-        managers.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        managers.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        managers.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        managers.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        root.Controls.Add(managers, 0, 2);
-
-        managers.Controls.Add(HeaderWithButton("Scenes", _addScene), 0, 0);
         ConfigureList(_scenes);
-        managers.Controls.Add(_scenes, 0, 1);
-        managers.Controls.Add(HeaderWithButton("Scene Instances", _addInstance), 0, 2);
         ConfigureList(_instances);
-        managers.Controls.Add(_instances, 0, 3);
+        _scenes.Dock = _instances.Dock = DockStyle.None;
+        _scenes.DrawItem += DrawSceneItem;
+        _scenes.AccessibleName = "Scenes";
+        _instances.AccessibleName = "Scene Instances";
+        _pageTitle.Dock = DockStyle.None;
+        InspectorModuleStyle.StylePageTitle(_pageTitle);
+        _sceneHeading.Dock = _instanceHeading.Dock = DockStyle.None;
+        _sceneHeading.Text = "Scenes";
+        _instanceHeading.Text = "Scene Instances";
+        _emptyTitle.Text = "No scene instances yet";
+        _emptyHint.Text = "Add an instance to start composing your scene.";
+        _emptyHint.ForeColor = Theme.PanelSecondaryText;
+        _emptyTitle.TextAlign = _emptyHint.TextAlign = ContentAlignment.MiddleCenter;
+        _emptyTitle.BackColor = _emptyHint.BackColor = Color.Transparent;
+        _emptyTitle.Dock = _emptyHint.Dock = DockStyle.None;
+        _emptyInstances.BackColor = Theme.PanelStrong;
+        _emptyInstances.Controls.AddRange([_emptyTitle, _emptyHint, _emptyAdd]);
+        _emptyInstances.Paint += (_, e) => SvgIcons.Draw(e.Graphics, SvgIconKind.Objects,
+            new Rectangle((_emptyInstances.Width - ScaleMetric(24)) / 2, ScaleMetric(20), ScaleMetric(24), ScaleMetric(24)), Theme.PanelSecondaryText);
+        foreach (var button in new[] { _addScene, _addInstance, _emptyAdd }) Theme.StyleStandardButton(button);
+        Theme.StyleToolbarButton(_addScene);
+        Theme.StyleToolbarButton(_addInstance);
+        Theme.StyleStandardButton(_emptyAdd, active: true);
+        _emptyAdd.Click += (_, _) => AddSceneInstanceRequested?.Invoke(this, EventArgs.Empty);
+        Controls.AddRange([_pageTitle, _sceneHeading, _instanceHeading, _scenes, _instances,
+            _addScene, _addInstance, _emptyInstances, _projectionLabel, _cameraProjection]);
+        UiLocalization.Watch(this);
 
         _addScene.Click += (_, _) => AddSceneRequested?.Invoke(this, EventArgs.Empty);
         _addInstance.Click += (_, _) => AddSceneInstanceRequested?.Invoke(this, EventArgs.Empty);
@@ -168,6 +161,71 @@ internal sealed class SceneEditorPanel : UserControl
                 new DrawingObjectOpenRequestedEventArgs(scene.Instances[_instances.SelectedIndex].DrawingObjectId));
         };
         _cameraProjection.SelectedIndexChanged += (_, _) => RaiseSceneSettingsChanged();
+    }
+
+    private int ScaleMetric(int value) => (int)Math.Round(value * DeviceDpi / 96f);
+
+    protected override void OnLayout(LayoutEventArgs e)
+    {
+        base.OnLayout(e);
+        var inset = ScaleMetric(16);
+        var width = Math.Max(1, Width - inset * 2);
+        _pageTitle.SetBounds(inset + ScaleMetric(24), ScaleMetric(16), Math.Max(1, width - ScaleMetric(24)), ScaleMetric(28));
+        _sceneHeading.SetBounds(inset, ScaleMetric(70), Math.Max(1, width - ScaleMetric(112)), ScaleMetric(28));
+        _addScene.SetBounds(Width - inset - ScaleMetric(104), ScaleMetric(68), ScaleMetric(104), ScaleMetric(Theme.ControlHeight));
+        _scenes.ItemHeight = ScaleMetric(54);
+        _scenes.SetBounds(inset, ScaleMetric(108), width, ScaleMetric(Math.Clamp(_sceneDefinitions.Count, 1, 3) * 54));
+        var top = _scenes.Bottom + ScaleMetric(12);
+        _cameraProjection.Visible = _experimental3DEnabled;
+        _projectionLabel.Visible = _experimental3DEnabled;
+        if (_experimental3DEnabled)
+        {
+            var labelWidth = (int)Math.Round(width * 0.48f);
+            _projectionLabel.SetBounds(inset, top, labelWidth, ScaleMetric(40));
+            _cameraProjection.SetBounds(inset + labelWidth, top + ScaleMetric(4), Math.Max(1, width - labelWidth), ScaleMetric(Theme.ControlHeight));
+            top += ScaleMetric(40);
+        }
+        top += ScaleMetric(18);
+        _instanceHeading.SetBounds(inset, top, Math.Max(1, width - ScaleMetric(112)), ScaleMetric(28));
+        _addInstance.SetBounds(Width - inset - ScaleMetric(104), top, ScaleMetric(104), ScaleMetric(Theme.ControlHeight));
+        top += ScaleMetric(42);
+        _instances.SetBounds(inset, top, width, ScaleMetric(180));
+        _emptyInstances.Bounds = _instances.Bounds;
+        _emptyTitle.SetBounds(ScaleMetric(8), ScaleMetric(56), Math.Max(1, width - ScaleMetric(16)), ScaleMetric(28));
+        _emptyHint.SetBounds(ScaleMetric(8), ScaleMetric(86), Math.Max(1, width - ScaleMetric(16)), ScaleMetric(40));
+        _emptyAdd.SetBounds(Math.Max(0, (width - ScaleMetric(132)) / 2), ScaleMetric(134), Math.Min(width, ScaleMetric(132)), ScaleMetric(Theme.ControlHeight));
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        SvgIcons.Draw(e.Graphics, SvgIconKind.SceneSlate, new Rectangle(ScaleMetric(16), ScaleMetric(21), ScaleMetric(18), ScaleMetric(18)), Theme.PanelSecondaryText);
+        InspectorModuleStyle.DrawDivider(this, e.Graphics, ScaleMetric(54));
+        InspectorModuleStyle.DrawDivider(this, e.Graphics, _instanceHeading.Top - ScaleMetric(16));
+        InspectorModuleStyle.DrawBottomDivider(this, e.Graphics);
+    }
+
+    private void DrawSceneItem(object? sender, DrawItemEventArgs e)
+    {
+        if ((uint)e.Index >= _scenes.Items.Count) return;
+        var selected = (e.State & DrawItemState.Selected) != 0;
+        var background = selected ? Theme.AccentSurface : Theme.Panel;
+        using var brush = new SolidBrush(background);
+        e.Graphics.FillRectangle(brush, e.Bounds);
+        var iconBounds = new Rectangle(e.Bounds.Left + ScaleMetric(12), e.Bounds.Top + ScaleMetric(16), ScaleMetric(20), ScaleMetric(20));
+        SvgIcons.Draw(e.Graphics, SvgIconKind.SceneSlate, iconBounds, selected ? Theme.Accent : Theme.PanelSecondaryText);
+        var textBounds = new Rectangle(iconBounds.Right + ScaleMetric(12), e.Bounds.Top + ScaleMetric(7), Math.Max(1, e.Bounds.Width - ScaleMetric(56)), ScaleMetric(22));
+        TextRenderer.DrawText(e.Graphics, _scenes.Items[e.Index]?.ToString(), Font, textBounds,
+            Theme.ReadableText(background, Theme.Text), TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+        textBounds.Y += ScaleMetric(22);
+        TextRenderer.DrawText(e.Graphics, UiLocalization.T(e.Index == _activeSceneIndex ? "Currently editing" : "Scene"), _scenes.Font, textBounds,
+            Theme.ReadableText(background, selected ? Theme.Mix(Theme.PanelSecondaryText, Theme.AccentLabel, 0.45f) : Theme.PanelSecondaryText), TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+        if (selected)
+        {
+            using var accent = new Pen(Theme.Accent, ScaleMetric(2));
+            e.Graphics.DrawLine(accent, e.Bounds.Left + 1, e.Bounds.Top, e.Bounds.Left + 1, e.Bounds.Bottom);
+        }
+        if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
     }
 
     private void RefreshLists(string? selectedInstanceSceneId, string? selectedInstanceId)
@@ -300,40 +358,6 @@ internal sealed class SceneEditorPanel : UserControl
         SceneSettingsChanged?.Invoke(this, new SceneSettingsChangedEventArgs(_activeSceneIndex, sceneDefinition.Dimension, projection));
     }
 
-    private static Panel HeaderWithButton(string text, params Button[] buttons)
-    {
-        var panel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel, Margin = Padding.Empty };
-        var label = new Label
-        {
-            Text = text,
-            Dock = DockStyle.Fill,
-            ForeColor = Theme.Text,
-            BackColor = Theme.Panel,
-            Font = Theme.UiFont(9f, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft
-        };
-        var actions = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Right,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            BackColor = Theme.Panel,
-            FlowDirection = FlowDirection.RightToLeft,
-            WrapContents = false,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
-        foreach (var button in buttons)
-        {
-            button.Margin = Padding.Empty;
-            Theme.StyleButton(button);
-            actions.Controls.Add(button);
-        }
-        panel.Controls.Add(label);
-        panel.Controls.Add(actions);
-        actions.BringToFront();
-        return panel;
-    }
 
     private static void ConfigureList(ListBox list)
     {
@@ -343,33 +367,12 @@ internal sealed class SceneEditorPanel : UserControl
         list.IntegralHeight = false;
     }
 
-    private static void AddRow(TableLayoutPanel parent, string label, Control value, int row)
-    {
-        parent.Controls.Add(new Label
-        {
-            Text = label,
-            Dock = DockStyle.Fill,
-            ForeColor = Theme.Muted,
-            BackColor = Theme.Panel,
-            Font = Theme.UiFont(),
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true,
-            Margin = new Padding(0, 3, 8, 3)
-        }, 0, row);
 
-        value.Dock = DockStyle.Fill;
-        value.Margin = new Padding(0, 6, 0, 6);
-        parent.Controls.Add(value, 1, row);
+    private static Label InfoLabel()
+    {
+        var label = InspectorModuleStyle.CreateFieldLabel(string.Empty);
+        label.BackColor = Theme.Panel;
+        label.Margin = new Padding(0, 3, 0, 3);
+        return label;
     }
-
-    private static Label InfoLabel() => new()
-    {
-        Dock = DockStyle.Fill,
-        ForeColor = Theme.Text,
-        BackColor = Theme.Panel,
-        Font = Theme.UiFont(),
-        TextAlign = ContentAlignment.MiddleLeft,
-        AutoEllipsis = true,
-        Margin = new Padding(0, 3, 0, 3)
-    };
 }

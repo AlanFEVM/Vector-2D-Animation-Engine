@@ -201,7 +201,10 @@ internal static partial class Benchmark
         using var form = new MainForm();
         form.CreateControl();
         var previousContext = SynchronizationContext.Current;
-        using var context = new WindowsFormsSynchronizationContext();
+        var previousAutoInstall = WindowsFormsSynchronizationContext.AutoInstall;
+        WindowsFormsSynchronizationContext.AutoInstall = false;
+        var context = previousContext as WindowsFormsSynchronizationContext
+            ?? new WindowsFormsSynchronizationContext();
         SynchronizationContext.SetSynchronizationContext(context);
         try
         {
@@ -308,6 +311,7 @@ internal static partial class Benchmark
         finally
         {
             SynchronizationContext.SetSynchronizationContext(previousContext);
+            WindowsFormsSynchronizationContext.AutoInstall = previousAutoInstall;
         }
     }
 

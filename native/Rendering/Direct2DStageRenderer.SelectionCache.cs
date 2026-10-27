@@ -17,6 +17,7 @@ internal sealed partial class Direct2DStageRenderer
     private SelectionCommandKey _selectionCommandKey;
     private PointF _selectionCommandCamera;
     private float _selectionCommandZoom;
+    private bool _recordingSelectionCommands;
     internal long SelectionCommandBuilds { get; private set; }
     internal long SelectionCommandReuses { get; private set; }
 
@@ -30,7 +31,6 @@ internal sealed partial class Direct2DStageRenderer
             || stage.SelectedObjects.Count < 64
             || stage.UsesReferenceProjection
             || stage.MarqueeVisible
-            || stage.SelectionDragPreviewActive
             || stage.HasDistortPreview)
         {
             ClearSelectionCommands();
@@ -55,8 +55,20 @@ internal sealed partial class Direct2DStageRenderer
             {
                 context.Target = commands;
                 context.BeginDraw();
-                try { DrawSelectionCore(stage); }
-                finally { context.EndDraw().CheckError(); }
+                try
+                {
+                    // The recorded commands stay anchored to the committed selection. A
+                    // selection drag is a pure screen translation, so it is applied to the
+                    // replayed image below instead of rebuilding the whole overlay every
+                    // pointer move.
+                    _recordingSelectionCommands = true;
+                    DrawSelectionCore(stage);
+                }
+                finally
+                {
+                    _recordingSelectionCommands = false;
+                    context.EndDraw().CheckError();
+                }
                 commands.Close().CheckError();
                 _selectionCommands = commands;
                 _selectionCommandKey = key;
@@ -78,11 +90,16 @@ internal sealed partial class Direct2DStageRenderer
         }
         else SelectionCommandReuses++;
 
+        var dragOffset = stage.SelectionDragPreviewOffset;
+        var dragTranslateX = VectorUnits.ToPixels(dragOffset.X) * stage.Zoom;
+        var dragTranslateY = VectorUnits.ToPixels(dragOffset.Y) * stage.Zoom;
         var scale = stage.Zoom / _selectionCommandZoom;
         var translateX = stage.Width * 0.5f * (1f - scale)
-            + VectorUnits.ToPixels(_selectionCommandCamera.X - stage.CameraX) * stage.Zoom;
+            + VectorUnits.ToPixels(_selectionCommandCamera.X - stage.CameraX) * stage.Zoom
+            + dragTranslateX;
         var translateY = stage.Height * 0.5f * (1f - scale)
-            + VectorUnits.ToPixels(_selectionCommandCamera.Y - stage.CameraY) * stage.Zoom;
+            + VectorUnits.ToPixels(_selectionCommandCamera.Y - stage.CameraY) * stage.Zoom
+            + dragTranslateY;
         var transform = context.Transform;
         try
         {
@@ -101,6 +118,7 @@ internal sealed partial class Direct2DStageRenderer
         _selectionCommands = null;
         _selectionCommandKey = default;
         _selectionCommandZoom = 0;
+        ClearMergedSelectionGeometry();
     }
 
     internal void InvalidateSelectionCommands() => ClearSelectionCommands();

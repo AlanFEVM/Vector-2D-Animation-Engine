@@ -6,6 +6,7 @@ internal sealed class SettingsDialog : ModernDialogForm
     private readonly Button _chineseLanguage = new SegmentedButton { Text = "简体中文" };
     private readonly Button _darkColorTheme = new SegmentedButton { Text = "Dark" };
     private readonly Button _whiteColorTheme = new SegmentedButton { Text = "White" };
+    private readonly Button _charcoalColorTheme = new SegmentedButton { Text = "Charcoal" };
     private readonly ColorAdjustmentControl _themeColorAdjustment;
     private readonly ColorAdjustmentControl _highlightColorAdjustment;
     private string _selectedShortcutProfileId;
@@ -151,18 +152,21 @@ internal sealed class SettingsDialog : ModernDialogForm
 
         var content = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             BackColor = Theme.Panel,
             Padding = new Padding(24, 16, 24, 20),
             ColumnCount = 1,
-            RowCount = 11
+            RowCount = 10
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         foreach (var height in new[] { 32, 46, 154, 16, 48, 36, 46, 40, 32, 46 })
             content.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
-        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var generalScroll = new ThemedScrollPanel { Dock = DockStyle.Fill, ContentPadding = Padding.Empty };
+        generalScroll.Content.Controls.Add(content);
         var pages = new Panel { Dock = DockStyle.Fill };
-        pages.Controls.Add(content);
+        pages.Controls.Add(generalScroll);
         pages.Controls.Add(_codexIntegration);
         var navigation = new TableLayoutPanel { Dock = DockStyle.Top, Height = 54, Padding = new Padding(24, 10, 24, 6), ColumnCount = 2, RowCount = 1 };
         navigation.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -173,7 +177,7 @@ internal sealed class SettingsDialog : ModernDialogForm
         ConfigureSelectionButton(codex, "Codex / MCP");
         void SelectPage(bool integration)
         {
-            content.Visible = !integration;
+            generalScroll.Visible = !integration;
             _codexIntegration.Visible = integration;
             Theme.StyleSegmentedButton(general, active: !integration);
             Theme.StyleSegmentedButton(codex, active: integration);
@@ -190,12 +194,16 @@ internal sealed class SettingsDialog : ModernDialogForm
         var colorThemeSelector = CreateColorThemeSelector();
         ConfigureSelectionButton(_darkColorTheme, "Use the dark color theme");
         ConfigureSelectionButton(_whiteColorTheme, "Use the white color theme");
+        ConfigureSelectionButton(_charcoalColorTheme, "Use the charcoal color theme");
         _darkColorTheme.Margin = new Padding(0, 2, 2, 6);
-        _whiteColorTheme.Margin = new Padding(2, 2, 0, 6);
+        _whiteColorTheme.Margin = new Padding(2, 2, 2, 6);
+        _charcoalColorTheme.Margin = new Padding(2, 2, 0, 6);
         _darkColorTheme.Click += (_, _) => SelectColorTheme(ApplicationColorTheme.Dark);
         _whiteColorTheme.Click += (_, _) => SelectColorTheme(ApplicationColorTheme.White);
+        _charcoalColorTheme.Click += (_, _) => SelectColorTheme(ApplicationColorTheme.Charcoal);
         colorThemeSelector.Controls.Add(_darkColorTheme, 1, 0);
         colorThemeSelector.Controls.Add(_whiteColorTheme, 2, 0);
+        colorThemeSelector.Controls.Add(_charcoalColorTheme, 3, 0);
         content.Controls.Add(colorThemeSelector, 0, 1);
         content.Controls.Add(CreateColorAdjustmentLayout(), 0, 2);
 
@@ -236,6 +244,7 @@ internal sealed class SettingsDialog : ModernDialogForm
         cornerSelector.Controls.Add(_subtleRoundedCorners, 1, 0);
         content.Controls.Add(CreateOptionRow("Personalization", cornerSelector), 0, 9);
 
+        KeepSettingsEditorsVisible(content, generalScroll);
         var save = AddDialogAction("Save", DialogResult.OK, DialogActionStyle.Primary);
         var cancel = AddDialogAction("Cancel", DialogResult.Cancel);
         AcceptButton = save;
@@ -352,13 +361,14 @@ internal sealed class SettingsDialog : ModernDialogForm
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
-            ColumnCount = 3,
+            ColumnCount = 4,
             RowCount = 1,
             Margin = Padding.Empty
         };
         selector.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
-        selector.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        selector.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        selector.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+        selector.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+        selector.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
         selector.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         selector.Controls.Add(new Label
         {
@@ -372,6 +382,22 @@ internal sealed class SettingsDialog : ModernDialogForm
             Margin = Padding.Empty
         }, 0, 0);
         return selector;
+    }
+
+    private static void KeepSettingsEditorsVisible(Control parent, ThemedScrollPanel scroll)
+    {
+        foreach (Control child in parent.Controls)
+        {
+            child.Enter += (_, _) =>
+            {
+                if (child.Height > scroll.ClientSize.Height) return;
+                var bounds = scroll.RectangleToClient(child.RectangleToScreen(child.ClientRectangle));
+                if (bounds.Top < 0) scroll.RestoreScrollPosition(scroll.ScrollPosition + bounds.Top);
+                else if (bounds.Bottom > scroll.ClientSize.Height)
+                    scroll.RestoreScrollPosition(scroll.ScrollPosition + bounds.Bottom - scroll.ClientSize.Height);
+            };
+            KeepSettingsEditorsVisible(child, scroll);
+        }
     }
 
     private static TableLayoutPanel CreateOptionRow(string title, Control options)
@@ -447,16 +473,9 @@ internal sealed class SettingsDialog : ModernDialogForm
     {
         var changed = _selectedColorTheme != colorTheme;
         _selectedColorTheme = colorTheme;
-        if (colorTheme == ApplicationColorTheme.White)
-        {
-            Theme.StyleSegmentedButton(_darkColorTheme);
-            Theme.StyleSegmentedButton(_whiteColorTheme, active: true);
-        }
-        else
-        {
-            Theme.StyleSegmentedButton(_darkColorTheme, active: true);
-            Theme.StyleSegmentedButton(_whiteColorTheme);
-        }
+        Theme.StyleSegmentedButton(_darkColorTheme, active: colorTheme == ApplicationColorTheme.Dark);
+        Theme.StyleSegmentedButton(_whiteColorTheme, active: colorTheme == ApplicationColorTheme.White);
+        Theme.StyleSegmentedButton(_charcoalColorTheme, active: colorTheme == ApplicationColorTheme.Charcoal);
         UpdateColorPreviews();
         if (changed) ThemePreviewChanged?.Invoke(this, EventArgs.Empty);
     }

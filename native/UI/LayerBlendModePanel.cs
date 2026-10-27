@@ -143,7 +143,7 @@ internal sealed class LayerBlendModePanel : Panel
         {
             Text = "Blend Mode",
             Dock = DockStyle.Fill,
-            ForeColor = Theme.Muted,
+            ForeColor = Theme.PanelSecondaryText,
             BackColor = Color.Transparent,
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = false
@@ -175,10 +175,12 @@ internal sealed class LayerBlendModePanel : Panel
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        InspectorModuleStyle.DrawBottomDivider(this, e.Graphics);
+        if (ShowDivider) InspectorModuleStyle.DrawBottomDivider(this, e.Graphics);
     }
 
     public event EventHandler<LayerBlendModeChangedEventArgs>? BlendModeChanged;
+
+    internal bool ShowDivider { get; set; } = true;
 
     public int PreferredPanelHeight => Math.Max(
         (int)Math.Round(PanelHeight * DeviceDpi / 96f),

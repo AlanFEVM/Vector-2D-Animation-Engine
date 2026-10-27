@@ -198,9 +198,9 @@ internal sealed partial class VectorProject
             .ThenBy(index => source.ObjectSubOrder[index])
             .ThenBy(index => index)
             .ToArray();
-        var firstUnselected = Array.FindIndex(activeLayerObjects, index => !targetSet.Contains(index));
-        if (firstUnselected >= 0
-            && activeLayerObjects.Skip(firstUnselected + 1).Any(targetSet.Contains))
+        var firstSelected = Array.FindIndex(activeLayerObjects, targetSet.Contains);
+        if (firstSelected >= 0
+            && activeLayerObjects.Skip(firstSelected + 1).Any(index => !targetSet.Contains(index)))
         {
             return false;
         }
@@ -259,7 +259,7 @@ internal sealed partial class VectorProject
             _drawingObjects.Add(created);
             source.EditFrame = sourceFrame;
             container.AddInstance(this, nested);
-            while (container.MoveInstancesInLayer([nested.Id], direction: 1))
+            while (container.MoveInstancesInLayer([nested.Id], direction: -1))
             {
             }
             if (source.RemoveObjects(targets) != targets.Length)

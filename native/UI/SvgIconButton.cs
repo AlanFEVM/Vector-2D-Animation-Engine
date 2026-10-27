@@ -3,6 +3,21 @@ namespace VectorAnimationEngine;
 internal sealed class SegmentedButton : Button
 {
     public bool CompactText { get; set; }
+    public bool ShowSelectionIndicator { get; set; }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        if (!ShowSelectionIndicator || !UiMotion.IsActive(this)) return;
+        var scale = DeviceDpi / 96f;
+        var width = Math.Min(Width - 12f * scale,
+            TextRenderer.MeasureText(Text, Font, Size.Empty, TextFormatFlags.NoPadding).Width);
+        if (width <= 0) return;
+        using var indicator = new SolidBrush(SystemInformation.HighContrast
+            ? SystemColors.HighlightText : Enabled ? Theme.Accent : Theme.DisabledText);
+        e.Graphics.FillRectangle(indicator, (Width - width) / 2f,
+            Height - 2f * scale, width, Math.Max(1f, scale));
+    }
 
     protected override AccessibleObject CreateAccessibilityInstance() => new ButtonStateAccessibleObject(this);
 
@@ -35,6 +50,7 @@ internal class SvgIconButton : Button
 
     // Disclosure headers express expansion through the chevron, not a selected toolbar surface.
     public bool IsDisclosureHeader { get; set; }
+    public bool IsInspectorPageHeader { get; set; }
 
     public bool IsOverlayIcon { get; set; }
 
@@ -79,13 +95,13 @@ internal class SvgIconButton : Button
         var actualBackground = IsDisclosureHeader
             ? parentBack
             : fillsButton ? BackColor : parentBack;
-        var disclosureEmphasized = IsDisclosureHeader && (active || hover > 0.01f || Capture);
+        var disclosureEmphasized = IsDisclosureHeader && ((!IsInspectorPageHeader && active) || hover > 0.01f || Capture);
         var foreground = SystemInformation.HighContrast
             ? IsDisclosureHeader
                 ? !Enabled ? SystemColors.GrayText : disclosureEmphasized ? SystemColors.HotTrack : SystemColors.ControlText
                 : Enabled ? ForeColor : SystemColors.GrayText
             : Enabled
-                ? Theme.ReadableText(actualBackground, IsDisclosureHeader ? disclosureEmphasized ? Theme.AccentLabel : Theme.Text : ForeColor)
+                ? Theme.ReadableText(actualBackground, IsDisclosureHeader ? disclosureEmphasized ? Theme.AccentLabel : Theme.PanelSecondaryText : ForeColor)
                 : Theme.ReadableText(actualBackground, Theme.DisabledText);
         if (!IsDisclosureHeader && toolbar && Theme.IsLight && !active && Enabled && !SystemInformation.HighContrast)
         {

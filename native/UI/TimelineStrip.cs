@@ -4833,7 +4833,16 @@ internal sealed partial class TimelineStrip : Control
             (long)layout.TrackLeft + ((long)column + 2) * _frameCellWidth + margin,
             layout.TrackLeft,
             layout.TrackRight);
-        if (right > left) Invalidate(Rectangle.FromLTRB(left, HeaderHeight, right, layout.RowTop));
+        var bounds = Rectangle.FromLTRB(left, HeaderHeight, right, layout.RowTop);
+        using var labelFont = Theme.UiFont(7.5f, FontStyle.Bold);
+        var labelBounds = PlayheadFrameLabelBounds(layout, frame, labelFont);
+        if (!labelBounds.IsEmpty)
+        {
+            var labelPaintBounds = Rectangle.Intersect(ClientRectangle,
+                Rectangle.Inflate(Rectangle.Ceiling(labelBounds), 2, 2));
+            if (!labelPaintBounds.IsEmpty) bounds = Rectangle.Union(bounds, labelPaintBounds);
+        }
+        if (bounds.Width > 0 && bounds.Height > 0) Invalidate(bounds);
     }
 
     private void InvalidateOnionSkinRangeTransition(

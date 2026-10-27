@@ -17,7 +17,8 @@ internal enum ToolbarPosition
 internal enum ApplicationColorTheme
 {
     Dark,
-    White
+    White,
+    Charcoal
 }
 
 internal enum WindowCornerStyle

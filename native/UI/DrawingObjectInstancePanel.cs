@@ -45,15 +45,15 @@ internal sealed class DrawingObjectInstancePanel : Panel
     // Logical field geometry. Convert every row and label together when the panel is laid out,
     // including after WinForms scales a hidden panel for a different monitor.
     private const int PanelTitleTop = 6;
-    private const int FieldPitch = Theme.InspectorRowHeight;
-    private const int FieldLabelOffset = 2;
+    private const int FieldPitch = Theme.InspectorRowHeightComfortable;
+    private const int FieldLabelOffset = 0;
     private const int FieldRowTop = PanelTitleTop + Theme.InspectorTitleHeight + Theme.GapXs;
     private const int FieldRowCount = 7;
     private const int TintRowTop = FieldRowTop + FieldPitch * FieldRowCount;
     private const int TintRowHeight = 42;
     private const int RestoreButtonTop = TintRowTop + TintRowHeight + Theme.GapXs;
-    private const int FiltersButtonHeight = 30;
-    private const int PanelHeight = RestoreButtonTop + Theme.ControlHeightCompact + Theme.GapXs;
+    private const int FiltersButtonHeight = Theme.ControlHeight;
+    private const int PanelHeight = RestoreButtonTop + Theme.ControlHeight + Theme.GapXs;
     private readonly Label _title;
     private readonly List<(Label Label, int Top)> _fieldLabels = [];
     private readonly SymbolFiltersPanel _filters = new();
@@ -189,12 +189,8 @@ internal sealed class DrawingObjectInstancePanel : Panel
             new PlaybackModeItem(DrawingObjectPlaybackMode.HoldFrame, "Hold Frame")
         ]);
         _playbackMode.SelectedIndex = 0;
-        Theme.StyleNumeric(_fps);
-        Theme.StyleNumeric(_holdFrame);
-        Theme.StyleNumeric(_anchorX);
-        Theme.StyleNumeric(_anchorY);
-        Theme.StyleComboBox(_playbackMode);
-        Theme.StyleComboBox(_blendMode);
+        foreach (var field in new Control[] { _fps, _holdFrame, _anchorX, _anchorY, _playbackMode, _blendMode })
+            InspectorModuleStyle.StyleField(field);
         foreach (var item in LayerBlendModePanel.BlendModes) _blendMode.Items.Add(new BlendModeItem(item.Mode, item.Label));
         _blendMode.SelectedIndex = 0;
         Theme.StyleButton(_restoreSize);
@@ -523,15 +519,14 @@ internal sealed class DrawingObjectInstancePanel : Panel
         var left = ScaleLayout(12);
         var right = Math.Max(left, ClientSize.Width - ScaleLayout(12));
         var contentWidth = Math.Max(1, right - left);
-        var fieldHeight = ScaleLayout(Theme.ControlHeightCompact);
-        var valueWidth = Math.Min(ScaleLayout(136),
-            Math.Max(1, contentWidth - Math.Min(ScaleLayout(100), contentWidth / 2)));
+        var fieldHeight = ScaleLayout(Theme.ControlHeight);
+        var valueWidth = Math.Max(1, (int)Math.Round(contentWidth * 0.52f));
         var valueLeft = right - valueWidth;
         _title.SetBounds(left, ScaleLayout(PanelTitleTop), contentWidth, ScaleLayout(Theme.InspectorTitleHeight));
         foreach (var (label, top) in _fieldLabels)
         {
             label.SetBounds(left, ScaleLayout(top),
-                Math.Max(0, valueLeft - left - ScaleLayout(2)), ScaleLayout(24));
+                Math.Max(0, valueLeft - left - ScaleLayout(8)), fieldHeight);
         }
         _showFilters.SetBounds(
             left,
@@ -578,19 +573,9 @@ internal sealed class DrawingObjectInstancePanel : Panel
 
     private Label AddFieldLabel(string text, int top)
     {
-        var label = new Label
-        {
-            Text = text,
-            Left = 12,
-            Top = top,
-            Width = 98,
-            Height = 24,
-            ForeColor = Theme.Muted,
-            BackColor = Color.Transparent,
-            Font = Theme.UiFont(),
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true
-        };
+        var label = InspectorModuleStyle.CreateFieldLabel(text);
+        label.Dock = DockStyle.None;
+        label.SetBounds(12, top, 98, Theme.ControlHeight);
         _fieldLabels.Add((label, top));
         Controls.Add(label);
         return label;

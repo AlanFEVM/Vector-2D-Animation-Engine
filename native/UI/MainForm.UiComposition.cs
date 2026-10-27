@@ -5,21 +5,16 @@ internal sealed partial class MainForm
 {
     private void BuildInspectorPages(Control inspector)
     {
-        _basicInspectorPage.ShowScrollBar = false;
-        _sceneEditPage.ShowScrollBar = false;
+        _basicInspectorPage.ShowScrollBar = true;
+        _sceneEditPage.ShowScrollBar = true;
         _basicInspectorPage.Dock = DockStyle.Fill;
         _basicInspectorPage.BackColor = Theme.Panel;
         _basicInspectorPage.ContentPadding = new Padding(0, 0, 2, 0);
         UiComposition.MountVertical(_basicInspectorPage.Content,
         [
             new(_objectInspector, _objectInspector.PreferredHeight),
-            new(_brushTipPanel, _brushTipPanel.PreferredHeight),
             new(_drawingObjectInstancePanel, _drawingObjectInstancePanel.PreferredPanelHeight),
             new(_textSettingsPanel, _textSettingsPanel.PreferredHeight),
-            new(_materialEditor),
-            new(_mixingBrushSettingsPanel, _mixingBrushSettingsPanel.PreferredPanelHeight),
-            new(_drawSettingsPanel, _drawSettingsPanel.PreferredHeight),
-            new(_shapeSettingsPanel, _shapeSettingsPanel.PreferredHeight),
             new(_tweenCurveEditorPanel, _tweenCurveEditorPanel.PreferredPanelHeight),
             new(_imageInspector, _imageInspector.PreferredHeight)
         ]);
@@ -40,6 +35,7 @@ internal sealed partial class MainForm
         ]);
         _hierarchyWindow = new HierarchyWindow(_hierarchyPanel, ProcessCmdKey);
         BuildSceneOpticsInspectorPanels();
+        UiComposition.MountVertical(_basicInspectorPage.Content, [new(_spatialMaterialPanel)]);
         BuildInspectorCategoryRail(inspector);
 
         _animationPage.Dock = DockStyle.Fill;
@@ -65,38 +61,20 @@ internal sealed partial class MainForm
         ShowWorkspace(WorkspaceView.BasicDrawing);
     }
 
-    private void PlaceDrawingObjectInstancePanel(bool sceneEdit)
+    private void PlaceDrawingObjectInstancePanel()
     {
-        var target = sceneEdit ? _sceneEditPage.Content : _basicInspectorPage.Content;
-        UiComposition.MountVertical(target, [new(_drawingObjectInstancePanel)]);
-        if (sceneEdit) ArrangeSceneInspectorSections();
-        else ArrangeBasicDrawingInspectorPanels();
+        UiComposition.MountVertical(_basicInspectorPage.Content, [new(_drawingObjectInstancePanel)]);
+        ArrangeBasicDrawingInspectorPanels();
     }
 
     private bool PlaceDrawingParameterPanels()
     {
-        var sceneMask = IsSceneMaskDrawingInspectorContext();
-        var target = sceneMask ? _sceneEditPage.Content : _basicInspectorPage.Content;
-        UiSection[] sections =
-        [
-            new(_materialEditor), new(_brushTipPanel), new(_mixingBrushSettingsPanel),
-            new(_textSettingsPanel), new(_drawSettingsPanel), new(_shapeSettingsPanel), new(_imageInspector)
-        ];
-        if (_inspectorCategory == InspectorCategory.Color)
-        {
-            UiComposition.MountVertical(_colorInspectorPage.Content, [new(_materialEditor)]);
-            sections = sections.Where(section => !ReferenceEquals(section.Control, _materialEditor)).ToArray();
-        }
-        var moved = sections.Any(section => !ReferenceEquals(section.Control.Parent, target));
+        var moved = false;
+        if (!ReferenceEquals(_materialEditor.Parent, _colorInspectorPage.Content))
+            moved |= UiComposition.MountVertical(_colorInspectorPage.Content, [new(_appearanceInspectorSummary), new(_materialEditor)]);
         if (moved)
         {
-            UiComposition.MountVertical(target, sections);
-            if (sceneMask) ArrangeSceneMaskInspectorPanels();
-            else
-            {
-                ArrangeBasicDrawingInspectorPanels();
-                ArrangeSceneInspectorSections();
-            }
+            _colorInspectorPage.Content.PerformLayout();
         }
         return moved;
     }
@@ -104,17 +82,14 @@ internal sealed partial class MainForm
     private void ArrangeBasicDrawingInspectorPanels() => UiComposition.OrderVertical(
         _basicInspectorPage.Content,
         [
-            _objectInspector, _brushTipPanel, _drawingObjectInstancePanel, _textSettingsPanel,
-            _materialEditor, _mixingBrushSettingsPanel, _drawSettingsPanel,
-            _shapeSettingsPanel, _tweenCurveEditorPanel, _imageInspector
+            _objectInspector, _tweenCurveEditorPanel, _drawingObjectInstancePanel,
+            _spatialMaterialPanel, _textSettingsPanel, _imageInspector
         ]);
 
     private void ArrangeSceneMaskInspectorPanels() => UiComposition.OrderVertical(
         _sceneEditPage.Content,
         [
-            _imageInspector, _textSettingsPanel, _materialEditor, _brushTipPanel,
-            _mixingBrushSettingsPanel, _drawSettingsPanel, _shapeSettingsPanel,
-            _drawingObjectInstancePanel, _sceneEditorPanel, _playbackSettings
+            _sceneLightingPanel, _sceneEditorPanel, _playbackSettings
         ]);
 
     private void ArrangeSceneInspectorSections()
@@ -127,7 +102,6 @@ internal sealed partial class MainForm
         }
         UiComposition.OrderVertical(_sceneEditPage.Content,
         [
-            _tweenCurveEditorPanel, _drawingObjectInstancePanel, _spatialMaterialPanel,
             _sceneLightingPanel, _sceneEditorPanel, _playbackSettings
         ]);
     }

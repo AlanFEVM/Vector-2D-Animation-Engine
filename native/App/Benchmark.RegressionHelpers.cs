@@ -6,11 +6,51 @@ internal static partial class Benchmark
 {
     private const BindingFlags PrivateInstanceFlags = BindingFlags.Instance | BindingFlags.NonPublic;
 
-    private static void ConfigureExperimental3DForRegression(MainForm form, bool enabled = true)
+    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "PrintWindow", SetLastError = true)]
+    private static extern bool PrintBenchmarkWindow(IntPtr window, IntPtr target, uint flags);
+
+    private static Bitmap CaptureBenchmarkWindow(Control window)
+    {
+        var capture = new Bitmap(window.ClientSize.Width, window.ClientSize.Height);
+        try
+        {
+            using var graphics = Graphics.FromImage(capture);
+            var target = graphics.GetHdc();
+            try
+            {
+                if (!PrintBenchmarkWindow(window.Handle, target, 3))
+                    throw new System.ComponentModel.Win32Exception(System.Runtime.InteropServices.Marshal.GetLastWin32Error());
+            }
+            finally
+            {
+                graphics.ReleaseHdc(target);
+            }
+            return capture;
+        }
+        catch
+        {
+            capture.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Applies the experimental 3D preference for a regression. <paramref name="simpleCameraStyle"/>
+    /// pins the camera display style when a case asserts the detailed camera gizmo, so the result does
+    /// not depend on whatever simple/detailed preference the machine running the suite has saved.
+    /// </summary>
+    private static void ConfigureExperimental3DForRegression(
+        MainForm form,
+        bool enabled = true,
+        bool? simpleCameraStyle = null)
     {
         var settingsField = RequireField(typeof(MainForm), "_applicationSettings");
         var settings = (ApplicationSettings)settingsField.GetValue(form)!;
-        settingsField.SetValue(form, settings with { Experimental3DEnabled = enabled });
+        settingsField.SetValue(form, settings with
+        {
+            Experimental3DEnabled = enabled,
+            SimpleCameraStyleEnabled = simpleCameraStyle ?? settings.SimpleCameraStyleEnabled
+        });
         RequireMethod(typeof(MainForm), "ApplyExperimental3DSettings").Invoke(form, null);
     }
 
@@ -118,6 +158,18 @@ internal static partial class Benchmark
             | (Multiply((argb >>> 16) & 0xff, (tintArgb >>> 16) & 0xff) << 16)
             | (Multiply((argb >>> 8) & 0xff, (tintArgb >>> 8) & 0xff) << 8)
             | Multiply(argb & 0xff, tintArgb & 0xff);
+    }
+
+    private static int ComposedArgbForRegression(VectorScene scene, int objectIndex, int argb)
+    {
+        var opacity = 1f;
+        var layer = (int)scene.ObjectLayer[objectIndex];
+        for (var depth = 0; depth < scene.LayerCount && (uint)layer < scene.LayerCount; depth++)
+        {
+            opacity *= scene.LayerOpacity[layer];
+            layer = scene.GetLayerParentIndex(layer);
+        }
+        return ApplyInstanceAppearanceForRegression(argb, opacity, Color.White.ToArgb());
     }
 
     private static bool NearlyEqual(float actual, float expected) => Math.Abs(actual - expected) <= 0.001f;

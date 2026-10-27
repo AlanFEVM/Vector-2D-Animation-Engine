@@ -9,12 +9,14 @@ internal sealed partial class MainForm : Form
     private void UpdateInspector(bool refreshLineEndpointStyles = true)
     {
         UpdateCanvasWorkspace();
-        FollowInspectorMaterialSelection();
+        UpdateToolInspectorSummary();
         UpdateDocumentInfoPanel();
         RefreshLayerBlendModePanel();
         UpdateSpatialTransformPanelState();
         var basicInspectorScrollY = CaptureInspectorScrollPosition(_basicInspectorPage);
         var sceneInspectorScrollY = CaptureInspectorScrollPosition(_sceneEditPage);
+        var colorInspectorScrollY = CaptureInspectorScrollPosition(_colorInspectorPage);
+        var toolInspectorScrollY = CaptureInspectorScrollPosition(_toolInspectorPage);
         var drawingObjectPanelWasVisible = _drawingObjectInstancePanel.Visible;
         var sceneLightingWasVisible = _sceneLightingPanel.Visible;
         var spatialMaterialWasVisible = _spatialMaterialPanel.Visible;
@@ -28,6 +30,8 @@ internal sealed partial class MainForm : Form
         var imageInspectorParent = _imageInspector.Parent;
         _basicInspectorPage.SuspendContentLayout();
         _sceneEditPage.SuspendContentLayout();
+        _colorInspectorPage.SuspendContentLayout();
+        _toolInspectorPage.SuspendContentLayout();
         var drawingParameterPanelsMoved = false;
         try
         {
@@ -214,6 +218,7 @@ internal sealed partial class MainForm : Form
             var imageLayoutChanged = imageInspectorWasVisible != _imageInspector.Visible
                 || !ReferenceEquals(imageInspectorParent, _imageInspector.Parent);
             var basicLayoutChanged = drawingParameterPanelsMoved || imageLayoutChanged
+                || spatialMaterialWasVisible != _spatialMaterialPanel.Visible
                 || (drawingObjectLayoutChanged
                     && ReferenceEquals(drawingObjectPanelParent, _basicInspectorPage.Content))
                 || (materialEditorLayoutChanged
@@ -231,6 +236,10 @@ internal sealed partial class MainForm : Form
                     && ReferenceEquals(textSettingsParent, _sceneEditPage.Content));
             _sceneEditPage.ResumeContentLayout(performLayout: sceneLayoutChanged);
             _basicInspectorPage.ResumeContentLayout(performLayout: basicLayoutChanged);
+            _colorInspectorPage.ResumeContentLayout(performLayout: true);
+            _toolInspectorPage.ResumeContentLayout(performLayout: true);
+            RestoreInspectorScrollPosition(_colorInspectorPage, colorInspectorScrollY);
+            RestoreInspectorScrollPosition(_toolInspectorPage, toolInspectorScrollY);
             if (basicLayoutChanged)
             {
                 RestoreInspectorScrollPosition(_basicInspectorPage, basicInspectorScrollY);
@@ -979,10 +988,6 @@ internal sealed partial class MainForm : Form
         if (view == WorkspaceView.Animation) view = WorkspaceView.SceneEditor;
         if (!CommitTextEdit()) return;
         if (IsSymbolEditing && (view != WorkspaceView.SceneEditor || openShots)) ClearSymbolEditingSession();
-        if (view == WorkspaceView.BasicDrawing && _inspectorCategory is InspectorCategory.Camera or InspectorCategory.Scene)
-            _inspectorCategory = InspectorCategory.None;
-        if (view == WorkspaceView.SceneEditor && _inspectorCategory == InspectorCategory.Color && !IsSceneMaskEditing())
-            _inspectorCategory = InspectorCategory.None;
         if (view != _workspaceTabs.SelectedView)
         {
             // Playback owns the reference-projection scene and its background
@@ -1012,7 +1017,7 @@ internal sealed partial class MainForm : Form
         _sceneEditPage.SuspendContentLayout();
         try
         {
-            PlaceDrawingObjectInstancePanel(sceneWorkspace);
+            PlaceDrawingObjectInstancePanel();
             _workspaceHeader.Height = ScaleResponsive(IsSymbolEditing ? 92 : 74, DeviceDpi / 96d);
             _drawingObjectRow.Visible = basicDrawing;
             _sceneDimensionButton.Visible = sceneWorkspace && _applicationSettings.Experimental3DEnabled;
@@ -1060,15 +1065,10 @@ internal sealed partial class MainForm : Form
             ApplyToolCursor();
             RefreshTweenCurveInspector();
 
-            _basicInspectorPage.Visible = basicDrawing;
-            _sceneEditPage.Visible = sceneEdit && !IsShotDirectorContext();
-            _animationPage.Visible = false;
-            // The director page owns the entire right inspector while active; the shared layer
-            // blend strip belongs to drawing/scene inspection and must not remain above it.
-            _layerBlendModePanel.Visible = !IsShotDirectorContext();
             UpdateSceneSpatialControlsVisibility();
             UpdateSpatialTransformPanelState();
             RefreshSceneOpticsInspector();
+            UpdateInspector();
             RefreshShotDirector(force: true);
             RefreshStageLayerContentHighlight();
             switchedInspector = true;

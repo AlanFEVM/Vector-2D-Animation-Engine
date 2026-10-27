@@ -1378,7 +1378,7 @@ internal sealed partial class MainForm : Form
             _shotDirectorPanel.DetachTweenCurveEditor(_tweenCurveEditorPanel);
         }
 
-        var targetParent = sceneTween ? _sceneEditPage.Content : _basicInspectorPage.Content;
+        var targetParent = _basicInspectorPage.Content;
         var parentChanged = visible && !shotTween && !ReferenceEquals(previousParent, targetParent);
         if (parentChanged)
         {
@@ -1395,7 +1395,6 @@ internal sealed partial class MainForm : Form
             _tweenCurveEditorPanel.SetTween(target.Selection, target.Tween);
             _tweenCurveEditorPanel.Visible = true;
             if (shotTween) _shotDirectorPanel.PerformLayout();
-            else if (sceneTween) ArrangeSceneInspectorSections();
             else ArrangeBasicDrawingInspectorPanels();
         }
 
@@ -2531,11 +2530,17 @@ internal sealed partial class MainForm : Form
 
     private void RefreshLayerBlendModePanel()
     {
+        RefreshLayerBlendModePanel(_layerBlendModePanel);
+        RefreshLayerBlendModePanel(_documentInfoPanel.LayerPanel);
+    }
+
+    private void RefreshLayerBlendModePanel(LayerBlendModePanel panel)
+    {
         var context = _timeline.Context;
         var activeTargetId = context.Timeline.FindTrack(_timeline.ActiveTrackId ?? "")?.TargetId;
         if (string.IsNullOrWhiteSpace(activeTargetId))
         {
-            _layerBlendModePanel.ClearLayer();
+            panel.ClearLayer();
             return;
         }
 
@@ -2550,18 +2555,18 @@ internal sealed partial class MainForm : Form
             var layer = Array.IndexOf(drawingScene.LayerIds, activeTargetId);
             if ((uint)layer < drawingScene.LayerCount && layer < drawingScene.LayerBlendModes.Length)
             {
-                _layerBlendModePanel.SetLayer(drawingScene.LayerNames[layer], drawingScene.LayerBlendModes[layer], drawingScene.GetLayerColor(layer));
+                panel.SetLayer(drawingScene.LayerNames[layer], drawingScene.LayerBlendModes[layer], drawingScene.GetLayerColor(layer));
                 return;
             }
         }
         else if (context is SceneDefinition sceneDefinition
             && sceneDefinition.FindLayer(activeTargetId) is { } sceneLayer)
         {
-            _layerBlendModePanel.SetLayer(sceneLayer.Name, sceneLayer.BlendMode, Color.FromArgb(sceneLayer.ColorArgb));
+            panel.SetLayer(sceneLayer.Name, sceneLayer.BlendMode, Color.FromArgb(sceneLayer.ColorArgb));
             return;
         }
 
-        _layerBlendModePanel.ClearLayer();
+        panel.ClearLayer();
     }
 
     private void ApplySelectedLayerBlendMode(LayerBlendMode blendMode)

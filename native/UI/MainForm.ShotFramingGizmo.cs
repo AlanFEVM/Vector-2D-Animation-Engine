@@ -790,9 +790,10 @@ internal sealed partial class MainForm
             shot.Name,
             frame);
         var size = _shotPreviewOverlay.PreviewPixelSize;
-        var key = new ShotPreviewFrameKey(_stage.CreateShotPreviewSourceState(), settings, size, caption);
+        var key = new ShotPreviewFrameKey(_stage.CreateShotPreviewSourceState(), settings,
+            scene.ResolveShotParallaxAnchor(shot.Id), size, caption);
         if (_shotPreviewFrameKey == key && _shotPreviewOverlay.HasPreview) return;
-        if (_stage.TryCaptureShotPreview(settings, size, out var bitmap))
+        if (_stage.TryCaptureShotPreview(settings, size, out var bitmap, key.ParallaxAnchor))
         {
             _shotPreviewOverlay.SetPreview(bitmap, caption);
             _shotPreviewFrameKey = key;

@@ -11,7 +11,7 @@ internal sealed class TweenCurveCommittedEventArgs(TweenCurveAnchor[] anchors) :
 internal sealed class TweenCurveEditorPanel : Panel
 {
     private readonly Label _title = InspectorModuleStyle.CreateTitle("Tween Curve");
-    private readonly Label _summary = new();
+    private readonly Label _summary = InspectorModuleStyle.CreateTextLabel();
     private readonly TweenCurveEditor _editor = new();
     private readonly SvgIconButton _addAnchor = new(SvgIconKind.Add);
     private readonly SvgIconButton _removeAnchor = new(SvgIconKind.Remove);

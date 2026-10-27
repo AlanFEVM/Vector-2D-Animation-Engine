@@ -6,7 +6,7 @@ internal sealed partial class MainForm
     private const int InspectorRailButtonHeight = 34;
     private const int InspectorRailButtonInset = 3;
     private const int InspectorRailButtonGap = 2;
-    private const int InspectorRailMinHostWidth = 220;
+    private const int InspectorRailMinHostWidth = 324;
 
     private enum InspectorCategory
     {
@@ -14,49 +14,29 @@ internal sealed partial class MainForm
         Color,
         Physics,
         Camera,
-        Scene
+        Scene,
+        Tools
     }
 
     private readonly Panel _inspectorRail = new();
+    private readonly ComboBox _inspectorCategorySelector = new();
+    private static readonly InspectorCategory[] InspectorCategoryOrder =
+        [InspectorCategory.None, InspectorCategory.Tools, InspectorCategory.Color,
+            InspectorCategory.Physics, InspectorCategory.Camera, InspectorCategory.Scene];
     private readonly ThemedScrollPanel _colorInspectorPage = new();
+    private readonly ThemedScrollPanel _toolInspectorPage = new();
+    private readonly ThemedScrollPanel _inspectorUnavailablePage = new();
+    private readonly Label _toolInspectorTitle = new() { Text = "Tool Settings" };
+    private readonly Label _toolInspectorSummary = new();
+    private readonly Label _appearanceInspectorSummary = new();
+    private readonly Label _inspectorUnavailableMessage = new();
+    private readonly Button _inspectorContextButton = new();
     private readonly Dictionary<InspectorCategory, Button> _inspectorCategoryButtons = [];
     private InspectorCategory _inspectorCategory = InspectorCategory.None;
     private InspectorCategory? _presentedInspectorCategory;
     private Padding _inspectorRailBasePadding;
     private bool _layingOutInspectorRail;
     private bool _colorMaterialAvailable = true;
-    private VectorScene? _inspectorSelectionScene;
-    private int[] _inspectorSelectionObjects = [];
-    private DrawingElementKey[] _inspectorSelectionElements = [];
-    private DrawingElementKey _inspectorPrimaryElement = DrawingElementKey.None;
-    private int _inspectorPrimaryObject = -1;
-
-    private void FollowInspectorMaterialSelection()
-    {
-        var objects = _selectedObjects.ToArray();
-        var elements = _selectedElements.Select(hit => hit.Key).ToArray();
-        var primary = _selectedElement.Key;
-        var changed = !ReferenceEquals(_inspectorSelectionScene, _scene)
-            || !_inspectorSelectionObjects.AsSpan().SequenceEqual(objects)
-            || !_inspectorSelectionElements.AsSpan().SequenceEqual(elements)
-            || _inspectorPrimaryElement != primary
-            || _inspectorPrimaryObject != _selectedObject;
-        _inspectorSelectionScene = _scene;
-        _inspectorSelectionObjects = objects;
-        _inspectorSelectionElements = elements;
-        _inspectorPrimaryElement = primary;
-        _inspectorPrimaryObject = _selectedObject;
-        if (!changed || !_inspectorPanelOpen || !IsDrawingInspectorContext()
-            || SelectedSceneInstance() is not null || objects.Length == 0) return;
-        if (objects.Any(index => (uint)index >= (uint)_scene.ObjectCount
-            || IsImportedSvgObject(index) || _scene.ShapeKind[index] == ShapeKind.Bitmap)) return;
-        _inspectorCategory = InspectorCategory.Color;
-        _inspectorTransition?.Cancel();
-    }
-    // A category may drag the workspace along (Color needs drawing, Camera/Scene need
-    // the scene). Remember where the user came from so Properties can hand it back.
-    private WorkspaceView? _workspaceBeforeInspectorCategory;
-    private WorkspaceView? _workspaceForcedByInspectorCategory;
 
     private void BuildInspectorCategoryRail(Control inspector)
     {
@@ -67,7 +47,7 @@ internal sealed partial class MainForm
         _inspectorRail.AccessibleName = "Inspector categories";
         PaintLeftBorder(_inspectorRail);
         inspector.Controls.Add(_inspectorRail);
-        foreach (var category in Enum.GetValues<InspectorCategory>())
+        foreach (var category in InspectorCategoryOrder)
         {
             var label = InspectorCategoryLabel(category);
             var button = new SvgIconButton(InspectorCategoryIcon(category))
@@ -94,9 +74,93 @@ internal sealed partial class MainForm
         _colorInspectorPage.ContentPadding = new Padding(0, 0, 2, 0);
         _colorInspectorPage.Visible = false;
         inspector.Controls.Add(_colorInspectorPage);
+        _inspectorCategorySelector.DropDownStyle = ComboBoxStyle.DropDownList;
+        _inspectorCategorySelector.AccessibleName = "Inspector categories";
+        Theme.StyleComboBox(_inspectorCategorySelector);
+        _inspectorCategorySelector.SelectedIndexChanged += (_, _) =>
+        {
+            if (_layingOutInspectorRail || _inspectorCategorySelector.SelectedIndex < 0) return;
+            var category = InspectorCategoryOrder[_inspectorCategorySelector.SelectedIndex];
+            RevealInspectorCategory(category, "category selector");
+            LayoutInspectorCategoryRail();
+        };
+        inspector.Controls.Add(_inspectorCategorySelector);
+        BuildInspectorContextPages(inspector);
         inspector.Layout += (_, _) => LayoutInspectorCategoryRail();
         inspector.VisibleChanged += (_, _) => LayoutInspectorCategoryRail();
         LayoutInspectorCategoryRail();
+    }
+
+    private void BuildInspectorContextPages(Control inspector)
+    {
+        foreach (var page in new[] { _toolInspectorPage, _inspectorUnavailablePage })
+        {
+            page.Dock = DockStyle.Fill;
+            page.BackColor = Theme.Panel;
+            page.ShowScrollBar = true;
+            page.ContentPadding = new Padding(0, 0, 2, 12);
+            page.Visible = false;
+            inspector.Controls.Add(page);
+        }
+        foreach (var label in new[] { _toolInspectorSummary, _appearanceInspectorSummary, _inspectorUnavailableMessage })
+        {
+            label.AutoSize = true;
+            label.Padding = new Padding(4, 12, 4, 12);
+            label.ForeColor = Theme.PanelSecondaryText;
+            label.Font = Theme.UiFont(9f);
+            label.UseMnemonic = false;
+        }
+        InspectorModuleStyle.StylePageTitle(_toolInspectorTitle);
+        UiComposition.MountVertical(_colorInspectorPage.Content,
+            [new(_appearanceInspectorSummary), new(_materialEditor)]);
+        UiComposition.MountVertical(_toolInspectorPage.Content,
+        [
+            new(_toolInspectorTitle, InspectorModuleStyle.PageHeaderHeight), new(_toolInspectorSummary),
+            new(_brushTipPanel, _brushTipPanel.PreferredHeight),
+            new(_mixingBrushSettingsPanel, _mixingBrushSettingsPanel.PreferredPanelHeight),
+            new(_drawSettingsPanel, _drawSettingsPanel.PreferredHeight),
+            new(_shapeSettingsPanel, _shapeSettingsPanel.PreferredHeight)
+        ]);
+        Theme.StyleStandardButton(_inspectorContextButton);
+        _inspectorContextButton.UseMnemonic = false;
+        _inspectorContextButton.Height = Theme.ControlHeight;
+        _inspectorContextButton.Click += (_, _) =>
+        {
+            var view = _inspectorCategory is InspectorCategory.Camera or InspectorCategory.Scene
+                ? WorkspaceView.SceneEditor : WorkspaceView.BasicDrawing;
+            if (!CommitTextEdit()) return;
+            if (IsSymbolEditing && !ExitSceneSymbolEditing()) return;
+            _workspaceTabs.SelectView(view);
+            ApplyInspectorCategoryPresentation();
+        };
+        UiComposition.MountVertical(_inspectorUnavailablePage.Content,
+            [new(_inspectorUnavailableMessage), new(_inspectorContextButton)]);
+        _toolInspectorPage.Content.SizeChanged += (_, _) =>
+            _toolInspectorSummary.MaximumSize = new Size(Math.Max(1, _toolInspectorPage.Content.ClientSize.Width), 0);
+        _colorInspectorPage.Content.SizeChanged += (_, _) =>
+            _appearanceInspectorSummary.MaximumSize = new Size(Math.Max(1, _colorInspectorPage.Content.ClientSize.Width), 0);
+        _inspectorUnavailablePage.Content.SizeChanged += (_, _) =>
+            _inspectorUnavailableMessage.MaximumSize = new Size(Math.Max(1, _inspectorUnavailablePage.Content.ClientSize.Width), 0);
+        UiLocalization.Watch(_toolInspectorTitle);
+    }
+
+    private void UpdateToolInspectorSummary()
+    {
+        var toolName = IsShapeTool(_tool) ? ShapeToolName(_tool)
+            : IsLineTool(_tool) ? LineToolName(_tool)
+            : IsBrushTool(_tool) ? BrushToolName(_tool)
+            : _tool switch
+            {
+                ToolMode.Text => "Text Tool",
+                ToolMode.Eraser => "Eraser Tool",
+                ToolMode.Gradient => "Gradient Tool",
+                ToolMode.Eyedropper => "Eyedropper Tool",
+                ToolMode.Hand => "Hand Tool",
+                ToolMode.SnapPoint => "Snap Point Tool",
+                _ => ToolPairName(_tool)
+            };
+        _toolInspectorSummary.Text = UiLocalization.T(toolName) + Environment.NewLine
+            + UiLocalization.T("Tool parameters are separate from object properties. Fill, stroke color and line width are in Appearance; typography is in Properties.");
     }
 
     private void LayoutInspectorCategoryRail()
@@ -111,8 +175,23 @@ internal sealed partial class MainForm
             var available = _inspectorPanelOpen
                 && host.ClientSize.Width >= ScaleResponsive(InspectorRailMinHostWidth, scale);
             var width = available ? ScaleResponsive(InspectorRailWidth, scale) : 0;
-            host.Padding = new Padding(_inspectorRailBasePadding.Left, _inspectorRailBasePadding.Top,
+            var compact = _inspectorPanelOpen && !available;
+            var selectorHeight = compact ? ScaleResponsive(Theme.ControlHeight + 8, scale) : 0;
+            host.Padding = new Padding(_inspectorRailBasePadding.Left, _inspectorRailBasePadding.Top + selectorHeight,
                 _inspectorRailBasePadding.Right + width, _inspectorRailBasePadding.Bottom);
+            _inspectorCategorySelector.Visible = compact;
+            if (compact)
+            {
+                var labels = InspectorCategoryOrder.Select(category => UiLocalization.T(InspectorCategoryLabel(category))).ToArray();
+                if (!_inspectorCategorySelector.Items.Cast<string>().SequenceEqual(labels))
+                {
+                    _inspectorCategorySelector.Items.Clear();
+                    _inspectorCategorySelector.Items.AddRange(labels);
+                }
+                _inspectorCategorySelector.SelectedIndex = Array.IndexOf(InspectorCategoryOrder, _inspectorCategory);
+                _inspectorCategorySelector.SetBounds(_inspectorRailBasePadding.Left, _inspectorRailBasePadding.Top,
+                    Math.Max(1, host.ClientSize.Width - _inspectorRailBasePadding.Horizontal), ScaleResponsive(Theme.ControlHeight, scale));
+            }
             _inspectorRail.Visible = available;
             _inspectorRail.SetBounds(host.ClientSize.Width - width, 0, width, host.ClientSize.Height);
             var inset = ScaleResponsive(InspectorRailButtonInset, scale);
@@ -123,8 +202,7 @@ internal sealed partial class MainForm
                 top += button.Height + ScaleResponsive(InspectorRailButtonGap, scale);
             }
             ApplyInspectorPageVisibility();
-            var presentedCategory = _inspectorCategory == InspectorCategory.None && _shotDirectorVisible
-                ? InspectorCategory.Camera : _inspectorCategory;
+            var presentedCategory = _inspectorCategory;
             if (_presentedInspectorCategory != presentedCategory)
             {
                 foreach (var (id, button) in _inspectorCategoryButtons)
@@ -138,6 +216,7 @@ internal sealed partial class MainForm
                 _presentedInspectorCategory = presentedCategory;
             }
             if (available) _inspectorRail.BringToFront();
+            if (compact) _inspectorCategorySelector.BringToFront();
         }
         finally
         {
@@ -148,58 +227,58 @@ internal sealed partial class MainForm
 
     private void ApplyInspectorPageVisibility()
     {
-        var automatic = _inspectorCategory == InspectorCategory.None;
+        var properties = _inspectorCategory == InspectorCategory.None;
         var color = _inspectorCategory == InspectorCategory.Color;
-        _materialEditor.Visible = color;
-        var camera = _inspectorCategory == InspectorCategory.Camera || automatic && _shotDirectorVisible;
-        var scene = _inspectorCategory == InspectorCategory.Scene
-            || automatic && !camera && _workspaceTabs.SelectedView == WorkspaceView.SceneEditor && !IsSymbolEditing;
-        _colorInspectorPage.Visible = color;
-        _basicInspectorPage.Visible = automatic && !camera && !scene;
-        _sceneEditPage.Visible = scene;
+        var tools = _inspectorCategory == InspectorCategory.Tools;
+        var camera = _inspectorCategory == InspectorCategory.Camera;
+        var scene = _inspectorCategory == InspectorCategory.Scene;
+        var drawingContext = IsDrawingInspectorContext();
+        var sceneContext = IsSceneWorkspaceSelected;
+        var unavailable = (color || tools) && !drawingContext
+            || (camera || scene) && !sceneContext;
+        var document = properties && IsDocumentInspectorContext;
+        _materialEditor.Visible = color && !unavailable;
+        _materialEditor.Enabled = _colorMaterialAvailable && drawingContext;
+        _appearanceInspectorSummary.Text = !_colorMaterialAvailable
+            ? UiLocalization.T("This selection has no editable fill or stroke.")
+            : _selectedObjects.Count == 0 && !_selectedElement.IsValid
+                ? UiLocalization.T("No selection: current drawing appearance.")
+                : UiLocalization.T("Editing the appearance of the current selection.");
+        _colorInspectorPage.Visible = color && !unavailable;
+        _toolInspectorPage.Visible = tools && !unavailable;
+        _inspectorUnavailablePage.Visible = unavailable;
+        _documentInspectorPage.Visible = document;
+        _documentInfoPanel.Visible = document;
+        _basicInspectorPage.Visible = properties && !document;
+        _sceneEditPage.Visible = scene && !unavailable;
         _animationPage.Visible = false;
-        _shotDirectorPanel.Visible = camera;
-        _layerBlendModePanel.Visible = automatic && !camera;
-        if (!automatic || camera) _documentInfoPanel.Visible = false;
-        if (color)
+        _shotDirectorPanel.Visible = camera && !unavailable;
+        _layerBlendModePanel.Visible = properties && !document;
+        _objectInspector.Visible = properties && !document;
+        if (unavailable)
         {
-            _materialEditor.Enabled = _colorMaterialAvailable && !IsSceneCompositionContext();
-            _colorInspectorPage.BringToFront();
+            _inspectorUnavailableMessage.Text = UiLocalization.T(camera || scene
+                ? "Open Scene & Animation to edit this category. Switching tabs does not change the workspace."
+                : "Tool and drawing appearance settings require a drawing workspace or scene mask. Switching tabs does not change the workspace.");
+            _inspectorContextButton.Text = UiLocalization.T(camera || scene
+                ? "Open Scene & Animation" : "Open Basic Drawing");
+            _inspectorUnavailablePage.BringToFront();
         }
-        else
-        {
-            _materialEditor.Enabled = true;
-            if (camera) _shotDirectorPanel.BringToFront();
-            else if (scene) _sceneEditPage.BringToFront();
-            else _basicInspectorPage.BringToFront();
-        }
+        else if (color) _colorInspectorPage.BringToFront();
+        else if (tools) _toolInspectorPage.BringToFront();
+        else if (camera) _shotDirectorPanel.BringToFront();
+        else if (document) _documentInspectorPage.BringToFront();
+        else if (scene) _sceneEditPage.BringToFront();
+        else _basicInspectorPage.BringToFront();
     }
 
     private void ToggleInspectorCategory(InspectorCategory category)
     {
-        // DIAGNOSTIC (temporary): trace every rail click through its guards.
-        _inspectorCategoryButtons.TryGetValue(category, out var probe);
-        AppLog.Info($"[rail] click={category} open={_inspectorPanelOpen} railVisible={_inspectorRail.Visible}"
-            + $" current={_inspectorCategory} enabled={probe?.Enabled} textEdit={IsTextEditActive()}"
-            + $" view={_workspaceTabs.SelectedView} drawingContext={IsDrawingInspectorContext()}"
-            + $" selection={_selectedObjects.Count}/{_selectedElement.IsValid}");
         if (!_inspectorPanelOpen || !_inspectorRail.Visible
             || !_inspectorCategoryButtons.TryGetValue(category, out var button) || !button.Enabled) return;
-        if (!CommitTextEdit()) return;
-        if (_inspectorCategory == category)
-        {
-            _inspectorCategory = InspectorCategory.None;
-        }
-        else
-        {
-            if (!PrepareInspectorCategoryWorkspace(category)) return;
-            _inspectorCategory = category;
-        }
+        if (_inspectorCategory == category || !CommitTextEdit()) return;
+        _inspectorCategory = category;
         ApplyInspectorCategoryPresentation();
-        AppLog.Info($"[rail] presented={_inspectorCategory} view={_workspaceTabs.SelectedView}"
-            + $" basic={_basicInspectorPage.Visible} scene={_sceneEditPage.Visible}"
-            + $" color={_colorInspectorPage.Visible} material={_materialEditor.Visible}"
-            + $" materialParent={_materialEditor.Parent?.GetType().Name}");
     }
 
     /// <summary>
@@ -213,7 +292,6 @@ internal sealed partial class MainForm
         if (!_inspectorPanelOpen || category == _inspectorCategory) return;
         if (!CanPresentInspectorCategory(category)) return;
         if (!CommitTextEdit()) return;
-        if (!PrepareInspectorCategoryWorkspace(category)) return;
         _inspectorCategory = category;
         ApplyInspectorCategoryPresentation();
         AppLog.Info($"Inspector category revealed: {category} ({reason})");
@@ -222,88 +300,32 @@ internal sealed partial class MainForm
     private bool CanPresentInspectorCategory(InspectorCategory category) => category switch
     {
         InspectorCategory.None => true,
-        // The material editor edits the current drawing selection; imported bitmaps have
-        // no material, so never drag the user to a blank color page for them.
-        InspectorCategory.Color => _colorMaterialAvailable,
+        InspectorCategory.Color => true,
+        InspectorCategory.Tools => true,
         // No physics content yet; the rail keeps the button disabled.
         InspectorCategory.Physics => false,
-        // Camera/Scene always have a page once their workspace is prepared.
         InspectorCategory.Camera => true,
         InspectorCategory.Scene => true,
         _ => false
     };
 
-    // A category may need a workspace (Color draws, Camera/Scene live in the scene).
-    // Returns false when that workspace could not be reached, so callers stay put.
-    private bool PrepareInspectorCategoryWorkspace(InspectorCategory category)
-    {
-        if (category is not (InspectorCategory.Color or InspectorCategory.Camera or InspectorCategory.Scene))
-            return true;
-        if (IsSymbolEditing && category is InspectorCategory.Camera or InspectorCategory.Scene
-            && !ExitSceneSymbolEditing()) return false;
-        var view = _workspaceTabs.SelectedView;
-        if (category == InspectorCategory.Color && !IsDrawingInspectorContext())
-        {
-            RememberInspectorCategoryWorkspace(view, WorkspaceView.BasicDrawing);
-            _workspaceTabs.SelectView(WorkspaceView.BasicDrawing);
-            return IsDrawingInspectorContext();
-        }
-        if (category is InspectorCategory.Camera or InspectorCategory.Scene && view != WorkspaceView.SceneEditor)
-        {
-            RememberInspectorCategoryWorkspace(view, WorkspaceView.SceneEditor);
-            _workspaceTabs.SelectView(WorkspaceView.SceneEditor);
-            return _workspaceTabs.SelectedView == WorkspaceView.SceneEditor;
-        }
-        return true;
-    }
-
-    // Ctrl+Alt+1..5: Properties, Color, Physics, Camera, Scene. Plain Ctrl+1..9 already
-    // belongs to workspace switching (ShortcutProfiles.GetWorkspaceShortcutIndex), so the
-    // category shortcut must not take it. Reveals the category (works with a closed rail)
-    // and toggles it away when it is already active.
     internal bool HandleInspectorCategoryShortcut(Keys keyData)
     {
         if ((keyData & Keys.Modifiers) != (Keys.Control | Keys.Alt)) return false;
         var key = keyData & Keys.KeyCode;
-        if (key is < Keys.D1 or > Keys.D5) return false;
+        if (key is < Keys.D1 or > Keys.D6) return false;
         var category = (InspectorCategory)(key - Keys.D1);
         if (!_inspectorPanelOpen) ToggleInspectorPanel();
-        if (_inspectorCategory == category) ToggleInspectorCategory(category);
-        else RevealInspectorCategory(category, "keyboard shortcut");
+        RevealInspectorCategory(category, "keyboard shortcut");
         return true;
     }
 
     private void ApplyInspectorCategoryPresentation()
     {
         _inspectorTransition?.Cancel();
-        // Properties must be honest: if a category dragged the workspace along, hand it
-        // back before the pages are chosen, or the scene page stays the automatic page.
-        RestoreInspectorWorkspaceIfNeeded();
         UpdateInspector();
         RefreshShotDirector(force: true);
         LayoutInspectorCategoryRail();
-    }
-
-    private void RememberInspectorCategoryWorkspace(WorkspaceView current, WorkspaceView target)
-    {
-        if (current == target) return;
-        _workspaceBeforeInspectorCategory ??= current;
-        _workspaceForcedByInspectorCategory = target;
-    }
-
-    private void RestoreInspectorWorkspaceIfNeeded()
-    {
-        // Returning to Properties must also return the workspace a category borrowed,
-        // otherwise "Properties" keeps presenting the scene inspector it forced open.
-        if (_inspectorCategory != InspectorCategory.None) return;
-        var previous = _workspaceBeforeInspectorCategory;
-        var forced = _workspaceForcedByInspectorCategory;
-        _workspaceBeforeInspectorCategory = null;
-        _workspaceForcedByInspectorCategory = null;
-        if (previous is null || forced is null || previous == forced) return;
-        // The user may have moved on by hand; only undo the switch we made ourselves.
-        if (_workspaceTabs.SelectedView != forced) return;
-        _workspaceTabs.SelectView(previous.Value);
     }
 
     private void CloseInspectorCategory()
@@ -345,7 +367,8 @@ internal sealed partial class MainForm
 
     private static string InspectorCategoryLabel(InspectorCategory category) => category switch
     {
-        InspectorCategory.Color => "Color",
+        InspectorCategory.Color => "Appearance",
+        InspectorCategory.Tools => "Tool Settings",
         InspectorCategory.Physics => "Physics",
         InspectorCategory.Camera => "Camera",
         InspectorCategory.Scene => "Scene",
@@ -355,6 +378,7 @@ internal sealed partial class MainForm
     private static SvgIconKind InspectorCategoryIcon(InspectorCategory category) => category switch
     {
         InspectorCategory.Color => SvgIconKind.InspectorColor,
+        InspectorCategory.Tools => SvgIconKind.Brush,
         InspectorCategory.Physics => SvgIconKind.InspectorPhysics,
         InspectorCategory.Camera => SvgIconKind.InspectorCamera,
         InspectorCategory.Scene => SvgIconKind.InspectorScene,

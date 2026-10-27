@@ -66,6 +66,8 @@ internal static class HotReloadModuleResolver
         nameof(SceneCanvasDialog),
         nameof(CanvasWelcomePanel),
         nameof(LayerBlendModePanel),
+        nameof(DocumentInfoPanel),
+        nameof(DocumentInfo),
         nameof(DrawingObjectInstancePanel),
         nameof(SymbolFiltersPanel),
         nameof(SymbolFilters),
@@ -88,6 +90,8 @@ internal static class HotReloadModuleResolver
         nameof(HierarchyPanel),
         nameof(HierarchyWindow),
         nameof(ShotDirectorPanel),
+        nameof(CameraParallaxPanel),
+        nameof(CameraDepthDiagram),
         nameof(ReferenceViewPad),
         nameof(WorkspaceTabs),
         nameof(VectorScene),
@@ -125,6 +129,7 @@ internal static class HotReloadModuleResolver
         nameof(SceneLayerSnapshotItem),
         nameof(SceneLayerKind),
         nameof(SceneShotDefinition),
+        nameof(SceneShotParallaxSettings),
         nameof(SceneShotAspectRatio),
         nameof(SceneShotRange),
         nameof(SceneShotSnapshot),
@@ -241,6 +246,10 @@ internal static class HotReloadModuleResolver
             or nameof(ReferenceViewPad)
             or nameof(ReferenceViewRequestedEventArgs)
             or nameof(ShotDirectorPanel)
+            or nameof(CameraParallaxPanel)
+            or nameof(CameraDepthDiagram)
+            or nameof(CameraParallaxLayer)
+            or nameof(CameraParallaxLayerEventArgs)
             or nameof(ShotDirectorState)
             or nameof(ShotDirectorItem)
             or nameof(ShotDirectorLayer)
@@ -294,6 +303,8 @@ internal static class HotReloadModuleResolver
             or nameof(DrawSettingsPanel)
             or nameof(ShapeSettingsPanel)
             or nameof(LayerBlendModePanel)
+            or nameof(DocumentInfoPanel)
+            or nameof(DocumentInfo)
             or nameof(DrawingObjectInstancePanel)
             or nameof(SymbolFiltersPanel)
             or nameof(SymbolFiltersChangedEventArgs)
@@ -415,6 +426,7 @@ internal static class HotReloadModuleResolver
             or nameof(SceneLayerKind)
             or nameof(SceneShotDefinition)
             or nameof(SceneShotAspectRatio)
+            or nameof(SceneShotParallaxSettings)
             or nameof(SceneShotRange)
             or nameof(SceneShotSnapshot)
             or nameof(SceneObjectInstanceDefinition)

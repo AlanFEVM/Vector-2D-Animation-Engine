@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Numerics;
 
 namespace VectorAnimationEngine;
@@ -198,6 +198,8 @@ internal static partial class Benchmark
         RunSceneOpticsPersistenceRegression();
         RunEditorRestartSnapshotRegression();
         RunProjectVaultPersistenceRegression();
+        RunPackageSaveFailureRecoveryRegression();
+        RunFolderSaveAsFailureRecoveryRegression();
         VerifyProjectCompressionRegression();
         Console.WriteLine("timeline_regression=ok");
     }
@@ -428,7 +430,10 @@ internal static partial class Benchmark
         var sceneTimeline = composition.Timeline;
         var sceneHigh = sceneTimeline.CreateTabGroup("Scene foreground");
         sceneTimeline.SetTrackTabGroup(sceneTimeline.FindTrackByTargetId(secondSceneLayer.Id)!.Id, sceneHigh);
-        sceneTimeline.SetTabGroupOrder([AnimationTimeline.DefaultTabGroupId, AnimationTimeline.TerrainTabGroupId, sceneHigh]);
+        AssertTimeline(sceneTimeline.SetTabGroupOrder([
+            AnimationTimeline.DefaultTabGroupId, AnimationTimeline.TerrainTabGroupId,
+            AnimationTimeline.ShotTabGroupId, sceneHigh]),
+            "Scene group sorting rejected a full group permutation including Shots.");
         AssertTimeline(composition.Layers.Select(layer => layer.Id).SequenceEqual([secondSceneLayer.Id, firstSceneId]),
             "Scene Building group sorting did not reorder scene layers.");
         AssertTimeline(project.TryAddSceneInstance(composition.Id, drawing.Id, PointF.Empty, 0, firstSceneId, out var lowerInstance)
@@ -532,7 +537,8 @@ internal static partial class Benchmark
                 {
                     IEnumerable<Control> Children(Control root) => root.Controls.Cast<Control>()
                         .SelectMany(child => new[] { child }.Concat(Children(child)));
-                    var action = Children(dialog).OfType<Button>().FirstOrDefault(button => button.DialogResult == result);
+                    var actionText = UiLocalization.T(result == DialogResult.OK ? "OK" : "Cancel");
+                    var action = Children(dialog).OfType<Button>().SingleOrDefault(button => button.Text == actionText);
                     if (action is null) { failure = new InvalidOperationException("Confirmation action missing."); dialog.DialogResult = DialogResult.Cancel; }
                     else action.PerformClick();
                 }
@@ -597,9 +603,11 @@ internal static partial class Benchmark
         var lastTabRight = initialTabs.Cast<object>().Max(tab => ((Rectangle)tab.GetType().GetProperty("Bounds")!.GetValue(tab)!).Right);
         var addButton = (Control)RequireField(typeof(TimelineStrip), "_tabGroupAddButton").GetValue(strip)!;
         var settingsButton = (SvgIconButton)RequireField(typeof(TimelineStrip), "_tabGroupOrderButton").GetValue(strip)!;
-        AssertTimeline(addButton.Left > lastTabRight && addButton.Left - lastTabRight <= 8
-            && settingsButton.Right <= strip.Width && settingsButton.Left > addButton.Right && addButton.Top == initialTabs.Cast<object>().Select(tab => (Rectangle)tab.GetType().GetProperty("Bounds")!.GetValue(tab)!).Last().Top,
-            "Group add/settings controls did not follow their tab/end anchors.");
+        var expectedAddBounds = (Rectangle)initialLayout.GetType().GetProperty("AddBounds")!.GetValue(initialLayout)!;
+        AssertTimeline(addButton.Bounds == expectedAddBounds && addButton.Left > lastTabRight
+            && settingsButton.Right <= strip.Width && settingsButton.Left > addButton.Right
+            && addButton.Top == settingsButton.Top && addButton.Bottom == settingsButton.Bottom,
+            "Group add/settings controls overlapped tabs or lost their shared right-edge alignment.");
         Rectangle Bounds(string id)
         {
             var snapshot = RequireMethod(typeof(TimelineStrip), "BuildTabGroupLayout", Type.EmptyTypes).Invoke(strip, null)!;
@@ -2192,8 +2200,6 @@ internal static partial class Benchmark
             ?? throw new InvalidOperationException("Tween curve gesture regression could not inspect the workspace tabs.");
         var panel = RequireField(typeof(MainForm), "_tweenCurveEditorPanel").GetValue(form) as TweenCurveEditorPanel
             ?? throw new InvalidOperationException("Tween curve gesture regression could not inspect the curve panel.");
-        var scenePage = RequireField(typeof(MainForm), "_sceneEditPage").GetValue(form) as ThemedScrollPanel
-            ?? throw new InvalidOperationException("Tween curve gesture regression could not inspect the Scene Building page.");
         var basicPage = RequireField(typeof(MainForm), "_basicInspectorPage").GetValue(form) as ThemedScrollPanel
             ?? throw new InvalidOperationException("Tween curve gesture regression could not inspect the Basic Drawing page.");
         var sceneUndoStack = RequireField(typeof(MainForm), "_sceneTimelineUndoStack").GetValue(form)
@@ -2249,6 +2255,7 @@ internal static partial class Benchmark
         if (!form.Visible) form.Show();
         workspaceTabs.SelectedView = WorkspaceView.SceneEditor;
         Application.DoEvents();
+        RequireMethod(typeof(MainForm), "HandleInspectorCategoryShortcut").Invoke(form, [Keys.Control | Keys.Alt | Keys.D5]);
         timelineStrip.RefreshTimeline();
         timelineStrip.SelectSingleFrame(track.Id, 4);
         Application.DoEvents();
@@ -2256,8 +2263,8 @@ internal static partial class Benchmark
             ReferenceEquals(timelineStrip.Context, scene)
             && panel.Enabled
             && panel.Visible
-            && ReferenceEquals(panel.Parent, scenePage.Content),
-            "Selecting a Scene Building tween did not show the existing curve panel in the scene inspector.");
+            && ReferenceEquals(panel.Parent, basicPage.Content),
+            "Selecting a Scene Building tween did not show its curve panel in Properties.");
 
         editor.Size = new Size(320, 160);
         _ = editor.Handle;
@@ -2412,6 +2419,7 @@ internal static partial class Benchmark
         TimelineStrip timelineStrip,
         System.Reflection.MethodInfo undo)
     {
+        ConfigureExperimental3DForRegression(form);
         var project = RequireField(typeof(MainForm), "_project").GetValue(form) as VectorProject
             ?? throw new InvalidOperationException("Light tween curve regression could not inspect the project.");
         var workspaceTabs = RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form) as WorkspaceTabs
@@ -2485,6 +2493,7 @@ internal static partial class Benchmark
 
         workspaceTabs.SelectedView = WorkspaceView.SceneEditor;
         Application.DoEvents();
+        RequireMethod(typeof(MainForm), "HandleInspectorCategoryShortcut").Invoke(form, [Keys.Control | Keys.Alt | Keys.D5]);
         timelineStrip.RefreshTimeline();
         timelineStrip.SelectSingleFrame(track.Id, 4);
         Application.DoEvents();
@@ -2492,7 +2501,7 @@ internal static partial class Benchmark
             ReferenceEquals(timelineStrip.Context, scene)
             && panel.Enabled
             && panel.Visible,
-            "Selecting a light tween did not expose the Scene Building curve editor.");
+            $"Selecting a light tween did not expose the Scene Building curve editor: context={ReferenceEquals(timelineStrip.Context, scene)}, enabled={panel.Enabled}, visible={panel.Visible}, parentVisible={panel.Parent?.Visible}, tween={timelineStrip.SelectedTween}, category={RequireField(typeof(MainForm), "_inspectorCategory").GetValue(form)}, shotContext={RequireMethod(typeof(MainForm), "IsShotDirectorContext").Invoke(form, null)}.");
 
         editor.Size = new Size(320, 160);
         _ = editor.Handle;
@@ -2618,7 +2627,7 @@ internal static partial class Benchmark
                 "An active light endpoint edit did not remain deferred before Save Project.");
 
             AssertTimeline(
-                saveProjectTo.Invoke(form, [manifestPath]) is true
+                SaveWithConfirmation()
                 && opticsSnapshotField.GetValue(form) is not null
                 && opticsSavedSnapshotField.GetValue(form) is not null
                 && projectDirtyField.GetValue(form) is false
@@ -2662,7 +2671,7 @@ internal static partial class Benchmark
                 applyResolvedLightEdit.Invoke(
                     form,
                     [scene, light, light.Name, canceledStart, 0, editedStart]) is true
-                && saveProjectTo.Invoke(form, [manifestPath]) is true
+                && SaveWithConfirmation()
                 && projectDirtyField.GetValue(form) is false,
                 "The light cancel-after-save regression could not save its second endpoint state.");
             cancelOpticsEdit.Invoke(form, null);
@@ -2703,6 +2712,25 @@ internal static partial class Benchmark
             {
                 // Each regression run uses an isolated temporary directory.
             }
+        }
+
+        bool SaveWithConfirmation()
+        {
+            var confirmed = false;
+            using var timer = new System.Windows.Forms.Timer { Interval = 20 };
+            timer.Tick += (_, _) =>
+            {
+                var dialog = Application.OpenForms.Cast<Form>().FirstOrDefault(candidate =>
+                    candidate is ModernMessageDialog && candidate.Owner == form);
+                if (dialog?.AcceptButton is not Button accept) return;
+                timer.Stop();
+                confirmed = true;
+                accept.PerformClick();
+            };
+            timer.Start();
+            var saved = saveProjectTo.Invoke(form, [manifestPath]) is true;
+            AssertTimeline(confirmed, "Save Project did not show its completion confirmation.");
+            return saved;
         }
 
         int CollectionCount(object collection) =>
@@ -2900,7 +2928,7 @@ internal static partial class Benchmark
 
         var layeredScene = new VectorScene();
         layeredScene.CreateEmpty(5, 20);
-        using var layeredTimelineStrip = new TimelineStrip(layeredScene) { Size = new Size(760, 222) };
+        using var layeredTimelineStrip = new TimelineStrip(layeredScene) { Size = new Size(760, 320) };
         var targetTrack = layeredScene.Timeline.Tracks[3];
         layeredTimelineStrip.SelectSingleFrame(targetTrack.Id, 9);
         AssertTimeline(
@@ -2927,6 +2955,9 @@ internal static partial class Benchmark
         using var scrollTimelineStrip = new TimelineStrip(scrollScene) { Size = new Size(760, 192) };
         var scrollAnchor = scrollScene.Timeline.Tracks[0];
         scrollTimelineStrip.SelectSingleFrame(scrollAnchor.Id, 4);
+        var scrollLayout = RequireMethod(typeof(TimelineStrip), "CreateLayout").Invoke(scrollTimelineStrip, null)!;
+        var scrollTrackLeft = (int)scrollLayout.GetType().GetProperty("TrackLeft")!.GetValue(scrollLayout)!;
+        var scrollPointerX = scrollTrackLeft + 4 * scrollTimelineStrip.FrameWidth + scrollTimelineStrip.FrameWidth / 2;
         AssertTimeline(
             TimelineStrip.ResolveFrameSelectionVerticalScrollDelta(-100, dragGrid) == -1
             && TimelineStrip.ResolveFrameSelectionVerticalScrollDelta(45, dragGrid) == 0
@@ -2934,7 +2965,7 @@ internal static partial class Benchmark
             "Timeline frame marquee vertical auto-scroll did not preserve its viewport-edge activation zones.");
         for (var index = 0; index < 12; index++)
         {
-            scrollTimelineStrip.AutoScrollFrameSelection(new Point(290, 1000));
+            scrollTimelineStrip.AutoScrollFrameSelection(new Point(scrollPointerX, 1000));
         }
         AssertTimeline(
             scrollTimelineStrip.SelectedFrameCells.Any(cell =>
@@ -2943,7 +2974,7 @@ internal static partial class Benchmark
             "Timeline frame marquee auto-scroll did not extend the selection through layers below the viewport.");
         for (var index = 0; index < 12; index++)
         {
-            scrollTimelineStrip.AutoScrollFrameSelection(new Point(290, -1000));
+            scrollTimelineStrip.AutoScrollFrameSelection(new Point(scrollPointerX, -1000));
         }
         AssertTimeline(
             scrollTimelineStrip.SelectedFrameCells.SequenceEqual([new TimelineFrameCell(scrollAnchor.Id, 4)]),
@@ -5614,6 +5645,7 @@ internal static partial class Benchmark
 
         RunSceneShotTimelineFilterRegression();
         RunSceneShotPersistenceRegression();
+        RunShotParallaxModelRegression();
 
         Console.WriteLine("scene_shot_regression=ok");
     }
@@ -5632,7 +5664,8 @@ internal static partial class Benchmark
             var world = settings.ResolveWorldFrame(10000, 5000);
             var flat = settings.ToPreviewFraming().ResolveFrame(10000, 5000);
             foreach (var extent in new[] { (world.HalfWidth, world.HalfHeight), (flat.HalfWidth, flat.HalfHeight) })
-                AssertTimeline(extent.HalfWidth >= 960 && extent.HalfHeight >= 540
+                AssertTimeline(extent.HalfWidth >= SceneShotSettings.MinimumFrameWidth * 0.5f
+                    && extent.HalfHeight >= SceneShotSettings.MinimumFrameHeight * 0.5f
                     && Math.Abs(extent.HalfWidth / extent.HalfHeight - expected[(int)preset]) < 0.0001f,
                     $"Camera preset {preset} lost its ratio or minimum size.");
             var start = SceneShotSettings.Default with { AspectRatio = preset };
@@ -5696,9 +5729,9 @@ internal static partial class Benchmark
             var legacy = settings.ResolveFrame(size.Width, size.Height);
             foreach (var extent in new[] { (frame.HalfWidth, frame.HalfHeight), (legacy.HalfWidth, legacy.HalfHeight) })
             {
-                AssertTimeline(extent.HalfWidth * 2 >= 1920f && extent.HalfHeight * 2 >= 1080f
+                AssertTimeline(extent.HalfWidth * 2 >= 1f && extent.HalfHeight * 2 >= 1f
                     && Math.Abs(extent.HalfWidth / extent.HalfHeight - size.Width / size.Height) < 0.0001f,
-                    "Minimum camera framing shrank below 1920 x 1080 vu or changed aspect ratio.");
+                    "Camera framing became degenerate or changed aspect ratio.");
             }
         }
         var minimum = (SceneShotSettings.Default with { Projection = CameraProjection.Orthographic, OrthographicSize = 1080f })
@@ -5706,10 +5739,16 @@ internal static partial class Benchmark
         AssertTimeline(minimum.HalfWidth == 960f && minimum.HalfHeight == 540f,
             "A 16:9 camera did not reach exactly 1920 x 1080 vu.");
         var shot = new SceneShotDefinition();
-        shot.RestoreStateKeyframes([new SceneShotStateKeyframe(12, SceneShotSettings.Default with { OrthographicSize = 1f })]);
-        AssertTimeline(shot.StateKeyframes.Count == 1 && shot.EvaluateSettings(12).OrthographicSize == 1080f,
+        shot.RestoreStateKeyframes([new SceneShotStateKeyframe(12, SceneShotSettings.Default with
+        {
+            Projection = CameraProjection.Orthographic,
+            OrthographicSize = 1f
+        })]);
+        AssertTimeline(shot.StateKeyframes.Count == 1 && shot.EvaluateSettings(12).OrthographicSize == 1f,
             "Legacy camera normalization dropped a keyframe instead of applying the new minimum.");
-        Console.WriteLine("minimum_shot_frame=ok,minimum_vu=1920x1080");
+        AssertTimeline(shot.EvaluateSettings(12).ResolveWorldFrame(1920, 1080).HalfHeight < 540f,
+            "Small camera sizes are still clamped to full HD framing.");
+        Console.WriteLine("minimum_shot_frame=ok,small_camera_frame=ok");
     }
 
     private static void RunShotFramingGizmoRegression()
@@ -5967,6 +6006,7 @@ internal static partial class Benchmark
 
         var previewProject = VectorProject.CreateEmpty();
         using var stage = new StageControl(previewProject.DrawingObjects[0].Scene);
+        stage.SetShotFramingPresentation(simpleStyle: false, rotationHandles: true);
         stage.SetBounds(0, 0, 320, 180);
         stage.SetShotFramingGizmo(perspective3D, "Perspective camera");
         var expectedCameraOrigin = StageControl.ResolveShotCameraWireframeWorld(
@@ -6234,16 +6274,23 @@ internal static partial class Benchmark
         };
         stage.SetShotFramingGizmo(settings, "Preview camera");
         stage.WorldGridOpacity = 0;
+        using var editing = new Bitmap(stage.Width, stage.Height);
+        using (var graphics = Graphics.FromImage(editing))
+            RequireMethod(typeof(StageControl), "DrawGdiFrame").Invoke(stage, [graphics]);
         stage.SetReference3DPlaybackActive(true);
         using (var observing = new Bitmap(stage.Width, stage.Height))
         {
             using (var graphics = Graphics.FromImage(observing))
                 RequireMethod(typeof(StageControl), "DrawGdiFrame").Invoke(stage, [graphics]);
-            AssertTimeline(stage.TryGetShotFramingGizmoGeometry(out var outline)
-                && ShotCameraMarkerPaintCount(observing,
-                    new PointF((outline.TopLeft.X + outline.TopRight.X) * 0.5f, outline.TopLeft.Y),
-                    Theme.Accent, radius: 3) >= 3,
-                "Playback skipped painting the camera frame in Observe mode.");
+            var hasOutline = stage.TryGetShotFramingGizmoGeometry(out var outline);
+            var frameSample = new PointF((outline.TopLeft.X + outline.TopRight.X) * 0.5f, outline.TopLeft.Y);
+            var expectedFramePixel = SampleBitmap(editing, frameSample);
+            AssertTimeline(hasOutline
+                && expectedFramePixel.ToArgb() != stage.BackColor.ToArgb()
+                && Enumerable.Range(-3, 7).All(offset =>
+                    SampleBitmap(observing, new PointF(frameSample.X + offset, frameSample.Y))
+                        == SampleBitmap(editing, new PointF(frameSample.X + offset, frameSample.Y))),
+                "Playback skipped painting the antialiased camera frame in Observe mode.");
         }
         var originalView = stage.CaptureViewState();
         stage.SetShotWorkspacePreviewMode(ShotWorkspacePreviewMode.LockCamera);
@@ -6369,6 +6416,10 @@ internal static partial class Benchmark
         RequireField(typeof(MainForm), "_playing").SetValue(form, false);
         tabs.SelectedView = WorkspaceView.SceneEditor;
         update.Invoke(form,null);
+        AssertTimeline(stage.ShotFrameDisplays.Count == scene.Shots.Count,
+            "The integrated scene workspace lost camera frames while the camera timeline page remained active.");
+        tabs.SelectedView = WorkspaceView.BasicDrawing;
+        update.Invoke(form,null);
         AssertTimeline(!stage.ShotFramingGizmoVisible && stage.ShotFrameDisplays.Count == 0,
             "Camera frames leaked out of the director workspace.");
         RunShotProjectionCacheRegression(stage);
@@ -6448,7 +6499,7 @@ internal static partial class Benchmark
             Location = new Point(-30_000, -30_000),
             Size = new Size(1400, 900)
         };
-        ConfigureExperimental3DForRegression(form);
+        ConfigureExperimental3DForRegression(form, simpleCameraStyle: false);
         var workspaceTabs = (WorkspaceTabs)workspaceTabsField.GetValue(form)!;
         var project = (VectorProject)projectField.GetValue(form)!;
         var stage = (StageControl)stageField.GetValue(form)!;
@@ -6600,7 +6651,10 @@ internal static partial class Benchmark
             var hit = stage.HitTestShotFramingGizmo(start);
             AssertTimeline(
                 hit.Kind == kind,
-                $"{label}: clicking the drawn handle resolved to {hit.Kind} instead of {kind}.");
+                $"{label}: clicking the drawn handle resolved to {hit.Kind} instead of {kind} "
+                + $"(start={start}, simpleFraming={stage.SimpleShotFraming}, gizmoVisible={stage.ShotFramingGizmoVisible}, "
+                + $"collection={stage.ShotFrameCollectionVisible}, selectedFrame={stage.HasSelectedShotFrame}, "
+                + $"rotationHandles={stage.ShowShotRotationHandles}, body={bodyPoint}).");
             mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, start.X, start.Y, 0)]);
             mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, target.X, target.Y, 0)]);
             Application.DoEvents();
@@ -7463,6 +7517,9 @@ internal static partial class Benchmark
             Y = 40f,
             Z = -2_600f
         };
+        // The axis marker plates belong to the detailed camera style; pin it so the pixel expectation
+        // does not depend on the saved simple/detailed camera preference.
+        stage.SetShotFramingPresentation(simpleStyle: false, rotationHandles: true);
         stage.SetShotFramingGizmo(twoDCamera, "2D camera");
         AssertTimeline(
             stage.TryGetShotCameraWireframeGeometry(out var wireframe)
@@ -8048,6 +8105,7 @@ internal static partial class Benchmark
             $"Shot filter regression could not prepare a camera tween ({filterTweenError}).");
 
         using var strip = new TimelineStrip(scene);
+        strip.SetActiveTabGroup(AnimationTimeline.AllTabGroupId);
         var allRows = strip.VisibleTrackRowCount;
         strip.SelectSingleLayerTarget(firstShot.Id, notifyActiveLayerChanged: false);
         var cameraTrackSelected = string.Equals(strip.ActiveTrackId, firstShotTrack.Id, StringComparison.Ordinal);
@@ -8155,6 +8213,250 @@ internal static partial class Benchmark
         {
             DeleteTemporaryDirectory(temporaryRoot);
         }
+    }
+
+    private static void RunShotParallaxModelRegression()
+    {
+        var settings = SceneShotSettings.Default with
+        {
+            Kind = SceneShotCameraKind.TwoD, X = 100, Y = 200,
+            Parallax = new SceneShotParallaxSettings { Enabled = true }
+        };
+        var effect = settings.Parallax;
+        foreach (var depth in new[] { -900f, -500f, 0f, 1000f })
+        {
+            AssertTimeline(effect.ResolveTransform(settings, depth, settings) == Matrix4x4.Identity,
+                "Layer depth changed the starting camera composition.");
+            var uncompensated = (effect with { KeepSize = false }).ResolveTransform(settings, depth, settings);
+            var expectedScale = Math.Clamp((effect.ReferenceZ - settings.Z) / (depth - settings.Z), 0.01f, 100f);
+            var anchorPoint = Vector3.Transform(new Vector3(settings.X, settings.Y, 0), uncompensated);
+            AssertTimeline(Math.Abs(uncompensated.M11 - expectedScale) < 0.0001f
+                && Vector3.Distance(anchorPoint, new Vector3(settings.X, settings.Y, 0)) < 0.001f,
+                "Disabling keep-size did not restore depth scale around the camera anchor.");
+        }
+        var pannedFromAnchor = settings with { X = settings.X + 100, Y = settings.Y + 200 };
+        AssertTimeline(effect.ResolveTransform(pannedFromAnchor, -500, settings).M41 < 0
+            && effect.ResolveTransform(pannedFromAnchor, 1000, settings).M41 > 0,
+            "Relative camera motion lost near/far parallax response.");
+        var near = effect.ResolveTransform(settings, -500);
+        var far = effect.ResolveTransform(settings, 1000);
+        AssertTimeline(near.M11 == 1 && far.M11 == 1 && near.M41 < 0 && far.M41 > 0
+            && near.M42 < 0 && far.M42 > 0, "Keep-size parallax lost near/far directional response.");
+        AssertTimeline(effect.ResolveTransform(settings, 0) == Matrix4x4.Identity
+            && (effect with { Enabled = false }).ResolveTransform(settings, -500) == Matrix4x4.Identity
+            && (effect with { Strength = 0 }).ResolveTransform(settings, -500) == Matrix4x4.Identity,
+            "Reference, disabled or zero-strength parallax changed the scene.");
+        var horizontalOnly = (effect with { VerticalResponse = 0 }).ResolveTransform(settings, -500);
+        AssertTimeline(horizontalOnly.M42 == 0 && horizontalOnly.M41 == near.M41,
+            "Horizontal and vertical parallax responses were coupled.");
+        var moved = settings with { Z = -750 };
+        var dolly = effect.ResolveTransform(moved, -500);
+        var noDolly = (effect with { DollyScaling = false }).ResolveTransform(moved, -500);
+        AssertTimeline(dolly.M11 > 1 && noDolly.M11 == 1,
+            "Dolly scaling did not respect the keep-size baseline or toggle.");
+        var guarded = effect.ResolveTransform(settings, settings.Z - 100);
+        AssertTimeline(float.IsFinite(guarded.M11) && guarded.M11 > 0 && guarded.M11 <= 100,
+            "A depth crossing the camera inverted or overflowed parallax.");
+        var end = settings with { Parallax = effect with
+        {
+            Enabled = false, Strength = 2, HorizontalResponse = 0, VerticalResponse = 0.5f,
+            ReferenceZ = 100, KeepSize = false
+        } };
+        var midpoint = SceneShotSettings.Interpolate(settings, end, 0.5f);
+        AssertTimeline(midpoint.Parallax.Enabled && midpoint.Parallax.KeepSize
+            && midpoint.Parallax.Strength == 1.5f && midpoint.Parallax.HorizontalResponse == 0.5f
+            && midpoint.Parallax.ReferenceZ == 50
+            && SceneShotSettings.Interpolate(settings, end, 1).Parallax == end.Parallax,
+            "Parallax tween scalars or discrete endpoint settings were lost.");
+        var legacy = System.Text.Json.JsonSerializer.Deserialize<SceneShotSettings>("""{"X":0,"Y":0,"Zoom":1}""");
+        AssertTimeline(!legacy.Parallax.Enabled && legacy.Parallax.Strength == 1
+            && legacy.Parallax.KeepSize, "Legacy cameras did not receive safe disabled parallax defaults.");
+        AssertTimeline(!(settings with { Parallax = effect with { Strength = float.NaN } }).IsValid,
+            "Invalid parallax settings crossed the camera validation boundary.");
+        using (var panel = new ShotDirectorPanel { Size = new Size(400, 900) })
+        {
+            panel.Bind(new ShotDirectorState
+            {
+                IsAvailable = true, ActiveShotId = "parallax",
+                Shots = [new ShotDirectorItem { Id = "parallax", Name = "Parallax", Framing = settings, FramingEditable = true }],
+                ParallaxLayers = [new CameraParallaxLayer("layer", "Depth", Color.Red.ToArgb(), -500, true)]
+            });
+            AssertTimeline(panel.ParallaxEditor.Width > 100 && panel.ParallaxEditor.Top > 100,
+                "Binding a planar camera left its parallax inspector unlaid out.");
+            var committed = settings;
+            panel.ShotFramingCommitted += (_, eventArgs) => committed = eventArgs.Settings;
+            ((ModernNumericUpDown)RequireField(typeof(ShotDirectorPanel), "_positionX").GetValue(panel)!).Value = 300;
+            AssertTimeline(committed.Parallax == effect,
+                "Editing ordinary camera fields discarded parallax settings.");
+            var editor = panel.ParallaxEditor;
+            var changedDepth = float.NaN;
+            editor.LayerChanged += (_, eventArgs) => changedDepth = eventArgs.Depth;
+            editor.Bind("parallax", 0, settings,
+                [new CameraParallaxLayer("layer", "Depth", Color.Red.ToArgb(), -1500, true)]);
+            var layerRows = (System.Collections.IEnumerable)RequireField(typeof(CameraParallaxPanel), "_rows").GetValue(editor)!;
+            var layerRow = layerRows.Cast<object>().Single();
+            var participation = (CheckBox)layerRow.GetType().GetProperty("Toggle")!.GetValue(layerRow)!;
+            participation.Checked = false;
+            AssertTimeline(changedDepth == -1500,
+                "Disabling layer participation unexpectedly clamped its authored depth.");
+            editor.Bind("parallax", 0, settings with { Parallax = effect with { Enabled = false } },
+                [new CameraParallaxLayer("layer", "Depth", Color.Red.ToArgb(), -1500, true)]);
+            RequireMethod(typeof(CameraParallaxPanel), "ChangeDepth").Invoke(editor, ["layer", -1600f, null]);
+            AssertTimeline(changedDepth == -1600,
+                "An inactive parallax effect prevented editing a layer behind the camera.");
+            editor.SettingsChanged += (_, eventArgs) => committed = eventArgs.Settings;
+            RequireMethod(typeof(CameraParallaxPanel), "ChangeDepth").Invoke(editor, ["", 100f, null]);
+            AssertTimeline(committed.Z == 100,
+                "An inactive parallax effect constrained camera depth to the reference plane.");
+        }
+
+        var project = VectorProject.CreateEmpty();
+        var scene = project.Scenes[0];
+        var layer = scene.Layers[0];
+        var mask = scene.AddMaskLayer(project, layer.Id);
+        AssertTimeline(mask is not null && scene.SetLayerParallax(layer.Id, -500, true)
+            && mask.ParallaxDepth == -500, "Mask depth did not follow content depth.");
+        var snapshot = scene.CreateLayerSnapshot();
+        scene.SetLayerParallax(layer.Id, 1200, false);
+        scene.RestoreLayerSnapshot(snapshot);
+        AssertTimeline(scene.FindLayer(layer.Id)?.ParallaxDepth == -500
+            && scene.FindLayer(layer.Id)?.ParallaxEnabled == true
+            && scene.Layers.Select(item => item.Id).SequenceEqual(snapshot.Layers.Select(item => item.Id)),
+            "Layer parallax snapshot changed identity, depth or paint order.");
+        var camera = scene.AddShot("Parallax", scene.FrameCount);
+        camera.SetSettingsAtFrame(0, settings);
+        AssertTimeline(scene.InsertShotTimelineKeyframe(camera.Id, 12),
+            "The parallax persistence fixture could not create its populated camera keyframe.");
+        camera.SetSettingsAtFrame(12, settings with { X = 600, Y = -300, Z = -750 });
+        AssertTimeline(scene.ResolveShotParallaxAnchor(camera.Id) == settings,
+            "Later camera motion replaced the starting parallax anchor.");
+        var temporaryRoot = CreateTemporaryDirectory("camera-parallax-regression");
+        try
+        {
+            var path = Path.Combine(temporaryRoot, "Parallax.v2dProject");
+            ProjectVaultStore.Save(project, path);
+            var restored = ProjectVaultStore.Load(path).Scenes.Single(item => item.Id == scene.Id);
+            AssertTimeline(restored.ResolveShotParallaxAnchor(camera.Id) == settings,
+                "Reopening the project changed the parallax anchor.");
+            AssertTimeline(restored.FindShot(camera.Id)?.Settings.Parallax == effect
+                && restored.FindLayer(layer.Id)?.ParallaxDepth == -500,
+                "Project round-trip discarded camera or layer parallax.");
+        }
+        finally { DeleteTemporaryDirectory(temporaryRoot); }
+        Console.WriteLine("camera_parallax_model_regression=ok");
+    }
+
+    private static void RunShotParallaxRenderingRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var definition = project.Scenes[0];
+        var scene = new VectorScene();
+        scene.CreateEmpty(frameCount: 1);
+        var owners = new SceneCompositionObjectOwner[3];
+        var colors = new[] { Color.Red, Color.Lime, Color.DodgerBlue };
+        var depths = new[] { -500f, 0f, 1500f };
+        for (var index = 0; index < 3; index++)
+        {
+            var layer = index == 0 ? definition.Layers[0] : definition.AddLayer(project, $"Depth {index}");
+            definition.SetLayerParallax(layer.Id, depths[index], true);
+            var instance = new DrawingObjectInstanceDefinition
+            {
+                DrawingObjectId = project.DrawingObjects[0].Id, SceneLayerId = layer.Id
+            };
+            definition.AddInstance(project, instance);
+            owners[index] = new(instance.Id, instance.DrawingObjectId, instance.Id);
+            scene.AddObject(0, new PointF(0, (index - 1) * 800), new SizeF(400, 400),
+                0, 0, colors[index], 1, ShapeKind.Rectangle);
+        }
+        var composition = new SceneCompositionResult(owners);
+        using var stage = new StageControl(scene) { ClientSize = new Size(720, 480), WorldGridOpacity = 0 };
+        stage.SetSceneCompositionResult(composition, scene);
+        stage.ConfigureReferenceView(definition, SceneDimension.TwoD);
+        var mask = new VectorScene();
+        mask.CreateEmpty(frameCount: 1);
+        mask.AddObject(0, new PointF(0, -800), new SizeF(400, 400), 0, 0, Color.White, 1, ShapeKind.Rectangle);
+        stage.SetSceneCompositionMaskClips([new SceneCompositionMaskClip(scene, mask, 0, new HashSet<int> { 0 })]);
+        var settings = SceneShotSettings.Default with
+        {
+            Kind = SceneShotCameraKind.TwoD, Projection = CameraProjection.Orthographic,
+            OrthographicSize = 3200, AspectRatio = SceneShotAspectRatio.Landscape16To9,
+            Parallax = new SceneShotParallaxSettings { Enabled = true }
+        };
+        Bitmap Capture(SceneShotSettings camera)
+        {
+            AssertTimeline(stage.TryCaptureShotPreview(camera, new Size(640, 360), out var bitmap)
+                && bitmap is not null, "Parallax camera preview failed.");
+            return bitmap!;
+        }
+        static double Center(Bitmap bitmap, Color color)
+        {
+            long sum = 0;
+            var count = 0;
+            for (var pixelY = 0; pixelY < bitmap.Height; pixelY += 2)
+                for (var pixelX = 0; pixelX < bitmap.Width; pixelX += 2)
+                    if (bitmap.GetPixel(pixelX, pixelY).ToArgb() == color.ToArgb())
+                    {
+                        sum += pixelX;
+                        count++;
+                    }
+            AssertTimeline(count > 0, $"Parallax dropped visible {color.Name} content or its mask.");
+            return (double)sum / count;
+        }
+        var view = stage.CaptureViewState();
+        var sourceState = stage.CreateShotPreviewSourceState();
+        using var start = Capture(settings);
+        var moved = settings with { X = 600 };
+        using var panned = Capture(moved);
+        var nearMovement = Center(start, colors[0]) - Center(panned, colors[0]);
+        var referenceMovement = Center(start, colors[1]) - Center(panned, colors[1]);
+        var farMovement = Center(start, colors[2]) - Center(panned, colors[2]);
+        AssertTimeline(nearMovement > referenceMovement + 20 && referenceMovement > farMovement + 20,
+            "Parallax did not move near layers faster and far layers slower.");
+        AssertTimeline(stage.CaptureViewState() == view
+            && stage.CreateShotPreviewSourceState() == sourceState
+            && scene.X.Take(3).All(value => value == 0)
+            && composition.ObjectPoses.All(pose => pose == SceneCompositionObjectPose.Identity),
+            "Camera parallax mutated authored geometry, composition metadata or editor view.");
+        var nearLayer = definition.Layers[0];
+        definition.SetLayerParallax(nearLayer.Id, -250, true);
+        AssertTimeline(stage.CreateShotPreviewSourceState() != sourceState,
+            "Editing layer depth left the camera monitor cache valid.");
+        definition.SetLayerParallax(nearLayer.Id, -500, false);
+        AssertTimeline(stage.CreateShotPreviewSourceState() != sourceState,
+            "Disabling layer participation left the camera monitor cache valid.");
+        definition.SetLayerParallax(nearLayer.Id, -500, true);
+        AssertTimeline(stage.CreateShotPreviewSourceState() == sourceState,
+            "Restoring layer depth and participation failed to restore the preview state.");
+        var selectedCamera = definition.AddShot("Selected", definition.FrameCount);
+        selectedCamera.SetSettingsAtFrame(0, settings with { X = -900, Z = -1800 });
+        stage.SetShotFrameDisplays([new(selectedCamera.Id, selectedCamera.Settings, true)]);
+        AssertTimeline(stage.TryCaptureShotPreview(moved, new Size(640, 360), out var explicitAnchorPreview, settings)
+            && explicitAnchorPreview is not null, "Explicit camera-anchor preview failed.");
+        using (explicitAnchorPreview)
+            for (var pixelY = 0; pixelY < panned.Height; pixelY += 4)
+                for (var pixelX = 0; pixelX < panned.Width; pixelX += 4)
+                    AssertTimeline(panned.GetPixel(pixelX, pixelY) == explicitAnchorPreview!.GetPixel(pixelX, pixelY),
+                        "Capturing another camera reused the selected camera's parallax anchor.");
+        stage.ClearShotFramingGizmo();
+        foreach (var mode in new[] { ShotWorkspacePreviewMode.LockCamera, ShotWorkspacePreviewMode.CameraView })
+        {
+            stage.SetShotFramingGizmo(moved, "Parallax");
+            stage.SetShotWorkspacePreviewMode(mode, reanchor: true);
+            using var before = new Bitmap(stage.Width, stage.Height);
+            using var after = new Bitmap(stage.Width, stage.Height);
+            using (var graphics = Graphics.FromImage(before)) RequireMethod(typeof(StageControl), "DrawGdiFrame").Invoke(stage, [graphics]);
+            using var otherCamera = Capture(settings with { X = -900, Z = -1500 });
+            using (var graphics = Graphics.FromImage(after)) RequireMethod(typeof(StageControl), "DrawGdiFrame").Invoke(stage, [graphics]);
+            for (var pixelY = 0; pixelY < before.Height; pixelY += 4)
+                for (var pixelX = 0; pixelX < before.Width; pixelX += 4)
+                    AssertTimeline(before.GetPixel(pixelX, pixelY) == after.GetPixel(pixelX, pixelY),
+                        $"{mode} flickered after a different camera-monitor projection.");
+        }
+        stage.SetShotFrameDisplays([new(selectedCamera.Id, selectedCamera.Settings, false)]);
+        stage.SetShotWorkspacePreviewMode(ShotWorkspacePreviewMode.CameraView);
+        AssertTimeline(!stage.CanPreviewPlanarShot && !stage.ShotWorkspacePreviewActive,
+            "A camera collection without a selected camera entered camera preview.");
+        Console.WriteLine("camera_parallax_rendering_regression=ok");
     }
 
     private static void AssertSceneShotPersistence(

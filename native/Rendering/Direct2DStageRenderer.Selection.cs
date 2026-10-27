@@ -27,19 +27,41 @@ internal sealed partial class Direct2DStageRenderer
             && !stage.DrawingObjectSelectionVisible)
         {
             ClearSelectionElementGeometry();
+            _mergedSelectionActive = false;
+            _mergedSelectionObjects.Clear();
             return;
         }
 
         _simpleSelectionHighlightEnabled = stage.SimpleSelectionHighlightEnabled;
         _selectionHighlightPulse = stage.SelectionHighlightPulse;
         PrepareSelectionElementGeometry(stage);
+        stage.Scene.PrepareSelectionOutlineBatch(stage.SelectedObjects, stage.Frame);
+        _mergedSelectionObjects.Clear();
+        if (stage.SelectedElements.Count >= MergedSelectionOutlineThreshold)
+        {
+            foreach (var hit in stage.SelectedElements)
+            {
+                if ((uint)hit.Key.ObjectIndex < stage.Scene.ObjectCount) _mergedSelectionObjects.Add(hit.Key.ObjectIndex);
+            }
+        }
+        else if (stage.SelectedObjects.Count >= MergedSelectionOutlineThreshold)
+        {
+            foreach (var index in stage.SelectedObjects)
+            {
+                if ((uint)index < stage.Scene.ObjectCount) _mergedSelectionObjects.Add(index);
+            }
+        }
+
+        _mergedSelectionActive = stage.SelectedObjects.Count >= MergedSelectionOutlineThreshold
+            || _mergedSelectionObjects.Count >= MergedSelectionOutlineThreshold;
+        ResetMergedSelectionBuilders();
 
         if (stage.SelectedElements.Count > 0)
         {
             var selectionTransform = _target!.Transform;
             try
             {
-                if (stage.SelectionDragPreviewActive)
+                if (stage.SelectionDragPreviewActive && !_recordingSelectionCommands)
                 {
                     var offset = stage.SelectionDragPreviewOffset;
                     var screenScale = VectorUnits.PixelsPerUnit * stage.Zoom;
@@ -54,7 +76,7 @@ internal sealed partial class Direct2DStageRenderer
                                  && stage.Scene.IsObjectActive(hit.Key.ObjectIndex, stage.Frame))
                              .Select(hit => hit.Key.ObjectIndex)
                              .Distinct()
-                             .Take(MaxSelectionOutlines))
+                             .Take(_mergedSelectionActive ? 8 : MaxSelectionOutlines))
                 {
                     DrawBezierSelectionContext(stage, objectIndex);
                 }
@@ -70,10 +92,32 @@ internal sealed partial class Direct2DStageRenderer
                         continue;
                     }
 
+                    if (_mergedSelectionActive)
+                    {
+                        if (TryAppendMergedElementOutline(stage, hit))
+                        {
+                            drawnElements++;
+                            if (drawnElements >= MaxSelectionOutlines) break;
+                            continue;
+                        }
+
+                        if (!TryConsumeMergedSelectionFallback())
+                        {
+                            // The merged overlay already represents the whole selection;
+                            // stop paying per-element drawing once the fallback budget is
+                            // exhausted instead of degrading the frame.
+                            drawnElements++;
+                            if (drawnElements >= MaxSelectionOutlines) break;
+                            continue;
+                        }
+                    }
+
                     DrawElementSelectionOutline(stage, hit, primary: false);
                     drawnElements++;
                     if (drawnElements >= MaxSelectionOutlines) break;
                 }
+
+                if (_mergedSelectionActive) DrawMergedSelectionGeometry();
 
                 var primaryElement = stage.SelectedElement;
                 if (primaryElement.IsValid
@@ -121,10 +165,30 @@ internal sealed partial class Direct2DStageRenderer
             if (stage.SuppressFillEdgeBezierSelectionOutline(index)) continue;
             if (HasSelectedBoundaryElementFor(stage, index)) continue;
             if (!stage.Scene.IsObjectActive(index, stage.Frame)) continue;
+            if (_mergedSelectionActive)
+            {
+                var shape = stage.Scene.ShapeKind.Length > index ? stage.Scene.ShapeKind[index] : ShapeKind.Rectangle;
+                if (TryAppendMergedObjectOutline(stage, index, shape))
+                {
+                    drawn++;
+                    if (drawn >= MaxSelectionOutlines) break;
+                    continue;
+                }
+
+                if (!TryConsumeMergedSelectionFallback())
+                {
+                    drawn++;
+                    if (drawn >= MaxSelectionOutlines) break;
+                    continue;
+                }
+            }
+
             DrawSelectionOutline(stage, index, primary: false);
             drawn++;
             if (drawn >= MaxSelectionOutlines) break;
         }
+
+        if (_mergedSelectionActive) DrawMergedSelectionGeometry();
 
         var primary = stage.SelectedObject;
         if (primary >= 0

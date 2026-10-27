@@ -66,7 +66,7 @@ internal sealed class SpatialPivotKindChangedEventArgs(SpatialPivotKind kind) : 
 
 internal sealed class SpatialTransformPanel : UserControl
 {
-    private const int PanelHeight = 240;
+    private const int PanelHeight = 270;
     private const float FloatingSpringStiffness = 260f;
     private const float FloatingSpringDamping = 22f;
     private const float FloatingPositionEpsilon = 0.0005f;
@@ -184,7 +184,7 @@ internal sealed class SpatialTransformPanel : UserControl
         _layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 18));
         for (var index = 0; index < 5; index++)
         {
-            _layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+            _layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         }
 
         var axisX = AxisLabel("X", "X axis");
@@ -246,6 +246,7 @@ internal sealed class SpatialTransformPanel : UserControl
         foreach (var input in _inputs)
         {
             Theme.StyleNumeric(input);
+            input.Font = Theme.UiFont(11f);
             input.ValueChanged += HandleValueChanged;
             input.InteractionStarted += HandleInteractionStarted;
             input.InteractionCompleted += HandleInteractionCompleted;
@@ -718,18 +719,10 @@ internal sealed class SpatialTransformPanel : UserControl
 
     private static Label RowLabel(string text)
     {
-        return new Label
-        {
-            Text = text,
-            Dock = DockStyle.Fill,
-            Margin = new Padding(0, 1, 4, 1),
-            ForeColor = Theme.Muted,
-            BackColor = Color.Transparent,
-            Font = Theme.UiFont(8.5f),
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true,
-            AccessibleRole = AccessibleRole.StaticText
-        };
+        var label = InspectorModuleStyle.CreateFieldLabel(text);
+        label.Margin = new Padding(0, 2, 4, 2);
+        label.AccessibleRole = AccessibleRole.StaticText;
+        return label;
     }
 
     private static ModernNumericUpDown PositionInput(string accessibleName)
@@ -787,7 +780,7 @@ internal sealed class SpatialTransformPanel : UserControl
         return new ModernNumericUpDown
         {
             Dock = DockStyle.Fill,
-            Margin = new Padding(2, 1, 2, 1),
+            Margin = new Padding(2, 2, 2, 2),
             Minimum = minimum,
             Maximum = maximum,
             Increment = increment,

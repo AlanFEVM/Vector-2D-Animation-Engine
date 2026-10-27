@@ -2,6 +2,59 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "0.2.7",
+      "releaseDate": "2026-10-27",
+      "showInApplication": true,
+      "locales": {
+        "en": {
+          "title": "Version 0.2.7",
+          "summary": "Safer project saves and distribution updates, with clearer tween editing.",
+          "sections": [
+            {
+              "heading": "Project save recovery",
+              "items": [
+                "Image and SVG source bindings are restored when package saving fails, allowing the current edits to be saved again after the file or disk problem is resolved.",
+                "A failed folder Save As keeps the original .v2d save target and unsaved state instead of switching subsequent saves to an internal workspace."
+              ]
+            },
+            {
+              "heading": "Editing and distribution reliability",
+              "items": [
+                "Selecting a layer or light tween reveals its curve in Properties; camera tween curves remain in Camera.",
+                "Convert to Symbol preserves local stacking and keeps the new symbol behind existing nested instances.",
+                "Selection outlines update when covering paint switches between opaque and transparent.",
+                "Release backup cleanup failures no longer roll back a verified new package; incomplete rollback preserves the backup for recovery.",
+                "The distribution launcher rejects missing or empty runtime host files so damaged installations enter the existing repair flow."
+              ]
+            }
+          ]
+        },
+        "zh-CN": {
+          "title": "版本 0.2.7",
+          "summary": "强化工程保存与发行更新安全，并让补间曲线编辑更清晰。",
+          "sections": [
+            {
+              "heading": "工程保存恢复",
+              "items": [
+                "单文件工程保存失败后恢复图片和 SVG 的资源路径；解除文件占用或修复磁盘问题后，可继续保存当前编辑。",
+                "另存为文件夹工程失败时，保留原 .v2d 保存目标与未保存状态，避免后续保存误写内部工作区。"
+              ]
+            },
+            {
+              "heading": "编辑与发行可靠性",
+              "items": [
+                "选中图层或灯光补间时，在“属性”显示曲线；相机补间曲线仍位于“相机”。",
+                "转换为元件保留本地图形的叠放顺序，并将新元件保留在已有嵌套实例后方。",
+                "遮挡填色在不透明与透明间切换时，选区轮廓及时更新。",
+                "发布备份清理失败不再回滚已验证的新包；回滚未完成时保留旧产物备份供恢复。",
+                "正式启动器会拒绝缺失或为空的运行时宿主文件，让损坏安装进入原有修复流程。"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
       "version": "0.2.6",
       "releaseDate": "2026-09-30",
       "showInApplication": true,

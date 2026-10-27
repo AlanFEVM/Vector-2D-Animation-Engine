@@ -15,13 +15,15 @@ internal static partial class Benchmark
         RunVaultPresentationRegression();
         using (var form = new MainForm())
         {
+            var workspaceTabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+            workspaceTabs.SelectedView = WorkspaceView.BasicDrawing;
             var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
             var tabs = (FlowLayoutPanel)RequireField(typeof(MainForm), "_drawingObjectTabs").GetValue(form)!;
             var refresh = RequireMethod(typeof(MainForm), "BuildDrawingObjectTabs");
             var activeIndex = RequireField(typeof(MainForm), "_activeDrawingObjectIndex");
             activeIndex.SetValue(form, 0);
             refresh.Invoke(form, null);
-            var tab = (Button)tabs.Controls[0];
+            var tab = (DrawingScopeButton)tabs.Controls[0];
             var add = tabs.Controls[1];
             var tabHandle = tab.Handle;
             var addHandle = add.Handle;
@@ -39,16 +41,26 @@ internal static partial class Benchmark
             activeIndex.SetValue(form, project.DrawingObjects.Count - 1);
             refresh.Invoke(form, null);
             AssertTimeline(ReferenceEquals(tabs.Controls[0], tab) && Equals(tab.Tag, second.Id)
-                && tab.Text == second.Name && tab.AccessibleName == second.Name && tab.Width == 132,
+                && tab.Text == second.Name && tab.AccessibleName == second.Name
+                && tab.Width == tab.PreferredScopeWidth && tab.CurrentScope == !second.IsOpenCanvas,
                 "Reused symbol tab did not follow the active object or its presentation.");
             AssertTimeline(project.TryRemoveDrawingObject(project.DrawingObjects[0].Id, out _),
                 "UI refresh fixture could not remove the preceding symbol.");
             activeIndex.SetValue(form, 0);
             refresh.Invoke(form, null);
             RequireMethod(typeof(Control), "OnClick").Invoke(tab, [EventArgs.Empty]);
-            AssertTimeline((int)activeIndex.GetValue(form)! == 0 && Equals(tab.Tag, second.Id)
+            var openCanvas = project.DrawingObjects[(int)activeIndex.GetValue(form)!];
+            AssertTimeline(openCanvas.IsOpenCanvas && Equals(tab.Tag, openCanvas.Id) && !tab.CurrentScope
+                && ReferenceEquals(tabs.Controls[0], tab) && ReferenceEquals(tabs.Controls[1], add)
+                && tab.Handle == tabHandle && add.Handle == addHandle
                 && additions == 0 && removals == 0,
-                "Reused symbol tab retained a stale click index or accumulated controls.");
+                "Reused symbol scope button did not switch to the open canvas without recreating controls.");
+            RequireMethod(typeof(Control), "OnClick").Invoke(tab, [EventArgs.Empty]);
+            AssertTimeline((int)activeIndex.GetValue(form)! == 0 && Equals(tab.Tag, second.Id) && tab.CurrentScope
+                && ReferenceEquals(tabs.Controls[0], tab) && ReferenceEquals(tabs.Controls[1], add)
+                && tab.Handle == tabHandle && add.Handle == addHandle
+                && additions == 0 && removals == 0,
+                "Reused symbol scope button did not return to the remembered symbol without recreating controls.");
         }
 
         using (var panel = new SceneLightingPanel())
@@ -353,7 +365,7 @@ internal static partial class Benchmark
                 {
                     AssertTimeline(!Descendants(picker).OfType<Button>().Any(button => button.Text is "Apply" or "Cancel"),
                         "A color dialog still shows confirmation buttons.");
-                    var hex = (TextBox)RequireField(typeof(ProfessionalColorPickerDialog), "_hex").GetValue(picker)!;
+                    var hex = (ModernTextInput)RequireField(typeof(ProfessionalColorPickerDialog), "_hex").GetValue(picker)!;
                     hex.Text = "#123456";
                     hex.Text = "#345678";
                     check(picker);
@@ -392,6 +404,8 @@ internal static partial class Benchmark
         var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
         var basic = (ThemedScrollPanel)RequireField(typeof(MainForm), "_basicInspectorPage").GetValue(form)!;
         var scene = (ThemedScrollPanel)RequireField(typeof(MainForm), "_sceneEditPage").GetValue(form)!;
+        var appearance = (ThemedScrollPanel)RequireField(typeof(MainForm), "_colorInspectorPage").GetValue(form)!;
+        var tools = (ThemedScrollPanel)RequireField(typeof(MainForm), "_toolInspectorPage").GetValue(form)!;
         var sceneEditor = (SceneEditorPanel)RequireField(typeof(MainForm), "_sceneEditorPanel").GetValue(form)!;
         var playback = (PlaybackSettingsPanel)RequireField(typeof(MainForm), "_playbackSettings").GetValue(form)!;
         var material = (MaterialEditorPanel)RequireField(typeof(MainForm), "_materialEditor").GetValue(form)!;
@@ -412,8 +426,10 @@ internal static partial class Benchmark
             RequireMethod(typeof(MainForm), "AddTimelineMaskLayer").Invoke(form, null);
             Application.DoEvents();
             AssertTimeline(project.Scenes[0].Layers.Any(layer => layer.Kind == SceneLayerKind.Mask)
-                && ReferenceEquals(material.Parent, scene.Content) && ReferenceEquals(image.Parent, scene.Content),
-                "Mask editing did not move drawing components to the scene inspector.");
+                && ReferenceEquals(material.Parent, appearance.Content) && ReferenceEquals(image.Parent, basic.Content)
+                && ReferenceEquals(shape.Parent, tools.Content),
+                "Mask editing did not preserve the appearance, properties and tool category hosts.");
+            RequireMethod(typeof(MainForm), "HandleInspectorCategoryShortcut").Invoke(form, [Keys.Control | Keys.Alt | Keys.D6]);
             foreach (var tool in new[] { ToolMode.Polygon, ToolMode.Star, ToolMode.Pencil,
                 ToolMode.MixingBrush, ToolMode.Text, ToolMode.Eraser })
             {
@@ -433,8 +449,9 @@ internal static partial class Benchmark
             Application.DoEvents();
             tabs.SelectedView = WorkspaceView.BasicDrawing;
             activate.Invoke(form, [ToolMode.Polygon]);
+            RequireMethod(typeof(MainForm), "HandleInspectorCategoryShortcut").Invoke(form, [Keys.Control | Keys.Alt | Keys.D6]);
             Application.DoEvents();
-            AssertTimeline(ReferenceEquals(material.Parent, basic.Content) && ReferenceEquals(shape.Parent, basic.Content)
+            AssertTimeline(ReferenceEquals(material.Parent, appearance.Content) && ReferenceEquals(shape.Parent, tools.Content)
                 && ReferenceEquals(image.Parent, basic.Content) && shape.Visible,
                 "Drawing components did not return after switching workspaces.");
         }

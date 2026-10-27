@@ -40,11 +40,11 @@ internal sealed class SpatialMaterialOverrideChangedEventArgs(
 
 internal sealed class SpatialMaterialPanel : UserControl
 {
-    private const int PanelHeight = 286;
+    private const int PanelHeight = 368;
 
     private readonly ModernToggleSwitch _useOverride = new();
     private readonly ComboBox _preset = new() { DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly Label _mixedStatus = new();
+    private readonly Label _mixedStatus = InspectorModuleStyle.CreateTextLabel();
     private readonly ModernSlider _transmission = PercentSlider("Material transmission");
     private readonly ModernSlider _reflectivity = PercentSlider("Material reflectivity");
     private readonly ModernSlider _metallic = PercentSlider("Material metallic amount");
@@ -177,15 +177,16 @@ internal sealed class SpatialMaterialPanel : UserControl
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 1,
-            RowCount = 8,
+            RowCount = 9,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
         for (var index = 0; index < 4; index++) root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeightComfortable));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
         Controls.Add(root);
 
         root.Controls.Add(BuildHeader(), 0, 0);
@@ -202,7 +203,12 @@ internal sealed class SpatialMaterialPanel : UserControl
         root.Controls.Add(SliderRow("Metallic", _metallic, _metallicValue), 0, 4);
         root.Controls.Add(SliderRow("Roughness", _roughness, _roughnessValue), 0, 5);
         root.Controls.Add(IorRow(), 0, 6);
-        root.Controls.Add(ShadowRow(), 0, 7);
+        _castsShadows.Dock = DockStyle.Fill;
+        _castsShadows.AccessibleName = "Material casts shadows";
+        _receivesShadows.Dock = DockStyle.Fill;
+        _receivesShadows.AccessibleName = "Material receives shadows";
+        root.Controls.Add(_castsShadows, 0, 7);
+        root.Controls.Add(_receivesShadows, 0, 8);
     }
 
     private Control BuildHeader()
@@ -211,23 +217,30 @@ internal sealed class SpatialMaterialPanel : UserControl
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
-            ColumnCount = 3,
+            ColumnCount = 2,
+            RowCount = 3,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        row.Controls.Add(InspectorModuleStyle.CreateTitle("3D Surface"), 0, 0);
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
+        row.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        row.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        row.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        var title = InspectorModuleStyle.CreateTitle("3D Surface");
+        row.Controls.Add(title, 0, 0);
+        row.SetColumnSpan(title, 2);
         _preset.Dock = DockStyle.Fill;
         _preset.Margin = new Padding(2, 2, 4, 2);
         _preset.AccessibleName = "3D material preset";
-        Theme.StyleComboBox(_preset);
+        InspectorModuleStyle.StyleField(_preset);
         _useOverride.Dock = DockStyle.Fill;
         _useOverride.Margin = new Padding(2, 1, 0, 1);
         _useOverride.AccessibleName = "Use material override";
-        row.Controls.Add(_preset, 1, 0);
-        row.Controls.Add(_useOverride, 2, 0);
+        row.Controls.Add(_useOverride, 0, 1);
+        row.SetColumnSpan(_useOverride, 2);
+        row.Controls.Add(FieldLabel("Preset"), 0, 2);
+        row.Controls.Add(_preset, 1, 2);
         return row;
     }
 
@@ -264,36 +277,13 @@ internal sealed class SpatialMaterialPanel : UserControl
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
         row.Controls.Add(FieldLabel("IOR"), 0, 0);
         _indexOfRefraction.Dock = DockStyle.Fill;
         _indexOfRefraction.Margin = new Padding(2, 3, 0, 3);
-        Theme.StyleNumeric(_indexOfRefraction);
+        InspectorModuleStyle.StyleField(_indexOfRefraction);
         row.Controls.Add(_indexOfRefraction, 1, 0);
-        return row;
-    }
-
-    private Control ShadowRow()
-    {
-        var row = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 2,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        _castsShadows.Dock = DockStyle.Fill;
-        _castsShadows.Margin = new Padding(0, 2, 4, 2);
-        _castsShadows.AccessibleName = "Material casts shadows";
-        _receivesShadows.Dock = DockStyle.Fill;
-        _receivesShadows.Margin = new Padding(4, 2, 0, 2);
-        _receivesShadows.AccessibleName = "Material receives shadows";
-        row.Controls.Add(_castsShadows, 0, 0);
-        row.Controls.Add(_receivesShadows, 1, 0);
         return row;
     }
 
@@ -503,17 +493,7 @@ internal sealed class SpatialMaterialPanel : UserControl
         AccessibleRole = AccessibleRole.StaticText
     };
 
-    private static Label FieldLabel(string text) => new()
-    {
-        Text = text,
-        Dock = DockStyle.Fill,
-        ForeColor = Theme.Muted,
-        BackColor = Color.Transparent,
-        Font = Theme.UiFont(8.5f),
-        TextAlign = ContentAlignment.MiddleLeft,
-        AutoEllipsis = true,
-        Margin = new Padding(0, 2, 4, 2)
-    };
+    private static Label FieldLabel(string text) => InspectorModuleStyle.CreateFieldLabel(text);
 
     private static int Percent(float value) => (int)Math.Clamp(MathF.Round(value * 1000f), 0f, 1000f);
 

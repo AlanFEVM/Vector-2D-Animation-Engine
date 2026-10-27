@@ -229,7 +229,7 @@ internal static partial class Benchmark
                     || !preparedSurface.PremultipliedPixels.AsSpan().SequenceEqual(previewSurface.PremultipliedPixels))
                 {
                     throw new InvalidOperationException(
-                        "Background playback preparation did not match the displayed optical preview.");
+                        $"Background playback preparation did not match the displayed optical preview: prepared={preparedSurface.PixelWidth}x{preparedSurface.PixelHeight}, preview={previewSurface.PixelWidth}x{previewSurface.PixelHeight}, playback={preparationStage.Reference3DPlaybackActive}, lod={preparationStage.LastReference3DOpticalRasterLod}.");
                 }
                 stage.SetReference3DPlaybackActive(false);
             }
@@ -1043,15 +1043,16 @@ internal static partial class Benchmark
                 var sentinel = Color.FromArgb(255, 13, 17, 23);
                 var drawSurface = typeof(StageControl).GetMethod(
                     "DrawReference3DOpticalSurface",
-                    System.Reflection.BindingFlags.Static
+                    System.Reflection.BindingFlags.Instance
                         | System.Reflection.BindingFlags.NonPublic)
                     ?? throw new InvalidOperationException(
                         "The optical-surface GDI draw entry point could not be located.");
                 using var target = new Bitmap(15, 12);
+                using var opticalStage = new StageControl(new VectorScene());
                 using (var graphics = Graphics.FromImage(target))
                 {
                     graphics.Clear(sentinel);
-                    drawSurface.Invoke(null, [graphics, surface]);
+                    drawSurface.Invoke(opticalStage, [graphics, surface]);
                 }
 
                 AssertPixel(bounds.Left, bounds.Top, colors[0], "top-left");
@@ -1061,7 +1062,7 @@ internal static partial class Benchmark
                 AssertPixel(bounds.Left - 1, bounds.Top, sentinel, "left exterior");
                 AssertPixel(bounds.Right, bounds.Bottom - 1, sentinel, "right exterior");
 
-                AssertReducedLineSurfaceAntialiasing(drawSurface);
+                AssertReducedLineSurfaceAntialiasing(drawSurface, opticalStage);
 
                 using var invalidBitmap = new Bitmap(2, 2);
                 var rejectedMismatchedPixels = false;
@@ -1089,7 +1090,7 @@ internal static partial class Benchmark
                 }
 
                 static void AssertReducedLineSurfaceAntialiasing(
-                    System.Reflection.MethodInfo drawSurface)
+                    System.Reflection.MethodInfo drawSurface, StageControl opticalStage)
                 {
                     var lineColor = Color.FromArgb(255, 36, 210, 176);
                     using var lineSource = new Bitmap(
@@ -1118,7 +1119,7 @@ internal static partial class Benchmark
                     using (var graphics = Graphics.FromImage(lineTarget))
                     {
                         graphics.Clear(Color.White);
-                        drawSurface.Invoke(null, [graphics, lineSurface]);
+                        drawSurface.Invoke(opticalStage, [graphics, lineSurface]);
                     }
 
                     var hasLineColor = false;
