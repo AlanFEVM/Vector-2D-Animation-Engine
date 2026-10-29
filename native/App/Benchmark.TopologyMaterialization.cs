@@ -2280,6 +2280,32 @@ internal static partial class Benchmark
 
     private static void RunFillBoundaryOverlapNormalizationRegression()
     {
+        // A self-crossing bow tie contains two filled faces. Retopology must
+        // split it even though the even-odd rendered area stays identical.
+        var crossedScene = new VectorScene();
+        crossedScene.CreateEmpty();
+        var crossed = crossedScene.AddPathObjectContours(0,
+            [[new PointF(0, 0), new PointF(200, 200), new PointF(0, 200), new PointF(240, 0)]],
+            0, Color.Teal, Color.Transparent, 4);
+        var distant = crossedScene.AddPathObjectContours(0,
+            [[new PointF(1000, 0), new PointF(1100, 0), new PointF(1100, 100), new PointF(1000, 100)]],
+            0, Color.Blue, Color.Transparent, 4);
+        if (!crossedScene.TryConvertFillToBezierPath(crossed))
+            throw new InvalidOperationException("Could not prepare a self-crossing fill for retopology.");
+        var remoteContours = crossedScene.GetObjectBoundaryContours(distant);
+        var crossedReference = crossedScene.GetObjectBoundaryContours(crossed);
+        if (!crossedScene.NormalizeFillBoundaryOverlaps(crossed, crossedReference)
+            || !crossedScene.TryGetPathBezierWorldContours(crossed, out var faces)
+            || faces.Length != 2
+            || faces.Any(face => !face.Any(node =>
+                PointsWithin(node.Anchor, new PointF(1200f / 11f, 1200f / 11f), 1f)))
+            || !crossedScene.FillContainsPoint(crossed, new PointF(100, 25))
+            || !crossedScene.FillContainsPoint(crossed, new PointF(100, 175))
+            || crossedScene.NormalizeFillBoundaryOverlaps(crossed, crossedScene.GetObjectBoundaryContours(crossed))
+            || !remoteContours.Zip(crossedScene.GetObjectBoundaryContours(distant))
+                .All(pair => pair.First.SequenceEqual(pair.Second)))
+            throw new InvalidOperationException("Local fill retopology lost a face, was not idempotent, or changed a distant object.");
+
         static PathBezierNode[] CircleContour(float centerX, float radius)
         {
             var handle = radius * 0.55228475f;

@@ -6732,6 +6732,7 @@ internal static partial class Benchmark
             partCurve.Control1, partCurve.Control2, partCurve.End, 10, Color.Transparent, Color.Black, 6);
         editorScene.SetSvgStrokeStyle(editorPartial, editorScene.GetSvgStrokeStyle(stroke)!.Value);
         editorScene.CompleteDeferredBuild();
+        var partialArcFixture = editorScene.CreateSnapshot();
         var setObject = RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]);
         setObject.Invoke(form, [editorPartial, false]);
         RequireField(typeof(MainForm), "_activeHandle").SetValue(form, EditHandleKind.None);
@@ -6752,6 +6753,11 @@ internal static partial class Benchmark
         RequireMethod(typeof(MainForm), "FinishPointerInteraction").Invoke(form, null);
         var arcWorld = new PointF((partCurve.Start.X + partCurve.End.X) / 2,
             (partCurve.Start.Y + 3 * partCurve.Control1.Y + 3 * partCurve.Control2.Y + partCurve.End.Y) / 8);
+        // The preceding edit now commits topology and can compact/split strokes.
+        // Start this independent arc-drag check from its original fixture instead
+        // of reusing object indices from before that topology transaction.
+        editorScene.RestoreSnapshot(partialArcFixture);
+        setObject.Invoke(form, [editorPartial, false]);
         var arcScreen = Point.Round(stage.WorldToScreen(arcWorld.X, arcWorld.Y));
         arcWorld = stage.ScreenToWorld(arcScreen);
         RequireField(typeof(MainForm), "_startWorld").SetValue(form, arcWorld);
@@ -6772,6 +6778,8 @@ internal static partial class Benchmark
             "Returning the editor arc drag accumulated fill deformation.");
         RequireMethod(typeof(MainForm), "CancelArcDrag").Invoke(form, [true]);
         RequireMethod(typeof(MainForm), "FinishPointerInteraction").Invoke(form, null);
+        editorScene.RestoreSnapshot(partialArcFixture);
+        setObject.Invoke(form, [editorPartial, false]);
         activate.Invoke(form, [ToolMode.Fill]);
         stage.SetVisibleWorldWidth(16000);
         var screen = Point.Round(stage.WorldToScreen(nearStroke.X, nearStroke.Y));

@@ -342,6 +342,30 @@ internal sealed partial class MainForm : Form
             && e.Button == MouseButtons.Left
             && !_forceMarqueeOnPointerDown
             && !_additiveSelection
+            && TryFindLineEndpointHit(e.Location, out var endpointLine, out var endpointHandle))
+        {
+            _stage.ClearHoveredLineElement();
+            if (endpointLine.Key.Kind == DrawingElementKind.BoundaryStroke)
+            {
+                // Boundary anchors reshape their owning fill. The ordinary stroke
+                // handle path materializes a detached line and leaves the fill behind.
+                SetSelection(endpointLine.Key.ObjectIndex, deferPresentation: true);
+                UpdateFillEdgeBezierOverlay();
+                BeginFillEdgeBezierPointer(e);
+                return;
+            }
+            SetSelection(StageControl.ResolvePresentedBezierSourceHit(endpointLine), deferPresentation: true);
+            _activeHandle = endpointHandle;
+            CaptureEditStart(_selectedObject);
+            _stage.InvalidateOverlay();
+            UpdateInteractionCursor(e.Location);
+            return;
+        }
+
+        if (_tool == ToolMode.Select
+            && e.Button == MouseButtons.Left
+            && !_forceMarqueeOnPointerDown
+            && !_additiveSelection
             && TryResolveUnselectedFillEdgeCandidate(e.Location, out var candObj, out var candPart))
         {
             // Hovering an unselected fill shape's edge: defer the decision until the
@@ -2459,6 +2483,7 @@ internal sealed partial class MainForm : Form
             _scene.CompleteDeferredBuild();
             if (session.BoundaryGeometryChanged)
             {
+                ApplySelectedFillOverwriteAfterGeometryEdit();
                 MergeSelectedFillsAfterGeometryEdit(connectNearby: true);
             }
             session.Snapshot.DetachSharedGeometry();
@@ -2953,6 +2978,8 @@ internal sealed partial class MainForm : Form
             SetSelection(segmentHit);
         }
 
+        ApplySelectedFillOverwriteAfterGeometryEdit();
+        MergeSelectedFillsAfterGeometryEdit(connectNearby: true);
         UpdateFillEdgeBezierOverlay();
         _hierarchyPanel.RefreshScene();
         UpdateInspector();

@@ -3762,7 +3762,11 @@ internal sealed partial class MainForm : Form
         var hierarchyChanged = session?.HierarchyDirty == true;
         var inspectorChanged = session?.InspectorDirty == true;
         if (mergeFills) hierarchyChanged |= MergeSelectedFillsAfterGeometryEdit(connectNearby: true);
-        if (mergeLines) hierarchyChanged |= MergeCompatibleLinesAfterDrawingOperation();
+        if (mergeLines)
+        {
+            hierarchyChanged |= MergeCompatibleLinesAfterDrawingOperation(LocalLineMergeScope(_selectedObjects));
+            hierarchyChanged |= MaterializeEditedStrokeIntersections(_selectedObjects.ToArray());
+        }
         if (hierarchyChanged) _hierarchyPanel.RefreshScene();
         if (hierarchyChanged || inspectorChanged) UpdateInspector();
         if (hierarchyChanged || inspectorChanged) _stage.Invalidate();
@@ -4609,7 +4613,8 @@ internal sealed partial class MainForm : Form
         if (pasted.Count > 0)
         {
             MergeSelectedFillsAfterGeometryEdit(connectNearby: true);
-            MergeCompatibleLinesAfterDrawingOperation();
+            MergeCompatibleLinesAfterDrawingOperation(LocalLineMergeScope(_selectedObjects));
+            MaterializeEditedStrokeIntersections(_selectedObjects.ToArray());
         }
         if (pastedInstances.Count > 0)
         {
@@ -4687,7 +4692,8 @@ internal sealed partial class MainForm : Form
         SetSelection(targets);
         ApplySelectedFillOverwriteAfterGeometryEdit();
         MergeSelectedFillsAfterGeometryEdit(connectNearby: true);
-        MergeCompatibleLinesAfterDrawingOperation();
+        MergeCompatibleLinesAfterDrawingOperation(LocalLineMergeScope(_selectedObjects));
+        MaterializeEditedStrokeIntersections(_selectedObjects.ToArray());
         PushUndoSnapshot(snapshot);
         _hierarchyPanel.RefreshScene();
         UpdateInspector();

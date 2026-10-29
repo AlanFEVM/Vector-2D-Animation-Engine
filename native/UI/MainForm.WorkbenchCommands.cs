@@ -879,6 +879,14 @@ internal sealed partial class MainForm : Form
 
         if (_tool == ToolMode.Select)
         {
+            if (_activeHandle is EditHandleKind.LineStart or EditHandleKind.LineEnd
+                || _stage.HitTestHoveredLineHandle(screen) is EditHandleKind.LineStart or EditHandleKind.LineEnd)
+            {
+                ClearFillHoverPreview();
+                _stage.Cursor = Cursors.Cross;
+                return;
+            }
+
             var fillEdgeHit = _stage.HitTestFillEdgeBezierOverlay(screen);
             var lineHit = fillEdgeHit.IsValid && fillEdgeHit.Handle == EditHandleKind.None
                 ? _scene.HitTestElement(_stage.ScreenToWorld(screen), _frame, SelectionToleranceWorld())

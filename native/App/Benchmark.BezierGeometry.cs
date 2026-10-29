@@ -845,11 +845,11 @@ internal static partial class Benchmark
         var shortEndHit = fillStage.HitTestFillEdgeBezierOverlay(
             Point.Round(fillStage.WorldToScreen(shortSegment.End.X, shortSegment.End.Y)));
         if (shortStartHit.Handle != EditHandleKind.LineStart
-            || shortControlHit.Handle != EditHandleKind.None
+            || shortControlHit.Handle != EditHandleKind.LineStart
             || shortEndHit.Handle != EditHandleKind.LineEnd)
         {
             throw new InvalidOperationException(
-                $"A short straight segment lost endpoint handles or intercepted its body with a hidden control: start={shortStartHit}, body={shortControlHit}, end={shortEndHit}.");
+                $"A short straight segment lost endpoint priority in overlapping handle areas: start={shortStartHit}, body={shortControlHit}, end={shortEndHit}.");
         }
         fillStage.ClearFillEdgeBezierOverlay();
 
