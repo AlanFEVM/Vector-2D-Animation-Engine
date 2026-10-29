@@ -626,7 +626,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
         string? CreatedDrawingObjectId = null,
         long MemoryBytes = 0,
         MarqueeMaterializationSession? MarqueeSession = null,
-        VectorSceneSnapshot? MarqueeSnapshot = null);
+        VectorSceneSnapshot? MarqueeSnapshot = null,
+        IEditableSnapPointOwner? SnapPointOwner = null);
 
     private sealed record SceneTimelineUndoEntry(
         SceneDefinition Scene,
@@ -660,6 +661,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         public required TweenCurveEditTarget Target { get; init; }
         public required TimelineSelectionSnapshot TimelineSelection { get; init; }
         public VectorSceneSnapshot? DrawingSnapshot { get; init; }
+        public SceneLayerSnapshot? SceneLayerSnapshot { get; init; }
         public AnimationTimelineSnapshot? SceneTimelineSnapshot { get; init; }
         public DrawingObjectInstanceDefinition[]? InstanceSnapshot { get; init; }
         public SceneLightDefinition[]? LightSnapshot { get; init; }
@@ -1065,7 +1067,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
             var drawingTargets = SelectedActiveDrawingObjectIndices();
             var selectedInstances = SelectedSceneInstances();
-            var breakApartWorkspace = IsDrawingWorkspaceContext;
+            var breakApartWorkspace = IsDrawingWorkspaceContext || IsSceneDrawingAvailable();
             var hasBreakApartTarget = selectedInstances.Count > 0 || drawingTargets.Length > 0;
             var canBreakInstances = breakApartWorkspace
                 && !DrawingToolsBlocked()
@@ -1590,7 +1592,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private void UpdateEraserOptionsPresentation()
     {
         var visible = _tool == ToolMode.Eraser
-            && (IsDrawingWorkspaceContext || IsSceneMaskEditing());
+            && (IsDrawingWorkspaceContext || IsSceneMaskEditing() || IsSceneDrawingContext());
         _eraserOptionsStrip.Visible = visible;
         if (visible) _eraserOptionsStrip.BringToFront();
         SyncEraserOptions();
@@ -1687,14 +1689,15 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
     private bool CanImportSvg()
     {
-        var layer = _scene.ActiveLayer;
+        var source = IsSceneDrawingAvailable() ? ActiveScene()!.DrawingScene : _scene;
+        var layer = source.ActiveLayer;
         var editableDrawingSurface = IsDrawingWorkspaceContext
-            || IsSceneMaskEditing();
+            || IsSceneMaskEditing() || IsSceneDrawingAvailable();
         return editableDrawingSurface
             && !DrawingToolsBlocked()
-            && (IsSceneMaskEditing() || ActiveDrawingObject() is not null)
-            && (uint)layer < _scene.LayerCount
-            && _scene.GetLayerKind(layer) == DrawingLayerKind.Drawing;
+            && (IsSceneMaskEditing() || IsSceneDrawingAvailable() || ActiveDrawingObject() is not null)
+            && (uint)layer < source.LayerCount
+            && source.GetLayerKind(layer) == DrawingLayerKind.Drawing;
     }
 
     private void ImportSvgFromDialog()
@@ -1717,6 +1720,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
     private void ImportSharedSvgFile(string fileName, PointF? center, string? sharedAssetId)
     {
+        EnsureSceneDrawingSurface();
         if (!CanImportSvg()) return;
         Cursor = Cursors.WaitCursor;
         VectorSceneSnapshot? snapshot = null;
@@ -1782,7 +1786,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
                 UpdateInspector();
                 _stage.Invalidate();
             }
-            if (IsSceneMaskEditing()) RebuildDrawingObjectUnderlay();
+            if (IsSceneMaskEditing() || IsSceneDrawingContext()) RebuildDrawingObjectUnderlay();
             AppLog.Info($"Imported SVG as one opaque object: {fileName}");
         }
         catch (Exception exception)
@@ -2797,10 +2801,27 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
     private bool IsSceneCompositionContext() => IsSceneBuildingContext() && !IsSceneMaskEditing();
 
+    private bool IsSceneDrawingContext() => IsSceneCompositionContext()
+        && ReferenceEquals(_scene, ActiveScene()?.DrawingScene);
+
+    private bool IsEditableDrawingContext() => !IsSceneCompositionContext() || IsSceneDrawingContext();
+
+    private bool IsSceneDrawingAvailable() => IsSceneCompositionContext()
+        && !IsShotDirectorContext() && IsScene2DFrontView();
+
+    private bool ShouldUseSceneDrawingSurface(SceneDefinition? scene) => scene is not null
+        && !IsShotDirectorContext() && scene.ActiveMaskScene() is null
+        && ActiveSceneViewDimension() == SceneDimension.TwoD
+        && _stage.Reference2DViewDirection == ReferenceViewDirection.Front
+        && (scene.DrawingScene.ObjectCount > 0 || ReferenceEquals(_scene, scene.DrawingScene));
+
     private bool DrawingToolsBlocked()
     {
-        return IsSceneCompositionContext()
-            || _scene.IsLayerEffectivelyLocked(_scene.ActiveLayer);
+        var source = IsSceneDrawingAvailable() ? ActiveScene()!.DrawingScene : _scene;
+        return !IsEditableDrawingContext() && !IsSceneDrawingAvailable()
+            || IsShotDirectorContext()
+            || IsSceneDrawingContext() && IsSceneReferenceView()
+            || source.IsLayerEffectivelyLocked(source.ActiveLayer);
     }
 
     private SceneDimension ActiveSceneViewDimension()
@@ -3233,7 +3254,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
         CancelTraditionalPenPath();
         CancelPenCurve();
         var sceneDefinition = ActiveScene();
-        var nextScene = sceneDefinition?.ActiveMaskScene() ?? _sceneEditStage;
+        var nextScene = sceneDefinition?.ActiveMaskScene()
+            ?? (ShouldUseSceneDrawingSurface(sceneDefinition) ? sceneDefinition!.DrawingScene : _sceneEditStage);
         if (!ReferenceEquals(_scene, nextScene))
         {
             if (ReferenceEquals(_timeline.Context, sceneDefinition)) ResetCanvasUndoHistory();
@@ -3297,6 +3319,17 @@ internal sealed partial class MainForm : Form, IMessageFilter
         if (!IsSceneBuildingContext()) return;
         RestoreEditableCompositionScene();
         var sceneDefinition = ActiveScene();
+        var editable = sceneDefinition?.ActiveMaskScene()
+            ?? (ShouldUseSceneDrawingSurface(sceneDefinition) ? sceneDefinition!.DrawingScene : _sceneEditStage);
+        if (!ReferenceEquals(_scene, editable))
+        {
+            ClearSelection();
+            _scene = editable;
+            _stage.BindScene(editable);
+            _libraryVaultPanel.BindScene(editable, () => _selectedObject);
+            InvalidateSceneCompositionCache();
+        }
+        _scene.EditFrame = _frame;
         _lastSceneCompositionReused = reuseCachedComposition && CanReuseSceneComposition(sceneDefinition);
         if (!_lastSceneCompositionReused)
         {
@@ -3305,7 +3338,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
                 sceneDefinition,
                 _drawingObjects,
                 _frame,
-                _playbackSettings.Fps);
+                _playbackSettings.Fps,
+                includeDirectDrawing: !IsSceneDrawingContext(),
+                compositeWithHostLayers: IsSceneDrawingContext());
             CaptureSceneCompositionCache(sceneDefinition);
         }
         _stage.SetSceneCompositionResult(
@@ -3315,7 +3350,11 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _stage.SetSceneCompositionMaskClips(
             BuildSceneCompositionMaskClips(sceneDefinition),
             preserveWorkspaceFrameCache: _playing || preserveWorkspaceFrameCache);
-        if (IsSceneMaskEditing())
+        if (IsSceneDrawingContext())
+        {
+            _stage.BindUnderlayScene(_sceneEditStage, _sceneCompositionResult.HostLayerRanges);
+        }
+        else if (IsSceneMaskEditing())
         {
             _stage.BindUnderlayScene(_sceneEditStage);
         }
@@ -3339,6 +3378,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
     private bool CanReuseSceneComposition(SceneDefinition? sceneDefinition)
     {
+        if (IsSceneDrawingContext()) return false;
         if (!_sceneCompositionCacheValid
             || _sceneInstancePreviewDirty
             || !ReferenceEquals(_sceneCompositionCacheScene, sceneDefinition)
@@ -3398,7 +3438,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     {
         if (IsSceneBuildingContext())
         {
-            if (IsSceneMaskEditing())
+            if (IsSceneMaskEditing() || IsSceneDrawingContext())
             {
                 SynchronizeActiveSceneMaskTimelineContent();
                 RebuildSceneComposition();
@@ -3596,16 +3636,13 @@ internal sealed partial class MainForm : Form, IMessageFilter
         };
         group.ParentButton = parent;
         Theme.StyleButton(parent);
-        parent.MouseEnter += (_, _) =>
-        {
-            _toolTip.HideTip();
-            ShowToolPairFlyout(group);
-        };
+        BindToolGroupFlyoutTrigger(parent, () => ShowToolPairFlyout(group));
         parent.MouseLeave += (_, _) => ScheduleToolPairFlyoutHideAfter(group, 350);
         parent.Click += (_, _) =>
         {
             ActivateTool(group.ActiveTool);
-            ShowToolPairFlyout(group);
+            if (_applicationSettings.ToolbarPosition == ToolbarPosition.Top) HideToolFlyouts();
+            else ShowToolPairFlyout(group);
         };
         panel.Controls.Add(parent);
 
@@ -3730,16 +3767,16 @@ internal sealed partial class MainForm : Form, IMessageFilter
             ShowsToolGroupIndicator = true
         };
         Theme.StyleButton(_shapeToolButton);
-        _shapeToolButton.MouseEnter += (_, _) =>
-        {
-            _toolTip.HideTip();
-            ShowShapeToolFlyout();
-        };
+        BindToolGroupFlyoutTrigger(_shapeToolButton, ShowShapeToolFlyout);
         _shapeToolButton.MouseLeave += (_, _) =>
         {
             StartShapeFlyoutVisibilityCheck();
         };
-        _shapeToolButton.Click += (_, _) => ActivateTool(_activeShapeTool);
+        _shapeToolButton.Click += (_, _) =>
+        {
+            ActivateTool(_activeShapeTool);
+            if (_applicationSettings.ToolbarPosition == ToolbarPosition.Top) HideToolFlyouts();
+        };
         panel.Controls.Add(_shapeToolButton);
 
         _shapeToolFlyout = new FlowLayoutPanel
@@ -3872,16 +3909,13 @@ internal sealed partial class MainForm : Form, IMessageFilter
             ShowsToolGroupIndicator = true
         };
         Theme.StyleButton(_lineToolButton);
-        _lineToolButton.MouseEnter += (_, _) =>
-        {
-            _toolTip.HideTip();
-            ShowLineToolFlyout();
-        };
+        BindToolGroupFlyoutTrigger(_lineToolButton, ShowLineToolFlyout);
         _lineToolButton.MouseLeave += (_, _) => ScheduleLineToolFlyoutHideAfter(350);
         _lineToolButton.Click += (_, _) =>
         {
             ActivateTool(_activeLineTool);
-            ShowLineToolFlyout();
+            if (_applicationSettings.ToolbarPosition == ToolbarPosition.Top) HideToolFlyouts();
+            else ShowLineToolFlyout();
         };
         panel.Controls.Add(_lineToolButton);
 
@@ -3936,16 +3970,13 @@ internal sealed partial class MainForm : Form, IMessageFilter
             ShowsToolGroupIndicator = true
         };
         Theme.StyleButton(_brushToolButton);
-        _brushToolButton.MouseEnter += (_, _) =>
-        {
-            _toolTip.HideTip();
-            ShowBrushToolFlyout();
-        };
+        BindToolGroupFlyoutTrigger(_brushToolButton, ShowBrushToolFlyout);
         _brushToolButton.MouseLeave += (_, _) => ScheduleBrushToolFlyoutHideAfter(350);
         _brushToolButton.Click += (_, _) =>
         {
             ActivateTool(_activeBrushTool);
-            ShowBrushToolFlyout();
+            if (_applicationSettings.ToolbarPosition == ToolbarPosition.Top) HideToolFlyouts();
+            else ShowBrushToolFlyout();
         };
         panel.Controls.Add(_brushToolButton);
 

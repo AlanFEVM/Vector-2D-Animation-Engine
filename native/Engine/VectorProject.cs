@@ -161,9 +161,10 @@ internal sealed partial class VectorProject
         symbol = null;
         instance = null;
         var container = FindDrawingObject(containerId);
-        if (container is null || container.IsOpenCanvas || frame < 0) return false;
+        var sceneContainer = container is null ? FindScene(containerId) : null;
+        if (container is null && sceneContainer is null || container?.IsOpenCanvas == true || frame < 0) return false;
 
-        var source = container.Scene;
+        var source = container?.Scene ?? sceneContainer!.DrawingScene;
         var targets = objectIndices
             .Distinct()
             .Where(index => (uint)index < source.ObjectCount && source.IsObjectActive(index, frame))
@@ -221,7 +222,7 @@ internal sealed partial class VectorProject
         }
 
         var sceneSnapshot = source.CreateSnapshot();
-        var instanceSnapshot = container.CreateInstanceSnapshot();
+        var instanceSnapshot = container?.CreateInstanceSnapshot() ?? sceneContainer!.CreateInstanceSnapshot();
         var previousEditFrame = source.EditFrame;
         var created = new DrawingObjectDefinition
         {
@@ -235,7 +236,7 @@ internal sealed partial class VectorProject
         {
             DrawingObjectId = created.Id,
             SceneLayerId = hostLayerId,
-            Name = $"{created.Name} Instance {container.Instances.Count + 1:000}",
+            Name = $"{created.Name} Instance {(container?.Instances.Count ?? sceneContainer!.Instances.Count) + 1:000}",
             Visible = sourceFrame == 0,
             X = anchor.X,
             Y = anchor.Y
@@ -258,19 +259,23 @@ internal sealed partial class VectorProject
             using var batch = source.Timeline.BeginBatchUpdate();
             _drawingObjects.Add(created);
             source.EditFrame = sourceFrame;
-            container.AddInstance(this, nested);
-            while (container.MoveInstancesInLayer([nested.Id], direction: -1))
+            if (container is not null) container.AddInstance(this, nested);
+            else sceneContainer!.AddInstance(this, nested);
+            while (container?.MoveInstancesInLayer([nested.Id], direction: -1)
+                ?? sceneContainer!.MoveInstancesInLayer([nested.Id], direction: -1))
             {
             }
             if (source.RemoveObjects(targets) != targets.Length)
             {
                 throw new InvalidOperationException("The selected drawing objects could not be replaced.");
             }
-            container.SynchronizeTimelineTracks();
+            if (container is not null) container.SynchronizeTimelineTracks();
+            else sceneContainer!.SynchronizeTimelineTracks();
         }
         catch
         {
-            container.RestoreInstanceSnapshot(instanceSnapshot);
+            if (container is not null) container.RestoreInstanceSnapshot(instanceSnapshot);
+            else sceneContainer!.RestoreInstanceSnapshot(instanceSnapshot);
             source.RestoreSnapshot(sceneSnapshot);
             _drawingObjects.Remove(created);
             source.EditFrame = previousEditFrame;
@@ -339,7 +344,7 @@ internal sealed partial class VectorProject
         out DrawingObjectSnapPointDefinition snapPoint)
     {
         snapPoint = default;
-        var drawingObject = FindDrawingObject(drawingObjectId);
+        var drawingObject = FindSnapPointOwner(drawingObjectId);
         if (drawingObject is null
             || drawingObject.SnapPoints.Count >= MaximumSnapPointsPerDrawingObject
             || !TryNormalizeSnapPointPosition(x, y, z, out var normalized))
@@ -365,7 +370,7 @@ internal sealed partial class VectorProject
         float y,
         float z)
     {
-        var drawingObject = FindDrawingObject(drawingObjectId);
+        var drawingObject = FindSnapPointOwner(drawingObjectId);
         if (drawingObject is null
             || string.IsNullOrWhiteSpace(snapPointId)
             || !TryNormalizeSnapPointPosition(x, y, z, out var normalized))
@@ -387,7 +392,7 @@ internal sealed partial class VectorProject
 
     public bool TryRemoveDrawingObjectSnapPoint(string drawingObjectId, string snapPointId)
     {
-        var drawingObject = FindDrawingObject(drawingObjectId);
+        var drawingObject = FindSnapPointOwner(drawingObjectId);
         if (drawingObject is null || string.IsNullOrWhiteSpace(snapPointId)) return false;
         var points = drawingObject.SnapPoints
             .Where(point => !string.Equals(point.Id, snapPointId, StringComparison.Ordinal))
@@ -397,6 +402,9 @@ internal sealed partial class VectorProject
         Changed?.Invoke(this, EventArgs.Empty);
         return true;
     }
+
+    private IEditableSnapPointOwner? FindSnapPointOwner(string ownerId)
+        => (IEditableSnapPointOwner?)FindDrawingObject(ownerId) ?? FindScene(ownerId);
 
     private static bool TryNormalizeSnapPointPosition(
         float x,

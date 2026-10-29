@@ -155,6 +155,7 @@ internal sealed partial class MainForm : Form
             if (!IsSceneCompositionContext() || ActiveSceneViewDimension() != SceneDimension.TwoD) return;
             FinishPointerInteractionForContextChange();
             _stage.SetReferenceViewDirection(e.Direction, ReferenceCameraMotion.Animated);
+            RebuildSceneComposition();
             if (e.Direction != ReferenceViewDirection.Front
                 && _tool is not (ToolMode.Select or ToolMode.Hand))
             {
@@ -246,7 +247,7 @@ internal sealed partial class MainForm : Form
     private IReadOnlyList<SceneCompositionMaskClip> BuildSceneCompositionMaskClips(
         SceneDefinition? sceneDefinition)
     {
-        if (sceneDefinition is null || _sceneCompositionResult.ObjectOwners.Count == 0) return [];
+        if (sceneDefinition is null) return [];
 
         var clips = new List<SceneCompositionMaskClip>();
         foreach (var contentLayer in sceneDefinition.Layers)
@@ -265,8 +266,6 @@ internal sealed partial class MainForm : Form
             var instanceIds = sceneDefinition.InstancesInLayer(contentLayer.Id)
                 .Select(instance => instance.Id)
                 .ToHashSet(StringComparer.Ordinal);
-            if (instanceIds.Count == 0) continue;
-
             var objectIndices = new HashSet<int>();
             for (var objectIndex = 0; objectIndex < _sceneEditStage.ObjectCount; objectIndex++)
             {
@@ -274,7 +273,10 @@ internal sealed partial class MainForm : Form
                 var rootInstanceId = string.IsNullOrWhiteSpace(owner.RootInstanceId)
                     ? owner.InstanceId
                     : owner.RootInstanceId;
-                if (instanceIds.Contains(rootInstanceId)) objectIndices.Add(objectIndex);
+                if (instanceIds.Contains(rootInstanceId)
+                    || string.IsNullOrEmpty(owner.InstanceId) && owner.DrawingObjectId == sceneDefinition.Id
+                        && owner.SceneLayerId == contentLayer.Id)
+                    objectIndices.Add(objectIndex);
             }
             if (objectIndices.Count > 0)
             {
@@ -283,6 +285,14 @@ internal sealed partial class MainForm : Form
                     maskScene,
                     maskFrame,
                     objectIndices));
+            }
+            if (IsSceneDrawingContext())
+            {
+                var sourceLayer = Array.IndexOf(_scene.LayerIds, contentLayer.Id);
+                var directObjects = Enumerable.Range(0, _scene.ObjectCount)
+                    .Where(index => _scene.ObjectLayer[index] == sourceLayer).ToHashSet();
+                if (directObjects.Count > 0)
+                    clips.Add(new SceneCompositionMaskClip(_scene, maskScene, maskFrame, directObjects));
             }
         }
         return clips;
@@ -530,6 +540,7 @@ internal sealed partial class MainForm : Form
         if (e.Button != MouseButtons.Left) return false;
         if (TryBeginShotFramingGizmoPointer(e.Location)) return true;
         if (IsShotDirectorContext()) return true;
+        if (IsSceneDrawingContext() && !IsSceneReferenceView()) return false;
         if (!IsSceneReferenceView()) return false;
         if (TryBeginSceneLightGizmoPointer(e.Location)) return true;
         if (_tool == ToolMode.Transform3D && IsScene3DView())

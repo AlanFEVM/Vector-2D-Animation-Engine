@@ -16,11 +16,12 @@ internal sealed partial class MainForm
             new(_drawingObjectInstancePanel, _drawingObjectInstancePanel.PreferredPanelHeight),
             new(_textSettingsPanel, _textSettingsPanel.PreferredHeight),
             new(_tweenCurveEditorPanel, _tweenCurveEditorPanel.PreferredPanelHeight),
-            new(_imageInspector, _imageInspector.PreferredHeight)
+            new(_imageInspector, _imageInspector.PreferredHeight),
+            new(_objectGeometryPanel, _objectGeometryPanel.PreferredHeight)
         ]);
         foreach (var control in new Control[]
         {
-            _objectInspector, _brushTipPanel, _drawingObjectInstancePanel, _textSettingsPanel,
+            _objectInspector, _objectGeometryPanel, _brushTipPanel, _drawingObjectInstancePanel, _textSettingsPanel,
             _mixingBrushSettingsPanel, _drawSettingsPanel, _shapeSettingsPanel,
             _tweenCurveEditorPanel, _imageInspector
         }) control.Visible = false;
@@ -36,6 +37,7 @@ internal sealed partial class MainForm
         _hierarchyWindow = new HierarchyWindow(_hierarchyPanel, ProcessCmdKey);
         BuildSceneOpticsInspectorPanels();
         UiComposition.MountVertical(_basicInspectorPage.Content, [new(_spatialMaterialPanel)]);
+        ArrangeBasicDrawingInspectorPanels();
         BuildInspectorCategoryRail(inspector);
 
         _animationPage.Dock = DockStyle.Fill;
@@ -83,7 +85,7 @@ internal sealed partial class MainForm
         _basicInspectorPage.Content,
         [
             _objectInspector, _tweenCurveEditorPanel, _drawingObjectInstancePanel,
-            _spatialMaterialPanel, _textSettingsPanel, _imageInspector
+            _spatialMaterialPanel, _textSettingsPanel, _imageInspector, _objectGeometryPanel
         ]);
 
     private void ArrangeSceneMaskInspectorPanels() => UiComposition.OrderVertical(

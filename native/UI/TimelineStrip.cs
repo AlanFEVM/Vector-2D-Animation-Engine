@@ -3244,7 +3244,8 @@ internal sealed partial class TimelineStrip : Control
         _renameLayerMenuItem.Enabled = hasLayerContext && hasSingleLayerSelection;
         _layerColorMenuItem.Enabled = hasLayerContext && selectedLayerCount > 0;
         _layerColorMenuItem.Text = selectedLayerCount > 1 ? "Layer Color for Selected" : "Layer Color";
-        _lockLayerMenuItem.Enabled = hasLayerContext && selectedLayerCount > 0 && DrawingScene() is not null;
+        _lockLayerMenuItem.Enabled = hasLayerContext && selectedLayerCount > 0
+            && (DrawingScene() is not null || _sceneDefinition is not null);
         _lockLayerMenuItem.Text = selectedLayerCount > 1
             ? allSelectedLayersLocked ? "Unlock Selected Layers" : "Lock Selected Layers"
             : allSelectedLayersLocked ? "Unlock Layer" : "Lock Layer";
@@ -4334,8 +4335,10 @@ internal sealed partial class TimelineStrip : Control
 
     private bool IsTrackLocked(int trackIndex)
     {
-        var drawingScene = DrawingScene();
-        var layer = GetTrackLayerIndex(trackIndex);
+        var drawingScene = DrawingScene() ?? _sceneDefinition?.DrawingScene;
+        var layer = _sceneDefinition is not null && trackIndex >= 0 && trackIndex < _timeline.Tracks.Count
+            ? Array.IndexOf(_sceneDefinition.DrawingScene.LayerIds, _timeline.Tracks[trackIndex].TargetId)
+            : GetTrackLayerIndex(trackIndex);
         return drawingScene is not null
             && layer >= 0
             && drawingScene.IsLayerEffectivelyLocked(layer);
@@ -5641,7 +5644,7 @@ internal sealed partial class TimelineStrip : Control
 
     private bool AreAllLayersLocked()
     {
-        var drawingScene = DrawingScene();
+        var drawingScene = DrawingScene() ?? _sceneDefinition?.DrawingScene;
         return drawingScene is not null
             && drawingScene.LayerCount > 0
             && Enumerable.Range(0, drawingScene.LayerCount)

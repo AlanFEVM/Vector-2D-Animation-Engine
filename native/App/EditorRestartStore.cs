@@ -14,6 +14,7 @@ internal static class EditorRestartStore
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         IncludeFields = true,
+        MaxDepth = 256,
         PropertyNameCaseInsensitive = true
     };
 
@@ -43,12 +44,14 @@ internal static class EditorRestartStore
 
             var token = Guid.NewGuid().ToString("N");
             var expiresUtc = DateTimeOffset.UtcNow.Add(RestartLifetime);
+            var project = state.Project.CreateRestartSnapshot();
+            ProjectVaultStore.ValidateSceneDrawingSnapshots(project);
             var file = new EditorRestartFile
             {
                 Version = FormatVersion,
                 Token = token,
                 ExpiresUtc = expiresUtc,
-                Project = state.Project.CreateRestartSnapshot(),
+                Project = project,
                 ProjectManifestPath = state.ProjectManifestPath,
                 ProjectPackagePath = state.ProjectPackagePath,
                 ProjectDirty = state.ProjectDirty,
@@ -114,6 +117,7 @@ internal static class EditorRestartStore
                 return false;
             }
 
+            ProjectVaultStore.ValidateSceneDrawingSnapshots(file.Project);
             ProjectTemporaryResources.AdoptRoots(file.TemporaryRoots ?? []);
             state = new EditorRestartState
             {
@@ -223,9 +227,12 @@ internal static class EditorRestartStore
 
     internal static ProjectRestartSnapshot RoundTripProjectSnapshot(ProjectRestartSnapshot snapshot)
     {
+        ProjectVaultStore.ValidateSceneDrawingSnapshots(snapshot);
         var json = JsonSerializer.Serialize(snapshot, JsonOptions);
-        return JsonSerializer.Deserialize<ProjectRestartSnapshot>(json, JsonOptions)
+        var restored = JsonSerializer.Deserialize<ProjectRestartSnapshot>(json, JsonOptions)
             ?? throw new InvalidOperationException("Project restart snapshot JSON did not deserialize.");
+        ProjectVaultStore.ValidateSceneDrawingSnapshots(restored);
+        return restored;
     }
 
     private sealed class EditorRestartFile

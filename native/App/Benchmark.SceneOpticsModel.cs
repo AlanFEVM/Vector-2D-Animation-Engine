@@ -357,6 +357,7 @@ internal static partial class Benchmark
 
             var legacy = savedTimeline.DeepClone().AsObject();
             legacy.Remove("lights");
+            legacy["layers"]?.AsObject().Remove("drawingScene");
             var legacyTracks = legacy["timeline"]?["tracks"]?.AsArray()
                 ?? throw new InvalidOperationException("The scene timeline fixture has no track array.");
             var savedLightIds = scene.Lights.Select(light => light.Id).ToHashSet(StringComparer.Ordinal);

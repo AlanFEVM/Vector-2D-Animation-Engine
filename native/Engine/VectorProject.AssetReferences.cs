@@ -12,6 +12,7 @@ internal sealed partial class VectorProject
         }
         foreach (var scene in _scenes)
         {
+            if (visited.Add(scene.DrawingScene)) yield return (scene.Name, scene.DrawingScene);
             foreach (var layer in scene.Layers)
             {
                 if (layer.MaskScene is { } mask && visited.Add(mask))

@@ -48,7 +48,7 @@ internal sealed partial class MainForm : Form
 
     private bool ApplySelectedFillOverwriteAfterGeometryEdit()
     {
-        if (IsSceneCompositionContext()) return false;
+        if (!IsEditableDrawingContext()) return false;
         var selectedFills = _selectedObjects
             .Where(index => (uint)index < _scene.ObjectCount && IsFillShape(_scene.ShapeKind[index]))
             .Distinct()
@@ -74,7 +74,7 @@ internal sealed partial class MainForm : Form
 
     private bool MergeCompatibleLinesAfterDrawingOperation(IReadOnlyCollection<int>? objectScope = null)
     {
-        if (IsSceneCompositionContext()) return false;
+        if (!IsEditableDrawingContext()) return false;
 
         var selectedBefore = _selectedObjects
             .Where(index => (uint)index < _scene.ObjectCount)
@@ -249,7 +249,7 @@ internal sealed partial class MainForm : Form
 
     private void CompleteMarqueeSelection(Point endScreen)
     {
-        var sceneCompositionContext = IsSceneCompositionContext();
+        var sceneCompositionContext = IsSceneCompositionContext() && !IsSceneDrawingContext();
         if (sceneCompositionContext) _marqueeSelectionCancellationPending = false;
         else FinalizePendingMarqueeSelectionCancellation();
         var startScreen = _marqueeStart ?? endScreen;
@@ -430,6 +430,7 @@ internal sealed partial class MainForm : Form
     private bool DeleteSelectedObject()
     {
         if (IsShotDirectorContext()) return false;
+        if (IsSceneDrawingContext()) return DeleteSceneDrawingSelection();
         if (IsSceneCompositionContext()) return DeleteSelectedSceneInstances();
 
         var container = ActiveDrawingObject();
@@ -620,10 +621,11 @@ internal sealed partial class MainForm : Form
 
     private bool ConvertSelectedDrawingObjectsToSymbol()
     {
-        if (IsOpenDrawingScope) return AddOpenCanvasSelectionToSymbol();
-        if (!IsDrawingWorkspaceContext
+        if (!IsSceneBuildingContext() && IsOpenDrawingScope) return AddOpenCanvasSelectionToSymbol();
+        EnsureSceneDrawingSurface();
+        if (!IsDrawingWorkspaceContext && !IsSceneDrawingContext()
             || DrawingToolsBlocked()
-            || IsSceneCompositionContext()
+            || !IsEditableDrawingContext()
             || SelectedSceneInstances().Count > 0)
         {
             return false;
@@ -631,8 +633,9 @@ internal sealed partial class MainForm : Form
 
         FinishPointerInteractionForFrameChange();
         var initialTargets = SelectedActiveDrawingObjectIndices();
-        var container = ActiveDrawingObject();
-        if (container is null || initialTargets.Length == 0) return false;
+        var sceneContainer = IsSceneDrawingContext() ? ActiveScene() : null;
+        var container = sceneContainer is null ? ActiveDrawingObject() : null;
+        if (container is null && sceneContainer is null || initialTargets.Length == 0) return false;
 
         var layers = initialTargets.Select(index => (int)_scene.ObjectLayer[index]).Distinct().ToArray();
         if (layers.Length != 1
@@ -644,11 +647,12 @@ internal sealed partial class MainForm : Form
 
         var wasProjectDirty = _projectDirty;
         if (!TryAskNewSymbolName(out var name)) return false;
+        var sceneLayers = sceneContainer?.CreateLayerSnapshot();
         var sceneSnapshot = CreateCanvasMutationSnapshot(initialTargets, layers);
-        var instanceSnapshot = container.CreateInstanceSnapshot();
+        var instanceSnapshot = container?.CreateInstanceSnapshot() ?? sceneContainer!.CreateInstanceSnapshot();
         if (!TryPrepareSelectedDrawingObjectsForCommand(sceneSnapshot, out var targets)
             || !_project.TryConvertDrawingObjectsToSymbol(
-                container.Id,
+                container?.Id ?? sceneContainer!.Id,
                 targets,
                 _frame,
                 out var symbol,
@@ -656,15 +660,19 @@ internal sealed partial class MainForm : Form
             || symbol is null
             || instance is null)
         {
-            container.RestoreInstanceSnapshot(instanceSnapshot);
+            if (container is not null) container.RestoreInstanceSnapshot(instanceSnapshot);
+            else sceneContainer!.RestoreInstanceSnapshot(instanceSnapshot);
             RestoreCanvasMutationSnapshot(sceneSnapshot);
             SetProjectDirty(wasProjectDirty);
             return false;
         }
 
         _project.TryRenameDrawingObject(symbol.Id, name);
-        instance.Name = $"{name} Instance {container.Instances.Count:000}";
-        PushUndoSnapshot(
+        instance.Name = $"{name} Instance {container?.Instances.Count ?? sceneContainer!.Instances.Count:000}";
+        if (sceneContainer is not null)
+            PushSceneTimelineUndo(sceneContainer, sceneSnapshot.Timeline!, sceneLayers, instanceSnapshot,
+                createdDrawingObjectId: symbol.Id);
+        else PushUndoSnapshot(
             sceneSnapshot,
             container,
             instanceSnapshot,
@@ -943,9 +951,13 @@ internal sealed partial class MainForm : Form
     private IReadOnlyList<DrawingObjectInstanceDefinition> ActiveEditableInstances()
     {
         if (IsSceneMaskEditing()) return [];
-        return IsSceneCompositionContext()
-            ? ActiveScene()?.Instances ?? []
-            : ActiveDrawingObject()?.Instances ?? [];
+        if (!IsSceneCompositionContext()) return ActiveDrawingObject()?.Instances ?? [];
+        var sceneDefinition = ActiveScene();
+        return sceneDefinition?.Instances.Where(instance =>
+        {
+            var layer = Array.IndexOf(sceneDefinition.DrawingScene.LayerIds, instance.SceneLayerId);
+            return layer >= 0 && !sceneDefinition.DrawingScene.IsLayerEffectivelyLocked(layer);
+        }).ToArray() ?? [];
     }
 
     private void RestoreTimelineInstanceSelection(
@@ -978,7 +990,7 @@ internal sealed partial class MainForm : Form
 
     private VectorScene ActiveInstanceCompositionScene()
     {
-        return IsSceneCompositionContext() ? _scene : _drawingObjectUnderlayStage;
+        return IsSceneCompositionContext() ? _sceneEditStage : _drawingObjectUnderlayStage;
     }
 
     private SceneCompositionResult ActiveInstanceCompositionResult()
@@ -994,13 +1006,13 @@ internal sealed partial class MainForm : Form
             ActiveInstanceCompositionResult(),
             ActiveEditableInstances(),
             world,
-            IsSceneCompositionContext() ? _frame : 0,
+            0,
             SelectionToleranceWorld(),
             out instance,
             UsesFlatSceneMaskSelectionClipping(compositionScene)
                 ? _stage.SceneCompositionMaskClips
                 : null)) return false;
-        if (IsSceneCompositionContext()) return true;
+        if (IsSceneCompositionContext() && !IsSceneDrawingContext()) return true;
 
         var localHit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
         if (!localHit.IsValid || !_scene.IsObjectSelectable(localHit.Key.ObjectIndex, _frame)) return true;
@@ -1098,7 +1110,7 @@ internal sealed partial class MainForm : Form
         return IsSceneCompositionContext()
             && !IsSceneMaskEditing()
             && !_stage.UsesReferenceProjection
-            && ReferenceEquals(compositionScene, _scene)
+            && ReferenceEquals(compositionScene, _sceneEditStage)
             && _stage.HasSceneCompositionMaskClips(compositionScene);
     }
 
@@ -1786,13 +1798,13 @@ internal sealed partial class MainForm : Form
     {
         if (IsShotDirectorContext()) return false;
         var objectIndices = Array.Empty<int>();
-        if (!IsSceneCompositionContext())
+        if (IsEditableDrawingContext())
         {
             objectIndices = FindSelectableObjectIndices(_scene, _frame);
         }
 
         var editableInstances = ActiveEditableInstances();
-        if (!IsSceneCompositionContext())
+        if (IsEditableDrawingContext())
         {
             editableInstances = editableInstances
                 .Where(instance =>
@@ -1819,6 +1831,7 @@ internal sealed partial class MainForm : Form
             ClearSelection();
         }
 
+        RequestObjectInspectorForSelection();
         UpdateInspector();
         _stage.Invalidate();
         return true;
@@ -1894,7 +1907,8 @@ internal sealed partial class MainForm : Form
             _selectedObject,
             _selectedElements,
             _selectedElement);
-        if (syncTimelineLayer && !IsSceneBuildingContext())
+        NotifyInspectorSelectionChanged(selectionChanged);
+        if (syncTimelineLayer && (!IsSceneBuildingContext() || IsSceneDrawingContext()))
         {
             SyncTimelineLayerToPrimarySelection(_scene, _timeline, _selectedObject);
         }
@@ -2129,12 +2143,15 @@ internal sealed partial class MainForm : Form
 
     private bool CanBreakApartInstance(DrawingObjectInstanceDefinition instance)
     {
-        var container = ActiveDrawingObject();
-        if (container is null || !container.Instances.Any(candidate => candidate.Id == instance.Id)) return false;
-        var layer = Array.IndexOf(container.Scene.LayerIds, instance.SceneLayerId);
+        var sceneDefinition = IsSceneCompositionContext() ? ActiveScene() : null;
+        var container = sceneDefinition is null ? ActiveDrawingObject() : null;
+        var instances = sceneDefinition?.Instances ?? container?.Instances;
+        var source = sceneDefinition?.DrawingScene ?? container?.Scene;
+        if (source is null || instances is null || !instances.Any(candidate => candidate.Id == instance.Id)) return false;
+        var layer = Array.IndexOf(source.LayerIds, instance.SceneLayerId);
         return layer >= 0
-            && container.Scene.GetLayerKind(layer) == DrawingLayerKind.Drawing
-            && !container.Scene.IsLayerEffectivelyLocked(layer)
+            && source.GetLayerKind(layer) == DrawingLayerKind.Drawing
+            && !source.IsLayerEffectivelyLocked(layer)
             && CanFlattenDrawingObject(instance.DrawingObjectId, new HashSet<string>(StringComparer.Ordinal));
     }
 
@@ -2156,9 +2173,9 @@ internal sealed partial class MainForm : Form
 
     private void BreakApartStageSelection()
     {
-        if (!IsDrawingWorkspaceContext
+        if (!IsDrawingWorkspaceContext && !IsSceneDrawingContext()
             || DrawingToolsBlocked()
-            || IsSceneCompositionContext())
+            || !IsEditableDrawingContext())
         {
             return;
         }
@@ -2242,10 +2259,12 @@ internal sealed partial class MainForm : Form
 
     private void BreakApartNestedInstances()
     {
-        var container = ActiveDrawingObject();
-        if (container is null) return;
+        var sceneDefinition = IsSceneDrawingContext() ? ActiveScene() : null;
+        var container = sceneDefinition is null ? ActiveDrawingObject() : null;
+        var composition = (ICompositionDefinition?)sceneDefinition ?? container;
+        if (composition is null) return;
         var requestedIds = _stageContextMenuBreakApartInstances.ToHashSet(StringComparer.Ordinal);
-        var instances = container.Instances
+        var instances = composition.Instances
             .Where(instance => requestedIds.Contains(instance.Id))
             .ToArray();
         if (instances.Length != requestedIds.Count || instances.Length == 0 || instances.Any(instance => !CanBreakApartInstance(instance)))
@@ -2258,11 +2277,11 @@ internal sealed partial class MainForm : Form
         {
             foreach (var instance in instances)
             {
-                var hostLayer = Array.IndexOf(container.Scene.LayerIds, instance.SceneLayerId);
+                var hostLayer = Array.IndexOf(_scene.LayerIds, instance.SceneLayerId);
                 var flattened = new VectorScene();
                 SceneCompositionBuilder.BuildDrawingObjectInstanceForBreakApart(
                     flattened,
-                    container,
+                    composition,
                     instance,
                     _drawingObjects,
                     _frame,
@@ -2277,7 +2296,9 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        var instanceSnapshot = container.CreateInstanceSnapshot();
+        var instanceSnapshot = sceneDefinition?.CreateInstanceSnapshot() ?? container!.CreateInstanceSnapshot();
+        var layerSnapshot = sceneDefinition?.CreateLayerSnapshot();
+        var timelineSnapshot = sceneDefinition?.Timeline.CreateSnapshot();
         var wasProjectDirty = _projectDirty;
         var hostLayers = prepared.Select(item => item.HostLayer).Distinct().ToArray();
         var sceneSnapshot = CreateCanvasMutationSnapshot(affectedLayers: hostLayers);
@@ -2300,7 +2321,10 @@ internal sealed partial class MainForm : Form
                     keyframe.Frame > 0 && keyframe.State.Visible);
                 if (_frame == 0 && !hasFutureVisibleState)
                 {
-                    if (!_project.TryRemoveDrawingObjectInstance(container.Id, item.Instance.Id, out _))
+                    var removed = sceneDefinition is not null
+                        ? _project.TryRemoveSceneInstance(sceneDefinition.Id, item.Instance.Id, out _)
+                        : _project.TryRemoveDrawingObjectInstance(container!.Id, item.Instance.Id, out _);
+                    if (!removed)
                     {
                         throw new InvalidOperationException("A selected symbol instance could not be removed.");
                     }
@@ -2316,18 +2340,22 @@ internal sealed partial class MainForm : Form
         }
         catch (Exception exception)
         {
-            container.RestoreInstanceSnapshot(instanceSnapshot);
+            if (sceneDefinition is not null) sceneDefinition.RestoreInstanceSnapshot(instanceSnapshot);
+            else container!.RestoreInstanceSnapshot(instanceSnapshot);
             _scene.RestoreSnapshot(sceneSnapshot);
             _scene.EditFrame = _frame;
             SetProjectDirty(wasProjectDirty);
-            var restored = container.Instances.Where(instance => requestedIds.Contains(instance.Id)).ToArray();
+            var restored = composition.Instances.Where(instance => requestedIds.Contains(instance.Id)).ToArray();
             if (restored.Length > 0) SetSceneInstanceSelection(restored, restored[^1]);
             RefreshBreakApartPresentation();
             ShowBreakApartError(exception);
             return;
         }
 
-        PushUndoSnapshot(sceneSnapshot, container, instanceSnapshot);
+        if (sceneDefinition is not null)
+            PushSceneTimelineUndo(sceneDefinition, timelineSnapshot!,
+                layerSnapshot: layerSnapshot, instanceSnapshot: instanceSnapshot);
+        else PushUndoSnapshot(sceneSnapshot, container, instanceSnapshot);
         SetSelection(produced);
         RefreshBreakApartPresentation();
         AppLog.Info($"Broke apart {prepared.Count} nested symbol instance(s) into {produced.Length} local object(s)");
@@ -2379,7 +2407,7 @@ internal sealed partial class MainForm : Form
 
     private bool DeleteSelectedNestedDrawingObjectInstances()
     {
-        if (IsSceneCompositionContext()) return false;
+        if (!IsEditableDrawingContext()) return false;
         var container = ActiveDrawingObject();
         var selected = SelectedSceneInstances();
         if (container is null || selected.Count == 0) return false;

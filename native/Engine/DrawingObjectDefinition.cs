@@ -2,7 +2,7 @@ namespace VectorAnimationEngine;
 
 internal sealed record DrawingObjectDragData(string ProjectId, string DrawingObjectId);
 
-internal sealed class DrawingObjectDefinition : ICompositionDefinition
+internal sealed class DrawingObjectDefinition : ICompositionDefinition, IEditableSnapPointOwner
 {
     private readonly List<DrawingObjectInstanceDefinition> _instances = [];
     private readonly List<string> _assetTagIds = [];
@@ -55,6 +55,11 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
     }
 
     internal DrawingObjectSnapPointDefinition[] CreateSnapPointSnapshot() => _snapPoints.ToArray();
+
+    DrawingObjectSnapPointDefinition[] IEditableSnapPointOwner.CreateSnapPointSnapshot() => CreateSnapPointSnapshot();
+
+    void IEditableSnapPointOwner.RestoreSnapPointSnapshot(IEnumerable<DrawingObjectSnapPointDefinition> points)
+        => RestoreSnapPointSnapshot(points);
 
     internal void RestoreSnapPointSnapshot(IEnumerable<DrawingObjectSnapPointDefinition> snapPoints)
     {

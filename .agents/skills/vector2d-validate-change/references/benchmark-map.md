@@ -5,7 +5,7 @@
 | Partial | Primary suite(s) | Contract |
 | --- | --- | --- |
 | `Benchmark.cs` | `Stress` | dispatcher, stress scene, shared order/performance checks |
-| `Benchmark.AppIntegration.cs` | `Render` | release-note loading and hot-reload routing |
+| `Benchmark.AppIntegration.cs` | `Render` | UI composition/refresh, inspector selection routing and manual navigation, object/tool isolation, bottom-ordered transforms, numeric undo/cancel, image preview/sampling, text defaults, instances and Auto Key; release-note loading and hot-reload routing |
 | `Benchmark.AssetLibraryCategories.cs` | `Timeline` | asset categories, external SVG persistence, spatial component assets |
 | `Benchmark.AssetTags.cs` | `Timeline` | asset tags and Vault previews |
 | `Benchmark.BezierGeometry.cs` | `Freehand` | Bezier geometry/editing |
@@ -29,6 +29,7 @@
 | `Benchmark.MixingBrush.cs` | `Freehand`, `Render` | paint mixing and region geometry/raster behavior |
 | `Benchmark.PencilBezier.cs` | `Freehand` | Pencil Bezier generation |
 | `Benchmark.ProjectComposition.cs` | `Timeline`, `Stress` | project graph, persistence, instances, composition |
+| `Benchmark.SceneDrawing.cs` | `Timeline`, `Render` | direct scene geometry mixed with instances, shared layers/timeline, Cels, composition and persistence through project document structure; drawing tools, F6/F7 and undo through Stage interaction |
 | `Benchmark.ProjectCompression.cs` | `Timeline` | compressed project storage, legacy migration, bounded decoding |
 | `Benchmark.PackageSaveSafety.cs`, `Benchmark.FolderSaveSafety.cs` | `Timeline` | package write failure preserves asset bindings; failed folder Save As preserves package target, dirty state and retry |
 | `Benchmark.FlashImport.cs` | `Timeline` | Flash / Animate XFL import, geometry and exposures, nested symbols, safe input rejection, legacy conversion bridge and V2D save/reopen |

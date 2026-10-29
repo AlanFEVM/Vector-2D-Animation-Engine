@@ -164,21 +164,25 @@ internal sealed partial class MainForm
         if (asset is null)
         {
             _imageInspector.SetState(null);
+            _objectInspector.SetImagePreview(false, null, BitmapSampling.Linear);
             return;
         }
+        var preview = _inspectorCategory == InspectorCategory.None ? ResolveBitmapImageRaster(asset.Id) : null;
+        _objectInspector.SetImagePreview(true, preview, ResolveBitmapImageSampling(asset.Id));
         var settings = asset.ImportSettings;
-        string Row(string label, object value) => $"{UiLocalization.T(label)}: {value}";
         var decoded = settings.ResolveStoredPixelSize(asset.PixelSize);
-        var summary = string.Join(Environment.NewLine, new[]
+        _imageInspector.SetState(new(asset.Id, asset.Name)
         {
-            asset.Name, asset.SourcePath, $"{asset.PixelWidth} × {asset.PixelHeight}",
-            Row("Image display", UiLocalization.T(settings.FilterMode == ImageFilterMode.Point ? "Pixel art" : "Smooth")),
-            Row("Pixels per unit", settings.PixelsPerUnit),
-            Row("Maximum resolution", settings.MaxSize),
-            Row("Decoded resolution", $"{decoded.Width:0} × {decoded.Height:0} px"),
-            Row("Keep transparent background", UiLocalization.T(settings.AlphaSource == ImageAlphaSource.FromInput ? "Yes" : "No"))
+            SourcePath = asset.SourcePath,
+            SourceResolution = $"{asset.PixelWidth} × {asset.PixelHeight} px",
+            DisplayMode = UiLocalization.T(settings.FilterMode == ImageFilterMode.Point ? "Pixel art" : "Smooth"),
+            FilterMode = settings.FilterMode,
+            CanEdit = !_playing,
+            PixelsPerUnit = settings.PixelsPerUnit.ToString(),
+            MaximumResolution = $"{settings.MaxSize} px",
+            DecodedResolution = $"{decoded.Width:0} × {decoded.Height:0} px",
+            KeepTransparency = UiLocalization.T(settings.AlphaSource == ImageAlphaSource.FromInput ? "Yes" : "No")
         });
-        _imageInspector.SetState(new(asset.Id, summary));
     }
 
     private void ImportImageAsset()
@@ -634,7 +638,18 @@ internal sealed partial class MainForm
             asset.NaturalPixelsPerUnit,
             asset.ImportSettings, ResolveImageAssetPath(asset), isEditing: true);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        var settings = dialog.Settings;
+        ApplyImageAssetImportSettings(asset, dialog.Settings);
+    }
+
+    private void SetInspectorImageDisplayMode(string assetId, ImageFilterMode mode)
+    {
+        var asset = FindImageAsset(assetId);
+        if (asset is null || _playing || !Enum.IsDefined(mode)) return;
+        ApplyImageAssetImportSettings(asset, asset.ImportSettings with { FilterMode = mode });
+    }
+
+    private void ApplyImageAssetImportSettings(ImageAssetDefinition asset, BitmapImageImportSettings settings)
+    {
         if (settings == asset.ImportSettings) return;
 
         var storedPixelSize = settings.ResolveStoredPixelSize(new SizeF(asset.PixelWidth, asset.PixelHeight));
@@ -781,22 +796,23 @@ internal sealed partial class MainForm
     /// </summary>
     private string? ImagePlacementBlockedReason()
     {
-        if (!IsDrawingWorkspaceContext && !IsSceneMaskEditing())
+        if (!IsDrawingWorkspaceContext && !IsSceneMaskEditing() && !IsSceneDrawingAvailable())
         {
-            return UiLocalization.T("Open a Basic Drawing or scene mask drawing layer before placing an image.");
+            return UiLocalization.T("Open an unlocked drawing layer in Basic Drawing or the 2D Front scene before placing an image.");
         }
         if (DrawingToolsBlocked())
         {
             return UiLocalization.T("Finish the current drawing operation before placing an image.");
         }
-        if (!IsSceneMaskEditing() && ActiveDrawingObject() is null)
+        if (!IsSceneMaskEditing() && !IsSceneDrawingAvailable() && ActiveDrawingObject() is null)
         {
             return UiLocalization.T("Select an object on the stage first.");
         }
-        var layer = _scene.ActiveLayer;
-        if ((uint)layer >= _scene.LayerCount || _scene.GetLayerKind(layer) != DrawingLayerKind.Drawing)
+        var source = IsSceneDrawingAvailable() ? ActiveScene()!.DrawingScene : _scene;
+        var layer = source.ActiveLayer;
+        if ((uint)layer >= source.LayerCount || source.GetLayerKind(layer) != DrawingLayerKind.Drawing)
         {
-            return UiLocalization.T("Open a Basic Drawing or scene mask drawing layer before placing an image.");
+            return UiLocalization.T("Open an unlocked drawing layer in Basic Drawing or the 2D Front scene before placing an image.");
         }
         return null;
     }
@@ -805,6 +821,7 @@ internal sealed partial class MainForm
 
     private bool EnsureImagePlacementAllowed()
     {
+        EnsureSceneDrawingSurface();
         if (ImagePlacementBlockedReason() is not { } reason) return true;
         ModernMessageDialog.Show(
             this,

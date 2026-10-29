@@ -20,6 +20,8 @@ internal sealed class SceneLayerDefinition
 
 internal sealed class SceneLayerSnapshot
 {
+    public DrawingObjectSnapPointDefinition[] SnapPoints { get; init; } = [];
+    public VectorSceneSnapshot? DrawingScene { get; init; }
     public SceneLayerSnapshotItem[] Layers { get; init; } = [];
     public string ActiveLayerId { get; init; } = "";
     public Dictionary<string, string> InstanceLayerIds { get; init; } = new(StringComparer.Ordinal);
@@ -40,11 +42,11 @@ internal sealed record SceneLayerSnapshotItem(
     public bool ParallaxEnabled { get; init; } = true;
 }
 
-internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDefinition
+internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDefinition, IEditableSnapPointOwner
 {
     internal const int MaximumLights = 256;
 
-    private readonly AnimationTimeline _timeline = new();
+    private readonly AnimationTimeline _timeline;
     private readonly List<SceneLayerDefinition> _layers = [];
     private readonly List<DrawingObjectInstanceDefinition> _instances = [];
     private readonly List<SceneLightDefinition> _lights = [];
@@ -54,9 +56,34 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
     private readonly LayeredInstanceIndex _instanceIndex;
     private SceneDimension _dimension = SceneDimension.TwoD;
     private bool _lightsInitialized;
+    private DrawingObjectSnapPointDefinition[] _snapPoints = [];
+    public IReadOnlyList<DrawingObjectSnapPointDefinition> SnapPoints => Array.AsReadOnly(_snapPoints);
+
+    DrawingObjectSnapPointDefinition[] IEditableSnapPointOwner.CreateSnapPointSnapshot() => _snapPoints.ToArray();
+
+    void IEditableSnapPointOwner.RestoreSnapPointSnapshot(IEnumerable<DrawingObjectSnapPointDefinition> points)
+        => RestoreDrawingSnapPoints(points);
+
+    private void RestoreDrawingSnapPoints(IEnumerable<DrawingObjectSnapPointDefinition> points)
+    {
+        var restored = points.Take(VectorProject.MaximumSnapPointsPerDrawingObject + 1).ToArray();
+        if (restored.Length > VectorProject.MaximumSnapPointsPerDrawingObject
+            || restored.Any(point => string.IsNullOrWhiteSpace(point.Id)
+                || !float.IsFinite(point.X) || !float.IsFinite(point.Y) || !float.IsFinite(point.Z)
+                || Math.Abs(point.X) > VectorProject.MaximumSnapPointCoordinate
+                || Math.Abs(point.Y) > VectorProject.MaximumSnapPointCoordinate
+                || Math.Abs(point.Z) > VectorProject.MaximumSnapPointCoordinate)
+            || restored.Select(point => point.Id).Distinct(StringComparer.Ordinal).Count() != restored.Length)
+            throw new InvalidDataException("The scene contains invalid snap points.");
+        _snapPoints = restored;
+    }
 
     public SceneDefinition(int initialFrameCount = AnimationTimeline.DefaultDuration)
     {
+        DrawingScene.CreateEmpty(frameCount: Math.Max(1, initialFrameCount));
+        DrawingScene.UsePlayheadForBlankExposure = true;
+        DrawingScene.CanMaterializeTimelineTweenLayer = layerId => InstancesInLayer(layerId).Count == 0;
+        _timeline = DrawingScene.Timeline;
         _layerView = _layers.AsReadOnly();
         _instanceView = _instances.AsReadOnly();
         _lightView = _lights.AsReadOnly();
@@ -68,6 +95,10 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
         _timeline.IsShotTarget = targetId => FindShot(targetId) is not null;
         var firstLayer = new SceneLayerDefinition { Name = "Layer 0001" };
         _layers.Add(firstLayer);
+        DrawingScene.SynchronizeSceneLayers(_layers, firstLayer.Id);
+        DrawingScene.ConfigureExternalLayerKeyframeContent((layerId, _) => InstancesInLayer(layerId).Count > 0);
+        DrawingScene.ConfigureAdditionalTimelineTargets(() => _lights.Select(light => light.Id)
+            .Concat(_shots.Select(shot => shot.Id)).ToArray());
         _timeline.SynchronizeTracks([firstLayer.Id], Math.Max(1, initialFrameCount), populateNewTracks: false);
         _timeline.InsertBlankKeyframe(_timeline.Tracks[0].Id, 0);
     }
@@ -75,7 +106,8 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "Scene";
     public string Detail { get; set; } = "Scene composition context";
-    public bool CanDraw => false;
+    public bool CanDraw => true;
+    public VectorScene DrawingScene { get; } = new();
     public SceneDimension Dimension
     {
         get => _dimension;
@@ -527,6 +559,7 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
                     : TimelineKeyframeKind.Blank;
         }
         return requestedKind == TimelineKeyframeKind.Populated && InstancesInLayer(layerId).Count == 0
+            && !HasDirectDrawingContent(layerId, frame)
             ? TimelineKeyframeKind.Blank
             : requestedKind;
     }
@@ -715,7 +748,11 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
     public void SetActiveLayer(string layerId)
     {
         NormalizeLayers();
-        if (FindLayer(layerId) is not null) ActiveLayerId = layerId;
+        if (FindLayer(layerId) is not null)
+        {
+            ActiveLayerId = layerId;
+            DrawingScene.ActiveLayer = Math.Max(0, Array.IndexOf(DrawingScene.LayerIds, layerId));
+        }
     }
 
     /// <summary>
@@ -838,6 +875,8 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
         NormalizeLayers();
         return new SceneLayerSnapshot
         {
+            DrawingScene = DrawingScene.CreateSnapshot(),
+            SnapPoints = _snapPoints.ToArray(),
             Layers = _layers.Select(layer => new SceneLayerSnapshotItem(
                 layer.Id,
                 layer.Name,
@@ -860,6 +899,9 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
     internal void RestoreLayerSnapshot(SceneLayerSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
+        RestoreDrawingSnapPoints(snapshot.SnapPoints);
+        if (snapshot.DrawingScene is not null) DrawingScene.RestoreSnapshot(snapshot.DrawingScene);
+        else DrawingScene.CreateEmpty();
         _layers.Clear();
         foreach (var layer in snapshot.Layers)
         {
@@ -1054,6 +1096,16 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
         TimelineTweenKind kind,
         out string error)
     {
+        var drawingLayer = Array.IndexOf(DrawingScene.LayerIds, layerId);
+        if (drawingLayer >= 0 && HasDirectDrawingContent(layerId, -1))
+        {
+            if (InstancesInLayer(layerId).Count > 0)
+            {
+                error = "Separate drawing shapes and symbol instances into different layers before creating a tween.";
+                return false;
+            }
+            return DrawingScene.CanCreateTimelineTween(drawingLayer, startFrame, endFrame, kind, out error);
+        }
         if (FindLight(layerId) is not null)
         {
             return TryResolveLightTimelineTween(
@@ -1095,6 +1147,12 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
         TimelineTweenKind kind,
         out string error)
     {
+        var drawingLayer = Array.IndexOf(DrawingScene.LayerIds, layerId);
+        if (drawingLayer >= 0 && HasDirectDrawingContent(layerId, -1))
+        {
+            if (!CanCreateTimelineTween(layerId, startFrame, endFrame, kind, out error)) return false;
+            return DrawingScene.TryCreateTimelineTween(drawingLayer, startFrame, endFrame, kind, out error);
+        }
         if (FindLight(layerId) is not null)
         {
             return TryCreateLightTimelineTween(layerId, startFrame, endFrame, kind, out error);
@@ -1152,6 +1210,9 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
         int endFrame,
         IEnumerable<TweenCurveAnchor> anchors)
     {
+        var drawingLayer = Array.IndexOf(DrawingScene.LayerIds, layerId);
+        if (drawingLayer >= 0 && HasDirectDrawingContent(layerId, -1))
+            return DrawingScene.ReplaceTimelineTweenCurve(drawingLayer, startFrame, endFrame, anchors);
         SynchronizeTimelineTracks();
         var track = _timeline.FindTrackByTargetId(layerId);
         var light = FindLight(layerId);
@@ -1179,6 +1240,9 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
 
     internal bool RemoveTimelineTween(string layerId, int startFrame, int endFrame)
     {
+        var drawingLayer = Array.IndexOf(DrawingScene.LayerIds, layerId);
+        if (drawingLayer >= 0 && HasDirectDrawingContent(layerId, -1))
+            return DrawingScene.RemoveTimelineTween(drawingLayer, startFrame, endFrame);
         SynchronizeTimelineTracks();
         var track = _timeline.FindTrackByTargetId(layerId);
         var tween = track?.Tweens.FirstOrDefault(item =>
@@ -1216,7 +1280,8 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
         var instanceChanged = RefreshInstanceTimelineTweenMaterializations(endpointFrame: frame);
         var lightChanged = RefreshLightTimelineTweenMaterializations(endpointFrame: frame);
         if (lightChanged) MarkLightingChanged();
-        return instanceChanged || lightChanged;
+        var drawingChanged = DrawingScene.RefreshTimelineTweenMaterializationsAtEndpointFrame(frame);
+        return instanceChanged || lightChanged || drawingChanged;
     }
 
     internal bool RefreshInstanceTimelineTweenMaterializationsInLayer(string layerId)
@@ -1709,6 +1774,20 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
         if (reassignedInstance) _instanceIndex.Invalidate();
 
         if (FindLayer(ActiveLayerId) is null) ActiveLayerId = _layers[0].Id;
+        DrawingScene.SynchronizeSceneLayers(_layers, ActiveLayerId);
+    }
+
+    private bool HasDirectDrawingContent(string layerId, int frame)
+    {
+        var layer = Array.IndexOf(DrawingScene.LayerIds, layerId);
+        if (layer < 0) return false;
+        var sourceFrame = frame < 0 ? -1 : _timeline.EvaluateTargetExposure(layerId, frame).SourceKeyframeFrame;
+        for (var index = 0; index < DrawingScene.ObjectCount; index++)
+        {
+            if (DrawingScene.ObjectLayer[index] == layer
+                && (frame < 0 || DrawingScene.ObjectKeyframeFrame[index] == sourceFrame)) return true;
+        }
+        return false;
     }
 
     private string ResolveContentLayerId(string? requestedLayerId)

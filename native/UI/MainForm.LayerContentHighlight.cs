@@ -113,15 +113,17 @@ internal sealed partial class MainForm
             return;
         }
 
-        var instanceIds = sceneDefinition.InstancesInLayer(layer.Id)
-            .Select(instance => instance.Id)
-            .ToHashSet(StringComparer.Ordinal);
-        if (instanceIds.Count == 0)
+        if (IsSceneDrawingContext())
         {
-            _stage.ClearLayerContentHighlight();
+            var sourceLayer = Array.IndexOf(_scene.LayerIds, layer.Id);
+            if (sourceLayer >= 0) _stage.SetLayerContentHighlightLayer(sourceLayer, color);
+            else _stage.ClearLayerContentHighlight();
             return;
         }
 
+        var instanceIds = sceneDefinition.InstancesInLayer(layer.Id)
+            .Select(instance => instance.Id)
+            .ToHashSet(StringComparer.Ordinal);
         var highlighted = new List<int>();
         var objectCount = Math.Min(
             _sceneEditStage.ObjectCount,
@@ -132,7 +134,8 @@ internal sealed partial class MainForm
             var rootInstanceId = string.IsNullOrWhiteSpace(owner.RootInstanceId)
                 ? owner.InstanceId
                 : owner.RootInstanceId;
-            if (!instanceIds.Contains(owner.InstanceId)
+            if (!string.Equals(owner.SceneLayerId, layer.Id, StringComparison.Ordinal)
+                && !instanceIds.Contains(owner.InstanceId)
                 && !instanceIds.Contains(rootInstanceId))
             {
                 continue;

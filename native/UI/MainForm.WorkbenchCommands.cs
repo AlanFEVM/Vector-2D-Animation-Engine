@@ -26,6 +26,7 @@ internal sealed partial class MainForm : Form
         // hover state must not survive into a tool that does not understand anchors.
         AbortMotionTrackPointerSession();
         _tool = tool;
+        if (IsBasicDrawingOnlyTool(tool) || IsLassoTool(tool)) EnsureSceneDrawingSurface();
         _stage.ClearDrawingPreview();
         if (tool != ToolMode.SnapPoint) ClearSnapPointPresentation();
         if (tool != ToolMode.SimplePen) CancelPenCurve();
@@ -142,10 +143,10 @@ internal sealed partial class MainForm : Form
             TextGeometry.MaximumLayoutDimension);
         var data = TextGeometry.NormalizeForAuthoring(new TextObjectData(
             "",
-            _textSettingsPanel.FontFamilyName,
-            _textSettingsPanel.FontSizePoints,
-            _textSettingsPanel.FontStyle,
-            _textSettingsPanel.Alignment,
+            _textToolSettingsPanel.FontFamilyName,
+            _textToolSettingsPanel.FontSizePoints,
+            _textToolSettingsPanel.FontStyle,
+            _textToolSettingsPanel.Alignment,
             new SizeF(width, initialHeight)));
 
         _textEditScene = _scene;
@@ -197,11 +198,7 @@ internal sealed partial class MainForm : Form
         {
             var updated = TextGeometry.NormalizeForAuthoring(current with
             {
-                Content = _textEditor.Text,
-                FontFamilyName = _textSettingsPanel.FontFamilyName,
-                FontSizePoints = _textSettingsPanel.FontSizePoints,
-                FontStyle = _textSettingsPanel.FontStyle,
-                Alignment = _textSettingsPanel.Alignment
+                Content = _textEditor.Text
             });
             _textEditData = updated;
             UpdateNewTextCenter(updated);
@@ -217,13 +214,30 @@ internal sealed partial class MainForm : Form
 
     private void ApplyTextSettingsChange()
     {
+        if (!IsDrawingInspectorContext()) return;
         if (IsTextEditActive())
         {
-            UpdateTextDraftFromEditor();
+            var currentDraft = _textEditData!;
+            try
+            {
+                var updatedDraft = TextGeometry.NormalizeForAuthoring(currentDraft with
+                {
+                    FontFamilyName = _textSettingsPanel.FontFamilyName,
+                    FontSizePoints = _textSettingsPanel.FontSizePoints,
+                    FontStyle = _textSettingsPanel.FontStyle,
+                    Alignment = _textSettingsPanel.Alignment
+                });
+                _textEditData = updatedDraft;
+                UpdateTextDraftFromEditor();
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+            {
+                AppLog.Error("Unable to apply text draft settings", exception);
+                UpdateInspector();
+            }
             return;
         }
-        if (!IsDrawingInspectorContext()
-            || TryGetSelectedTextObject(out var objectIndex, out var current) == false)
+        if (TryGetSelectedTextObject(out var objectIndex, out var current) == false)
         {
             return;
         }
@@ -888,7 +902,7 @@ internal sealed partial class MainForm : Form
         if (!IsScene3DView() && _tool == ToolMode.Select && ActiveEditableInstances().Count > 0)
         {
             var world = _stage.ScreenToWorld(screen);
-            var localHit = IsSceneCompositionContext()
+            var localHit = !IsEditableDrawingContext()
                 ? DrawingElementHit.None
                 : _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
             var localObjectHasPriority = localHit.IsValid
@@ -967,7 +981,7 @@ internal sealed partial class MainForm : Form
     private void UpdateFillHoverPreview(Point screen)
     {
         if (_tool != ToolMode.Fill || CanvasNavigationFeedbackSuspended
-            || IsSceneCompositionContext() || IsScene3DView())
+            || !IsEditableDrawingContext() || IsScene3DView())
         {
             ClearFillHoverPreview();
             return;
@@ -1354,7 +1368,7 @@ internal sealed partial class MainForm : Form
             RestoreSelectedDrawingObjectOriginalSize();
         _materialEditor.MaterialChanged += (_, e) =>
         {
-            if (IsSceneCompositionContext()) return;
+            if (!IsEditableDrawingContext()) return;
             if (e.FillChanged || e.ApplyAll) _eyedropperSamplesGradient = false;
             if (ApplyMaterialToTextDraft(e)) return;
             if (e.StrokeWidthChanged)
@@ -1479,6 +1493,7 @@ internal sealed partial class MainForm : Form
             else if (e.Kind == HierarchyNodeKind.Object && e.Index >= 0 && e.Index < _scene.ObjectCount)
             {
                 SetSelection(e.Index);
+                RequestObjectInspectorForSelection();
                 UpdateInspector();
                 _stage.Invalidate();
             }
@@ -1491,11 +1506,13 @@ internal sealed partial class MainForm : Form
             _drawSettings.NotifyChanged();
         };
         _imageInspector.SettingsRequested += (_, e) => EditImageAssetImportSettings(e.AssetId);
+        _imageInspector.DisplayModeChanged += SetInspectorImageDisplayMode;
         _drawSettings.Changed += (_, _) =>
         {
             SyncBrushTipSettings();
             SyncEraserOptions();
             UpdateShapeSettingsPanelPresentation();
+            UpdateToolInspectorSummary();
             if (_drawSettings.ShapeKind == _lastSettingsShape) return;
             _lastSettingsShape = _drawSettings.ShapeKind;
             if (ToolModeForShape(_drawSettings.ShapeKind) is { } tool)
@@ -1515,6 +1532,7 @@ internal sealed partial class MainForm : Form
                 UpdatePencilSettingsPanelPresentation();
                 UpdateShapeSettingsPanelPresentation();
                 RefreshToolButtons();
+                UpdateToolInspectorSummary();
             }
         };
 
@@ -2437,7 +2455,7 @@ internal sealed partial class MainForm : Form
                 $"set_frame_apply next={next} changed={frameChanged} scene_building={IsSceneBuildingContext()}");
             if (IsSceneBuildingContext())
             {
-                if (IsSceneMaskEditing()) _scene.EditFrame = next;
+                if (IsSceneMaskEditing() || IsSceneDrawingContext()) _scene.EditFrame = next;
                 TracePlaybackDiagnostic(
                     $"set_frame_composition applied={playbackCompositionApplied} frame={next}");
                 if (playbackCompositionApplied)

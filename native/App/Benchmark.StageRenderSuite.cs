@@ -8413,6 +8413,7 @@ internal static partial class Benchmark
 
     public static void RunStageRendererRegression()
     {
+        RunSceneToolPaletteVisibilityRegression();
         RunShotParallaxRenderingRegression();
         RunSceneCanvasRenderingRegression();
         RunMultiLayerSelectionRegression();
@@ -8437,7 +8438,6 @@ internal static partial class Benchmark
         RunTemporaryCanvasPanRegression();
         RunTemporaryEyedropperRegression();
         RunImmediateMarqueeOverlayRegression();
-        RunSceneToolPaletteVisibilityRegression();
         RunMotionTrackSceneInteractionRegression();
         RunMarqueeToolPolicyRegression();
         RunDistortPointerRegression();

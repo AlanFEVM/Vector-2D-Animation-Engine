@@ -137,7 +137,7 @@ internal class SvgIconButton : Button
             : ClientRectangle;
         if (ShowsLabelBelowIcon)
         {
-            var iconSize = Math.Min(ScaleLogical(30), Math.Max(1, Height - ScaleLogical(22)));
+            var iconSize = Math.Min(Math.Max(1, Width), Math.Min(ScaleLogical(30), Math.Max(1, Height - ScaleLogical(22))));
             iconBounds = new Rectangle((Width - iconSize) / 2, ScaleLogical(2), iconSize, iconSize);
         }
         var iconPadding = ShowsLabelBelowIcon

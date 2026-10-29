@@ -8,6 +8,7 @@ internal static partial class Benchmark
 {
     private static void RunProjectDocumentStructureRegression()
     {
+        RunSceneDrawingRegression();
         RunOpenCanvasSymbolRegression();
         var project = new VectorProject();
         AssertTimeline(
@@ -18,7 +19,7 @@ internal static partial class Benchmark
             && project.DrawingObjects[0].Timeline.Tracks.Count == 1
             && project.DrawingObjects[0].Timeline.Tracks[0].Duration == 1
             && project.Scenes.Count == 1
-            && !project.Scenes[0].CanDraw
+            && project.Scenes[0].CanDraw
             && project.Scenes[0].Layers.Count == 1
             && project.Scenes[0].FrameCount == 1
             && project.Scenes[0].Camera.Projection == CameraProjection.Perspective

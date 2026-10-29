@@ -196,8 +196,10 @@ internal sealed partial class MainForm
     {
         if (!_playbackCompositionSceneActive) return;
         _playbackCompositionSceneActive = false;
-        _scene = _sceneEditStage;
-        _stage.Scene = _sceneEditStage;
+        var scene = ActiveScene();
+        _scene = scene?.ActiveMaskScene()
+            ?? (ShouldUseSceneDrawingSurface(scene) ? scene!.DrawingScene : _sceneEditStage);
+        _stage.Scene = _scene;
     }
 
     private void StopPlaybackCompositionPreload()

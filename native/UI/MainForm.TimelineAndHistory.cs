@@ -38,6 +38,7 @@ internal sealed partial class MainForm : Form
         {
             VectorScene scene => scene,
             DrawingObjectDefinition definition => definition.Scene,
+            SceneDefinition sceneContext => sceneContext.DrawingScene,
             _ => null
         };
         _timelineTabGroupEdit = new TimelineTabGroupEditSession(
@@ -185,7 +186,7 @@ internal sealed partial class MainForm : Form
     {
         if (_tool != ToolMode.SimplePen
             || _penSegmentDragging
-            || IsSceneCompositionContext()
+            || !IsEditableDrawingContext()
             || !_stage.IsHandleCreated)
         {
             return false;
@@ -201,7 +202,7 @@ internal sealed partial class MainForm : Form
         if (_tool != ToolMode.Pen
             || _traditionalPenPointerDown
             || _traditionalPenAnchorEditing
-            || IsSceneCompositionContext()
+            || !IsEditableDrawingContext()
             || !_stage.IsHandleCreated)
         {
             return false;
@@ -219,7 +220,7 @@ internal sealed partial class MainForm : Form
         if (!IsBrushTool(_tool)
             || _freehandDrawing
             || _lastMouse is not null
-            || IsSceneCompositionContext()
+            || !IsEditableDrawingContext()
             || ContainsFocusedEditor(this))
         {
             return false;
@@ -482,6 +483,7 @@ internal sealed partial class MainForm : Form
         {
             VectorScene vectorScene => vectorScene,
             DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            SceneDefinition sceneContext => sceneContext.DrawingScene,
             _ => null
         };
         // A held F5/Shift+F5 arrives as a stream of separate shortcut presses. Only the first press
@@ -504,8 +506,9 @@ internal sealed partial class MainForm : Form
         var hasSceneShotCells = sceneDefinition is not null
             && cells.Any(cell => sceneDefinition.FindShot(timeline.FindTrack(cell.TrackId)?.TargetId) is not null);
         var sceneSnapshot = continuingGesture || sceneDefinition is null ? null : timeline.CreateSnapshot();
+        var sceneInstanceSnapshot = continuingGesture ? null : sceneDefinition?.CreateInstanceSnapshot();
         var sceneLightSnapshot = continuingGesture ? null : sceneDefinition?.Lights.Select(light => light.Clone()).ToArray();
-        var sceneLayerSnapshot = !continuingGesture && hasSceneMaskCells ? sceneDefinition!.CreateLayerSnapshot() : null;
+        var sceneLayerSnapshot = !continuingGesture && sceneDefinition is not null ? sceneDefinition.CreateLayerSnapshot() : null;
         var sceneShotSnapshot = !continuingGesture && hasSceneShotCells ? sceneDefinition!.CreateShotSnapshot() : null;
         var changed = false;
         var refreshCurrentComposition = edit != TimelineEditKind.InsertFrame;
@@ -617,7 +620,7 @@ internal sealed partial class MainForm : Form
         }
         else
         {
-            if (vectorSnapshot is not null)
+            if (vectorSnapshot is not null && sceneDefinition is null)
             {
                 PushUndoSnapshot(
                     vectorSnapshot,
@@ -632,6 +635,7 @@ internal sealed partial class MainForm : Form
                     sceneDefinition,
                     sceneSnapshot,
                     layerSnapshot: sceneLayerSnapshot,
+                    instanceSnapshot: sceneInstanceSnapshot,
                     playheadFrame: undoPlayheadFrame,
                     timelineSelection: previousTimelineSelection,
                     lightSnapshot: sceneLightSnapshot,
@@ -1166,6 +1170,7 @@ internal sealed partial class MainForm : Form
         {
             VectorScene vectorScene => vectorScene,
             DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            SceneDefinition sceneContext => sceneContext.DrawingScene,
             _ => null
         };
         var tweenSelection = TimelineStrip.ResolveSingleTweenSelection(context.Timeline, requestedCells);
@@ -1174,7 +1179,7 @@ internal sealed partial class MainForm : Form
         var track = context.Timeline.FindTrack(selection.TrackId);
         if (track is null) return false;
         var layer = drawingScene is null ? -1 : Array.IndexOf(drawingScene.LayerIds, track.TargetId);
-        if (drawingScene is not null && (uint)layer >= drawingScene.LayerCount
+        if (sceneDefinition is null && drawingScene is not null && (uint)layer >= drawingScene.LayerCount
             || sceneDefinition is not null
                 && sceneDefinition.FindLayer(track.TargetId)?.Kind != SceneLayerKind.Content
                 && sceneDefinition.FindLight(track.TargetId) is null
@@ -1187,6 +1192,7 @@ internal sealed partial class MainForm : Form
         var timelineSelection = _timeline.CaptureSelectionSnapshot();
         var contextDrawingObject = context as DrawingObjectDefinition;
         var drawingSnapshot = drawingScene?.CreateSnapshot();
+        var sceneDrawingSnapshot = sceneDefinition?.CreateLayerSnapshot();
         var sceneTimelineSnapshot = sceneDefinition?.Timeline.CreateSnapshot();
         var sceneLightSnapshot = sceneDefinition?.Lights.Select(light => light.Clone()).ToArray();
         var sceneShotSnapshot = sceneDefinition is not null
@@ -1208,6 +1214,7 @@ internal sealed partial class MainForm : Form
             PushSceneTimelineUndo(
                 sceneDefinition,
                 sceneTimelineSnapshot,
+                layerSnapshot: sceneDrawingSnapshot,
                 playheadFrame: _frame,
                 timelineSelection: timelineSelection,
                 lightSnapshot: sceneLightSnapshot,
@@ -1243,6 +1250,7 @@ internal sealed partial class MainForm : Form
         {
             VectorScene vectorScene => vectorScene,
             DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            SceneDefinition sceneContext => sceneContext.DrawingScene,
             _ => null
         };
         if (drawingScene is null && sceneDefinition is null || requestedCells.Count == 0) return false;
@@ -1259,7 +1267,7 @@ internal sealed partial class MainForm : Form
         var track = context.Timeline.FindTrack(cells[0].TrackId);
         if (track is null) return false;
         var layer = drawingScene is null ? -1 : Array.IndexOf(drawingScene.LayerIds, track.TargetId);
-        if (drawingScene is not null
+        if (sceneDefinition is null && drawingScene is not null
             && ((uint)layer >= drawingScene.LayerCount
                 || !VectorScene.SupportsTimelineTweenLayer(drawingScene.GetLayerKind(layer), kind))
             || sceneDefinition is not null
@@ -1282,6 +1290,7 @@ internal sealed partial class MainForm : Form
         var previousLastFrame = Math.Max(0, context.FrameCount - 1);
         var contextDrawingObject = context as DrawingObjectDefinition;
         var drawingSnapshot = drawingScene?.CreateSnapshot();
+        var sceneDrawingSnapshot = sceneDefinition?.CreateLayerSnapshot();
         var drawingInstanceSnapshot = contextDrawingObject?.CreateInstanceSnapshot();
         var sceneTimelineSnapshot = sceneDefinition?.Timeline.CreateSnapshot();
         var sceneInstanceSnapshot = sceneDefinition?.CreateInstanceSnapshot();
@@ -1313,6 +1322,7 @@ internal sealed partial class MainForm : Form
             PushSceneTimelineUndo(
                 sceneDefinition,
                 sceneTimelineSnapshot,
+                layerSnapshot: sceneDrawingSnapshot,
                 instanceSnapshot: sceneInstanceSnapshot,
                 playheadFrame: _frame,
                 timelineSelection: selection,
@@ -1415,6 +1425,7 @@ internal sealed partial class MainForm : Form
         {
             VectorScene vectorScene => vectorScene,
             DrawingObjectDefinition definition => definition.Scene,
+            SceneDefinition sceneContext => sceneContext.DrawingScene,
             _ => null
         };
         var drawingObject = context as DrawingObjectDefinition;
@@ -1433,7 +1444,7 @@ internal sealed partial class MainForm : Form
         if (track is null) return false;
         if (IsShotDirectorContext() && sceneDefinition?.FindShot(track.TargetId) is null) return false;
         var layer = drawingScene is null ? -1 : Array.IndexOf(drawingScene.LayerIds, track.TargetId);
-        if (drawingScene is not null && (uint)layer >= drawingScene.LayerCount
+        if (sceneDefinition is null && drawingScene is not null && (uint)layer >= drawingScene.LayerCount
             || sceneDefinition is not null
                 && sceneDefinition.FindLayer(track.TargetId)?.Kind != SceneLayerKind.Content
                 && sceneDefinition.FindLight(track.TargetId) is null
@@ -1467,6 +1478,7 @@ internal sealed partial class MainForm : Form
             Target = target,
             TimelineSelection = _timeline.CaptureSelectionSnapshot(),
             DrawingSnapshot = target.DrawingScene?.CreateSnapshot(),
+            SceneLayerSnapshot = target.SceneDefinition?.CreateLayerSnapshot(),
             SceneTimelineSnapshot = target.SceneDefinition?.Timeline.CreateSnapshot(),
             InstanceSnapshot = target.DrawingObject?.CreateInstanceSnapshot()
                 ?? target.SceneDefinition?.CreateInstanceSnapshot(),
@@ -1532,6 +1544,7 @@ internal sealed partial class MainForm : Form
             PushSceneTimelineUndo(
                 sceneDefinition,
                 session.SceneTimelineSnapshot!,
+                layerSnapshot: session.SceneLayerSnapshot,
                 instanceSnapshot: session.InstanceSnapshot,
                 playheadFrame: _frame,
                 timelineSelection: session.TimelineSelection,
@@ -1562,6 +1575,7 @@ internal sealed partial class MainForm : Form
 
         if (session.Target.SceneDefinition is { } sceneDefinition)
         {
+            if (session.SceneLayerSnapshot is not null) sceneDefinition.RestoreLayerSnapshot(session.SceneLayerSnapshot);
             if (session.LightSnapshot is not null)
             {
                 sceneDefinition.RestoreLights(session.LightSnapshot, lightsWerePresent: true);
@@ -1695,6 +1709,7 @@ internal sealed partial class MainForm : Form
             {
                 VectorScene vectorScene => vectorScene,
                 DrawingObjectDefinition drawingObject => drawingObject.Scene,
+                SceneDefinition sceneContext => sceneContext.DrawingScene,
                 _ => null
             };
             foreach (var pair in pairs)
@@ -1740,8 +1755,6 @@ internal sealed partial class MainForm : Form
                     : null;
             }
 
-            var hasSceneMaskDestination = sceneDefinition is not null
-                && destinationCells.Any(cell => IsSceneMaskTrack(sceneDefinition, timeline.FindTrack(cell.TrackId)));
             var drawingObjectContext = context as DrawingObjectDefinition;
             var undoState = new TimelinePasteUndoState(
                 Math.Max(0, context.FrameCount - 1),
@@ -1751,7 +1764,7 @@ internal sealed partial class MainForm : Form
                 sceneDefinition?.Timeline.CreateSnapshot(),
                 sceneDefinition?.CreateInstanceSnapshot(),
                 sceneDefinition?.Lights.Select(light => light.Clone()).ToArray(),
-                hasSceneMaskDestination ? sceneDefinition!.CreateLayerSnapshot() : null,
+                sceneDefinition?.CreateLayerSnapshot(),
                 _timeline.CaptureSelectionSnapshot());
 
             _timelineClipboard = new TimelineFrameClipboard
@@ -1831,6 +1844,7 @@ internal sealed partial class MainForm : Form
         {
             VectorScene vectorScene => vectorScene,
             DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            SceneDefinition sceneContext => sceneContext.DrawingScene,
             _ => null
         };
         return drawingScene is not null
@@ -1847,6 +1861,7 @@ internal sealed partial class MainForm : Form
         {
             VectorScene vectorScene => vectorScene,
             DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            SceneDefinition sceneContext => sceneContext.DrawingScene,
             _ => null
         };
         if (context is SceneDefinition sceneDefinition)
@@ -1928,6 +1943,7 @@ internal sealed partial class MainForm : Form
         {
             VectorScene vectorScene => vectorScene,
             DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            SceneDefinition sceneContext => sceneContext.DrawingScene,
             _ => null
         };
         VectorScene? drawingSource = null;
@@ -2049,6 +2065,7 @@ internal sealed partial class MainForm : Form
         {
             VectorScene vectorScene => vectorScene,
             DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            SceneDefinition sceneContext => sceneContext.DrawingScene,
             _ => null
         };
         var sceneDefinition = context as SceneDefinition;
@@ -2060,25 +2077,7 @@ internal sealed partial class MainForm : Form
         var sceneInstanceSnapshot = undoState?.SceneInstanceSnapshot ?? sceneDefinition?.CreateInstanceSnapshot();
         var sceneLightSnapshot = undoState?.SceneLightSnapshot ?? sceneDefinition?.Lights.Select(light => light.Clone()).ToArray();
         var timelineSelection = undoState?.TimelineSelection ?? _timeline.CaptureSelectionSnapshot();
-        var pastesSceneMask = false;
-        if (sceneDefinition is not null)
-        {
-            for (var sourceIndex = 0; sourceIndex < clipboard.Cells.Length; sourceIndex++)
-            {
-                var destinationTrackIndex = anchorTrack + clipboard.Cells[sourceIndex].TrackOffset;
-                if (destinationTrackIndex < 0 || destinationTrackIndex >= timeline.Tracks.Count) continue;
-                if (!IsSceneMaskTrack(sceneDefinition, timeline.Tracks[destinationTrackIndex])) continue;
-                if (sourceIndex >= _sceneMaskTimelineClipboardSources.Length
-                    || _sceneMaskTimelineClipboardSources[sourceIndex] is null)
-                {
-                    continue;
-                }
-                pastesSceneMask = true;
-                break;
-            }
-        }
-        var sceneLayerSnapshot = undoState?.SceneLayerSnapshot;
-        if (pastesSceneMask && sceneLayerSnapshot is null) sceneLayerSnapshot = sceneDefinition!.CreateLayerSnapshot();
+        var sceneLayerSnapshot = undoState?.SceneLayerSnapshot ?? sceneDefinition?.CreateLayerSnapshot();
         var changed = false;
         var pastedCells = new List<TimelineFrameCell>();
 
@@ -2140,7 +2139,12 @@ internal sealed partial class MainForm : Form
                     continue;
                 }
 
-                var effectiveKind = sceneDefinition?.ResolveKeyframeKindForLayerContent(
+                var sourceHasDrawing = clipboard.DrawingSource is { } clipboardDrawing
+                    && source.SourceLayer >= 0
+                    && Enumerable.Range(0, clipboardDrawing.ObjectCount).Any(index =>
+                        clipboardDrawing.ObjectLayer[index] == source.SourceLayer
+                        && clipboardDrawing.IsObjectActive(index, source.SourceFrame));
+                var effectiveKind = sourceHasDrawing ? source.Kind : sceneDefinition?.ResolveKeyframeKindForLayerContent(
                     track.TargetId,
                     source.Kind,
                     destinationFrame) ?? source.Kind;
@@ -2184,7 +2188,7 @@ internal sealed partial class MainForm : Form
         }
 
         if (!changed) return false;
-        if (vectorSnapshot is not null)
+        if (vectorSnapshot is not null && sceneDefinition is null)
         {
             PushUndoSnapshot(
                 vectorSnapshot,
@@ -2871,6 +2875,7 @@ internal sealed partial class MainForm : Form
         {
             VectorScene vectorScene => vectorScene,
             DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            SceneDefinition sceneContext => sceneContext.DrawingScene,
             _ => null
         };
         if (drawingScene is null) return;
@@ -2886,12 +2891,23 @@ internal sealed partial class MainForm : Form
             : Array.IndexOf(drawingScene.LayerIds, activeTargetId);
         var lockLayers = !drawingScene.LayerLocked[layers.Contains(activeLayer) ? activeLayer : layers[0]];
 
+        var sceneDefinition = context as SceneDefinition;
+        var sceneLayers = sceneDefinition?.CreateLayerSnapshot();
         var snapshot = drawingScene.CreateSnapshot();
         var changed = false;
         foreach (var layer in layers) changed |= drawingScene.SetLayerLocked(layer, lockLayers);
         if (!changed) return;
-        PushUndoSnapshot(snapshot);
-        ClearInactiveSelection();
+        if (sceneDefinition is not null)
+        {
+            PushSceneTimelineUndo(sceneDefinition, snapshot.Timeline!, layerSnapshot: sceneLayers);
+            ClearSelection();
+            RebuildSceneComposition();
+        }
+        else
+        {
+            PushUndoSnapshot(snapshot);
+            ClearInactiveSelection();
+        }
         _timeline.Invalidate();
         if (context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();
         else RebuildOnionSkinPreview();
@@ -2967,19 +2983,31 @@ internal sealed partial class MainForm : Form
         {
             VectorScene vectorScene => vectorScene,
             DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            SceneDefinition sceneContext => sceneContext.DrawingScene,
             _ => null
         };
         if (drawingScene is null || drawingScene.LayerCount == 0) return;
 
         var layers = Enumerable.Range(0, drawingScene.LayerCount).ToArray();
         var lockLayers = layers.Any(layer => !drawingScene.LayerLocked[layer]);
+        var sceneDefinition = context as SceneDefinition;
+        var sceneLayers = sceneDefinition?.CreateLayerSnapshot();
         var snapshot = drawingScene.CreateSnapshot();
         var changed = false;
         foreach (var layer in layers) changed |= drawingScene.SetLayerLocked(layer, lockLayers);
         if (!changed) return;
 
-        PushUndoSnapshot(snapshot);
-        ClearInactiveSelection();
+        if (sceneDefinition is not null)
+        {
+            PushSceneTimelineUndo(sceneDefinition, snapshot.Timeline!, layerSnapshot: sceneLayers);
+            ClearSelection();
+            RebuildSceneComposition();
+        }
+        else
+        {
+            PushUndoSnapshot(snapshot);
+            ClearInactiveSelection();
+        }
         _timeline.Invalidate();
         if (context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();
         else RebuildOnionSkinPreview();
@@ -3564,7 +3592,7 @@ internal sealed partial class MainForm : Form
     {
         if (_selectionToolGroup.Contains(_tool)) return CycleToolPairGroup(_selectionToolGroup, reverse);
         if (_paintToolGroup.Contains(_tool)) return CycleToolPairGroup(_paintToolGroup, reverse);
-        if (IsSceneCompositionContext()) return false;
+        if (!IsEditableDrawingContext()) return false;
 
         if (IsLineTool(_tool))
         {
@@ -3705,7 +3733,7 @@ internal sealed partial class MainForm : Form
 
     private void BeginMaterialContinuousEdit()
     {
-        if (_materialEditSession is not null || IsSceneCompositionContext() || IsTextEditActive()) return;
+        if (_materialEditSession is not null || !IsEditableDrawingContext() || IsTextEditActive()) return;
         _fillMergePendingAfterMaterialEdit = false;
         _lineMergePendingAfterMaterialEdit = false;
         _materialEditSession = new MaterialEditSession
@@ -3889,7 +3917,7 @@ internal sealed partial class MainForm : Form
 
     private bool AutomaticKeyframesEnabledForCurrentScene()
     {
-        if (!_timeline.AutoKeyframeEnabled || IsSceneCompositionContext()) return false;
+        if (!_timeline.AutoKeyframeEnabled || !IsEditableDrawingContext()) return false;
         if (IsSceneMaskEditing())
         {
             return ReferenceEquals(ActiveScene()?.ActiveMaskScene(), _scene);
@@ -3898,6 +3926,7 @@ internal sealed partial class MainForm : Form
         {
             VectorScene vectorScene => vectorScene,
             DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            SceneDefinition sceneContext => sceneContext.DrawingScene,
             _ => null
         };
         return ReferenceEquals(drawingScene, _scene);
@@ -3957,7 +3986,8 @@ internal sealed partial class MainForm : Form
         int? playheadFrame = null,
         TimelineSelectionSnapshot? timelineSelection = null,
         string? drawingObjectName = null,
-        string? createdDrawingObjectId = null)
+        string? createdDrawingObjectId = null,
+        IEditableSnapPointOwner? snapPointOwner = null)
     {
         MarkProjectDirty();
         var marqueeSession = _marqueeMaterializationSession;
@@ -3992,7 +4022,8 @@ internal sealed partial class MainForm : Form
                     : 0)
                 + (long)(marqueeSession?.IndependentStrokeObjects.Length ?? 0) * sizeof(int),
             marqueeSession,
-            marqueeSnapshot);
+            marqueeSnapshot,
+            snapPointOwner ?? drawingObject);
         _undoStack.Push(entry);
         RecordUndoSequence(entry);
         var snapshots = _undoStack.ToArray();
@@ -4171,11 +4202,10 @@ internal sealed partial class MainForm : Form
             && _sceneTimelineUndoStack.TryPeek(out timelineUndo)
             && ReferenceEquals(timelineUndo.Scene, activeTimelineScene);
         DrawingUndoEntry? drawingUndo = null;
-        var canUndoDrawing = !IsSceneCompositionContext()
+        var canUndoDrawing = IsEditableDrawingContext()
             && _undoStack.TryPeek(out drawingUndo);
         var undoSceneTimeline = canUndoSceneTimeline
-            && (!IsSceneMaskEditing()
-                || !canUndoDrawing
+            && (!canUndoDrawing
                 || UndoSequence(timelineUndo!) >= UndoSequence(drawingUndo!));
         var latestOtherSequence = Math.Max(canUndoSceneTimeline ? UndoSequence(timelineUndo!) : 0,
             canUndoDrawing ? UndoSequence(drawingUndo!) : 0);
@@ -4249,7 +4279,7 @@ internal sealed partial class MainForm : Form
             return true;
         }
 
-        if (IsSceneCompositionContext()) return false;
+        if (!IsEditableDrawingContext()) return false;
         if (!canUndoDrawing || drawingUndo is null) return false;
         var previousDrawingLastFrame = Math.Max(0, _scene.FrameCount - 1);
         _undoStack.Pop();
@@ -4260,9 +4290,9 @@ internal sealed partial class MainForm : Form
         {
             drawingUndo.DrawingObject.RestoreInstanceSnapshot(drawingUndo.InstanceSnapshot);
         }
-        if (drawingUndo.DrawingObject is not null && drawingUndo.SnapPointSnapshot is not null)
+        if (drawingUndo.SnapPointOwner is not null && drawingUndo.SnapPointSnapshot is not null)
         {
-            drawingUndo.DrawingObject.RestoreSnapPointSnapshot(drawingUndo.SnapPointSnapshot);
+            drawingUndo.SnapPointOwner.RestoreSnapPointSnapshot(drawingUndo.SnapPointSnapshot);
         }
         var drawingObjectNameRestored = drawingUndo.DrawingObject is not null
             && drawingUndo.DrawingObjectName is not null
@@ -4405,16 +4435,20 @@ internal sealed partial class MainForm : Form
     private bool PasteCopiedObjects()
     {
         if (IsShotDirectorContext()) return false;
-        if (IsSceneCompositionContext()) return PasteCopiedSceneInstances();
+        if (_clipboardObjects.Count > 0) EnsureSceneDrawingSurface();
+        if (IsSceneCompositionContext() && (!IsSceneDrawingContext() || _clipboardObjects.Count == 0)) return PasteCopiedSceneInstances();
         if (DrawingToolsBlocked()) return false;
         if (_clipboardObjects.Count == 0 && _clipboardDrawingObjectInstances.Count == 0) return false;
-        var container = ActiveDrawingObject();
-        if (container is null) return false;
+        var sceneContainer = IsSceneDrawingContext() ? ActiveScene() : null;
+        var sceneLayers = sceneContainer?.CreateLayerSnapshot();
+        var sceneInstances = sceneContainer?.CreateInstanceSnapshot();
+        var container = sceneContainer is null ? ActiveDrawingObject() : null;
+        if (container is null && sceneContainer is null) return false;
         var snapshot = CreateCanvasMutationSnapshot(
             affectedLayers: _clipboardObjects.Select(item =>
                 Math.Clamp(item.Layer, 0, Math.Max(0, _scene.LayerCount - 1))));
         var instanceSnapshot = _clipboardDrawingObjectInstances.Count > 0
-            ? container.CreateInstanceSnapshot()
+            ? container?.CreateInstanceSnapshot()
             : null;
         // The whole paste is one append batch, so the spatial index and summaries are completed
         // once for the run instead of once per pasted object, and the undo snapshot is only taken
@@ -4553,16 +4587,21 @@ internal sealed partial class MainForm : Form
             if (index >= 0) pasted.Add(index);
         }
 
-        var pastedInstances = PasteCopiedDrawingObjectInstances(container);
+        var pastedInstances = sceneContainer is not null
+            ? PasteSceneDrawingInstances(sceneContainer)
+            : PasteCopiedDrawingObjectInstances(container!);
         // The batch must be complete before the snapshot, selection or merge sees the new objects.
         bulkAppend.Dispose();
         if (pasted.Count == 0 && pastedInstances.Count == 0)
         {
-            if (instanceSnapshot is not null) container.RestoreInstanceSnapshot(instanceSnapshot);
+            if (instanceSnapshot is not null) container!.RestoreInstanceSnapshot(instanceSnapshot);
+            if (sceneContainer is not null && sceneInstances is not null) sceneContainer.RestoreInstanceSnapshot(sceneInstances);
             RestoreCanvasMutationSnapshot(snapshot);
             return false;
         }
-        PushUndoSnapshot(snapshot, container, instanceSnapshot);
+        if (sceneContainer is not null)
+            PushSceneTimelineUndo(sceneContainer, snapshot.Timeline!, sceneLayers, sceneInstances, playheadFrame: _frame);
+        else PushUndoSnapshot(snapshot, container, instanceSnapshot);
         SetMixedSelection(
             pasted,
             pastedInstances,
@@ -4767,7 +4806,7 @@ internal sealed partial class MainForm : Form
     private bool MoveSelectedDrawingObjectsInStack(int direction)
     {
         if (IsShotDirectorContext() || direction == 0) return false;
-        if (IsSceneCompositionContext()) return MoveSelectedSceneInstancesInStack(direction);
+        if (IsSceneCompositionContext() && SelectedSceneInstances().Count > 0) return MoveSelectedSceneInstancesInStack(direction);
         if (DrawingToolsBlocked()) return false;
         if (SelectedSceneInstances().Count > 0)
         {
@@ -4791,7 +4830,7 @@ internal sealed partial class MainForm : Form
 
     private bool FlipSelectedNestedDrawingObjects(bool horizontal)
     {
-        if (IsSceneCompositionContext()) return false;
+        if (!IsEditableDrawingContext()) return false;
         var instances = SelectedSceneInstances();
         if (instances.Count == 0 || !TryGetSelectedSceneInstanceBounds(out var bounds)) return false;
 

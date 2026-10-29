@@ -102,7 +102,10 @@ internal enum SvgIconKind
     InspectorScene,
     InspectorColor,
     Copy,
-    SceneSlate
+    SceneSlate,
+    InspectorSettings,
+    InspectorObject,
+    InspectorTools
 }
 
 internal static partial class SvgIcons
@@ -181,6 +184,9 @@ internal static partial class SvgIcons
                 ]);
                 break;
             case SvgIconKind.InspectorProperties:
+            case SvgIconKind.InspectorSettings:
+            case SvgIconKind.InspectorObject:
+            case SvgIconKind.InspectorTools:
             case SvgIconKind.InspectorPhysics:
             case SvgIconKind.InspectorCamera:
             case SvgIconKind.InspectorScene:

@@ -1415,7 +1415,8 @@ internal sealed partial class VectorScene
         var exposure = track.EvaluateExposure(frame);
         if (exposure.HasContent) return exposure.SourceKeyframeFrame;
 
-        var keyframeFrame = exposure.SourceKeyframeFrame >= 0 ? exposure.SourceKeyframeFrame : frame;
+        var keyframeFrame = !UsePlayheadForBlankExposure && exposure.SourceKeyframeFrame >= 0
+            ? exposure.SourceKeyframeFrame : frame;
         Timeline.InsertKeyframe(track.Id, keyframeFrame);
         RefreshLegacyExposureBounds(layer);
         return keyframeFrame;

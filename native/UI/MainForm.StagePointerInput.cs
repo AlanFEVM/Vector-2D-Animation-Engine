@@ -6,10 +6,13 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class MainForm : Form
 {
-    internal static bool AllowsPressureBrushPointerInput(WorkspaceView workspace, bool sceneMaskEditing)
+    internal static bool AllowsPressureBrushPointerInput(
+        WorkspaceView workspace,
+        bool sceneMaskEditing,
+        bool sceneDrawingEditing = false)
     {
         return workspace == WorkspaceView.BasicDrawing
-            || workspace == WorkspaceView.SceneEditor && sceneMaskEditing;
+            || workspace == WorkspaceView.SceneEditor && (sceneMaskEditing || sceneDrawingEditing);
     }
 
     private void StagePenPointerInput(object? sender, StageControl.PenPointerEventArgs e)
@@ -26,11 +29,14 @@ internal sealed partial class MainForm : Form
 
         if (e.Kind == StageControl.PenPointerEventKind.Down)
         {
+            if (_tool == ToolMode.PressureBrush) EnsureSceneDrawingSurface();
             EndTransientViewNavigation(restoreFeedback: false);
             if (_tool != ToolMode.PressureBrush
                 || !AllowsPressureBrushPointerInput(
                     EditingWorkspace,
-                    IsSceneMaskEditing())
+                    IsSceneMaskEditing(),
+                    IsSceneDrawingContext())
+                || !IsToolVisibleForCurrentContext(ToolMode.PressureBrush)
                 || DrawingToolsBlocked()
                 || _spacePanHeld
                 || _brushColorPaletteActive
@@ -200,9 +206,10 @@ internal sealed partial class MainForm : Form
 
         if (TryBeginMotionTrackMarquee(e.Location)) return;
 
+        if (IsBasicDrawingOnlyTool(_tool)) EnsureSceneDrawingSurface();
         if (TryBeginProjectedScenePointer(e)) return;
 
-        if (IsSceneCompositionContext())
+        if (IsSceneCompositionContext() && !IsSceneDrawingContext())
         {
             BeginSceneCompositionPointer(e);
             return;
@@ -3090,8 +3097,9 @@ internal sealed partial class MainForm : Form
 
         if (_tool != ToolMode.Select
             || _selectedObjects.Count != 1
-            || IsSceneCompositionContext()
+            || !IsEditableDrawingContext()
             || IsScene3DView()
+            || IsSceneReferenceView() && !IsScene2DFrontView()
             || _selectedObject < 0
             || _selectedObjects[0] != _selectedObject
             || !_scene.IsObjectSelectable(_selectedObject, _frame)
@@ -3330,8 +3338,9 @@ internal sealed partial class MainForm : Form
     private void UpdateGradientOverlay()
     {
         if (_tool != ToolMode.Gradient
-            || IsSceneCompositionContext()
+            || !IsEditableDrawingContext()
             || IsScene3DView()
+            || IsSceneReferenceView() && !IsScene2DFrontView()
             || _selectedObject < 0
             || !_scene.HasGradient(_selectedObject))
         {

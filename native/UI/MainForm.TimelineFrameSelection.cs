@@ -99,6 +99,11 @@ internal sealed partial class MainForm
                 }
                 else
                 {
+                    if (ReferenceEquals(sceneDefinition.DrawingScene, editScene))
+                    {
+                        foreach (var cell in cells)
+                            AddDrawingFrameContent(editScene, null, cell, objects, instances, instanceIds);
+                    }
                     AddSceneInstanceFrameContent(
                         sceneDefinition,
                         cells,

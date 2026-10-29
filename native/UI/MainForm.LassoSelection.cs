@@ -44,7 +44,7 @@ internal sealed partial class MainForm : Form
     private bool CanUseLassoInCurrentContext()
     {
         if (!IsLassoTool(_tool) || IsScene3DView()) return false;
-        return IsDrawingWorkspaceContext
+        return IsDrawingWorkspaceContext || IsSceneDrawingContext()
             || IsSceneMaskEditing()
             || IsSceneCompositionContext() && IsScene2DFrontView();
     }
@@ -251,7 +251,7 @@ internal sealed partial class MainForm : Form
         }
 
         _stage.SetLassoPreview(screenPoints, closed: true);
-        var sceneCompositionContext = IsSceneCompositionContext();
+        var sceneCompositionContext = IsSceneCompositionContext() && !IsSceneDrawingContext();
         if (!_lassoAdditiveSelection
             && _marqueeMaterializationSession is { Scene: var sessionScene }
             && ReferenceEquals(sessionScene, _scene)

@@ -559,8 +559,9 @@ internal static partial class Benchmark
         AssertTimeline((bool)RequireMethod(typeof(MainForm), "MoveSelectedDrawingObjectsInStack").Invoke(form, [-1])!,
             "Image stack ordering rejected a clicked bitmap selection.");
         var inspector = (ImageInspectorPanel)RequireField(typeof(MainForm), "_imageInspector").GetValue(form)!;
-        var summary = (Label)RequireField(typeof(ImageInspectorPanel), "_summary").GetValue(inspector)!;
-        AssertTimeline(summary.Text.Contains(loadedAsset.Name) && summary.Text.Contains(loadedAsset.SourcePath),
+        var state = (ImageInspectorState?)RequireField(typeof(ImageInspectorPanel), "_state").GetValue(inspector);
+        AssertTimeline(state is not null && state.AssetId == loadedAsset.Id
+            && state.Name == loadedAsset.Name && state.SourcePath == loadedAsset.SourcePath,
             "Selecting an image did not show its import information.");
         var other = project.TryAddImageAssetFromSource("Other image", imagePath, loadedAsset.Sha256,
             40, 24, 96, loadedAsset.ImportSettings with { PixelsPerUnit = 321 }, out var otherAsset);
@@ -569,7 +570,9 @@ internal static partial class Benchmark
             new BitmapObjectData { ImageAssetId = otherAsset!.Id, PlacedSize = new SizeF(300, 200) });
         SelectImage(otherIndex);
         RequireMethod(typeof(MainForm), "UpdateInspector", [typeof(bool)]).Invoke(form, [true]);
-        AssertTimeline(summary.Text.Contains("Other image") && summary.Text.Contains("321"),
+        state = (ImageInspectorState?)RequireField(typeof(ImageInspectorPanel), "_state").GetValue(inspector);
+        AssertTimeline(state is not null && state.AssetId == otherAsset.Id
+            && state.Name == "Other image" && state.PixelsPerUnit == "321",
             "The inspector reused another image import settings.");
     }
 

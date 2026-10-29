@@ -53,7 +53,7 @@ internal sealed partial class MainForm : Form
 
         var world = _stage.ScreenToWorld(e.Location);
         var hit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
-        if (IsSceneCompositionContext())
+        if (IsSceneCompositionContext() && !IsSceneDrawingContext())
         {
             var objectIndex = hit.IsValid ? hit.Key.ObjectIndex : -1;
             if (_stage.RendersReferenceProjection)
@@ -70,12 +70,12 @@ internal sealed partial class MainForm : Form
         {
             var owner = new SceneCompositionObjectOwner(nestedInstance.Id,
                 nestedInstance.DrawingObjectId, nestedInstance.Id);
-            if (IsSymbolEditing && BeginSceneSymbolEditing(owner)) return;
+            if ((IsSymbolEditing || IsSceneDrawingContext()) && BeginSceneSymbolEditing(owner)) return;
             if (OpenDrawingObjectEditor(owner.DrawingObjectId)) return;
         }
 
         if (_tool is ToolMode.Select or ToolMode.Transform or ToolMode.Distort
-            && (IsDrawingWorkspaceContext || IsSceneMaskEditing())
+            && (IsDrawingWorkspaceContext || IsSceneMaskEditing() || IsSceneDrawingContext())
             && !DrawingToolsBlocked()
             && hit.IsValid
             && (uint)hit.Key.ObjectIndex < _scene.ObjectCount
@@ -332,7 +332,7 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (IsSceneCompositionContext())
+        if (IsSceneCompositionContext() && !IsSceneDrawingContext())
         {
             HandleSceneCompositionPointerMove(e, dx, dy);
             return;
@@ -446,7 +446,7 @@ internal sealed partial class MainForm : Form
 
     private void UpdateHoveredLineControls(Point screen)
     {
-        if (_tool != ToolMode.Select || IsSceneCompositionContext() || IsScene3DView())
+        if (_tool != ToolMode.Select || !IsEditableDrawingContext() || IsScene3DView())
         {
             _stage.ClearHoveredLineElement();
             return;
@@ -556,10 +556,10 @@ internal sealed partial class MainForm : Form
 
     private bool TryBeginNestedDrawingObjectPointer(MouseEventArgs e)
     {
-        if (IsSceneBuildingContext()
+        if (IsSceneBuildingContext() && !IsSceneDrawingContext()
             || e.Button != MouseButtons.Left
             || _tool is not (ToolMode.Select or ToolMode.Transform or ToolMode.Distort)
-            || ActiveDrawingObject()?.Instances.Count is not > 0)
+            || ActiveEditableInstances().Count == 0)
         {
             return false;
         }
@@ -2345,6 +2345,21 @@ internal sealed partial class MainForm : Form
 
     private void StageMouseUp(object? sender, MouseEventArgs e)
     {
+        var selectionGesture = e.Button == MouseButtons.Left && !_spacePanHeld && !_spacePanPointerActive
+            && !_brushColorPaletteActive && _tabletPressurePointerId is null
+            && !_viewPanning && !_viewZooming && !_viewOrbiting && !_viewReferencePanning && !_viewReferenceZooming
+            && _sceneLightGizmoPointerSession is null && _shotFramingPointerSession is null
+            && !_marqueeSelectionCancellationPending && !IsShotDirectorContext()
+            && _tool is ToolMode.Select or ToolMode.Transform or ToolMode.Transform3D
+                or ToolMode.Distort or ToolMode.FreehandLasso or ToolMode.PolygonLasso or ToolMode.Text;
+        StageMouseUpCore(sender, e);
+        if (!selectionGesture || _inspectorCategory == InspectorCategory.None) return;
+        RequestObjectInspectorForSelection();
+        if (_objectInspectorSelectionPending) UpdateInspector();
+    }
+
+    private void StageMouseUpCore(object? sender, MouseEventArgs e)
+    {
         if (HandleReferenceCameraRightLookMouseUp(e)) return;
 
         if (_tabletPressurePointerId is not null && e.Button == MouseButtons.Left) return;
@@ -3118,7 +3133,7 @@ internal sealed partial class MainForm : Form
             ConsumeDeferredPresentationRefresh(DeferredPresentationRefresh.Inspector);
         }
         if (_stage.FillEdgeBezierOverlayTranslation != PointF.Empty) UpdateFillEdgeBezierOverlay();
-        if (IsSceneMaskEditing()) RebuildDrawingObjectUnderlay();
+        if (IsSceneMaskEditing() || IsSceneDrawingContext()) RebuildDrawingObjectUnderlay();
         UpdateTransformOverlay();
         _stage.ClearSelectionDragPreview();
         _stage.Capture = false;

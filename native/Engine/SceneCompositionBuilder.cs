@@ -9,7 +9,10 @@ namespace VectorAnimationEngine;
 internal readonly record struct SceneCompositionObjectOwner(
     string InstanceId,
     string DrawingObjectId,
-    string RootInstanceId = "");
+    string RootInstanceId = "")
+{
+    public string SceneLayerId { get; init; } = "";
+}
 
 internal readonly record struct SceneCompositionObjectPose(
     Matrix4x4 FlatToScene,
@@ -236,7 +239,10 @@ internal static class SceneCompositionBuilder
         SceneDefinition? sceneDefinition,
         IReadOnlyList<DrawingObjectDefinition> drawingObjects,
         int frame,
-        decimal parentFps = 30m)
+        decimal parentFps = 30m,
+        bool includeDirectDrawing = true,
+        bool compositeWithHostLayers = false,
+        IReadOnlySet<string>? sceneLayerFilter = null)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(drawingObjects);
@@ -249,10 +255,17 @@ internal static class SceneCompositionBuilder
 
         var definitionsById = DefinitionsById(drawingObjects);
         var layers = new List<CompositionLayer>();
+        var hostLayerRanges = new Dictionary<int, (int Start, int Count)>();
         var timeline = sceneDefinition.Timeline;
         var localFrame = Math.Clamp(frame, 0, Math.Max(0, sceneDefinition.FrameCount - 1));
+        var directLayers = includeDirectDrawing
+            ? Enumerable.Range(0, sceneDefinition.DrawingScene.ObjectCount)
+                .Where(index => sceneDefinition.DrawingScene.IsObjectActive(index, localFrame))
+                .Select(index => (int)sceneDefinition.DrawingScene.ObjectLayer[index]).ToHashSet()
+            : [];
         foreach (var sceneLayer in sceneDefinition.Layers)
         {
+            if (sceneLayerFilter is not null && !sceneLayerFilter.Contains(sceneLayer.Id)) continue;
             if (!sceneLayer.Visible
                 || !timeline.EvaluateTargetExposure(sceneLayer.Id, localFrame).HasContent)
             {
@@ -288,7 +301,17 @@ internal static class SceneCompositionBuilder
                     inheritedOutlineColorArgb: sceneLayer.ColorArgb);
             }
 
-            if (sceneLayer.BlendMode != LayerBlendMode.Normal && layers.Count > firstLayer)
+            var hostLayer = Array.IndexOf(sceneDefinition.DrawingScene.LayerIds, sceneLayer.Id);
+            if (includeDirectDrawing && sceneLayer.Kind == SceneLayerKind.Content && directLayers.Contains(hostLayer))
+            {
+                layers.Add(new CompositionLayer(
+                    sceneDefinition.DrawingScene, hostLayer, localFrame, sceneLayer.Name,
+                    Matrix3x2.Identity, Matrix4x4.Identity, true, Vector3.Zero,
+                    1f, 1f, Color.White.ToArgb(), SpatialOpticalMaterial.Default,
+                    LayerBlendMode.Normal, sceneLayer.Outline, sceneLayer.ColorArgb,
+                    new SceneCompositionObjectOwner("", sceneDefinition.Id) { SceneLayerId = sceneLayer.Id }));
+            }
+            if (!compositeWithHostLayers && sceneLayer.BlendMode != LayerBlendMode.Normal && layers.Count > firstLayer)
             {
                 WrapCompositionRangeInGroup(
                     layers,
@@ -298,9 +321,13 @@ internal static class SceneCompositionBuilder
                     sceneLayer.Outline,
                     sceneLayer.ColorArgb);
             }
+            if (hostLayer >= 0 && layers.Count > firstLayer)
+                hostLayerRanges[hostLayer] = (firstLayer, layers.Count - firstLayer);
         }
 
-        return BuildLayers(destination, layers, Math.Max(AnimationTimeline.DefaultDuration, sceneDefinition.FrameCount));
+        var result = BuildLayers(destination, layers, Math.Max(AnimationTimeline.DefaultDuration, sceneDefinition.FrameCount));
+        result.HostLayerRanges = hostLayerRanges;
+        return result;
     }
 
     public static SceneCompositionResult BuildDrawingObjectChildren(
@@ -325,7 +352,7 @@ internal static class SceneCompositionBuilder
 
     public static SceneCompositionResult BuildDrawingObjectInstanceForBreakApart(
         VectorScene destination,
-        DrawingObjectDefinition? container,
+        ICompositionDefinition? container,
         DrawingObjectInstanceDefinition? instance,
         IReadOnlyList<DrawingObjectDefinition> drawingObjects,
         int frame,
@@ -339,9 +366,16 @@ internal static class SceneCompositionBuilder
             return SceneCompositionResult.Empty;
         }
 
+        var containerScene = container switch
+        {
+            DrawingObjectDefinition drawing => drawing.Scene,
+            SceneDefinition scene => scene.DrawingScene,
+            _ => throw new InvalidOperationException("The symbol container has no drawing surface.")
+        };
         var localFrame = Math.Clamp(frame, 0, Math.Max(0, container.FrameCount - 1));
         var definitionsById = DefinitionsById(drawingObjects);
-        if (!IsDrawingObjectInstanceActive(container, instance, localFrame)
+        if (!instance.EvaluateState(localFrame).Visible
+            || !container.Timeline.EvaluateTargetExposure(instance.SceneLayerId, localFrame).HasContent
             || !definitionsById.TryGetValue(instance.DrawingObjectId, out var child))
         {
             destination.CreateEmpty();
@@ -349,11 +383,11 @@ internal static class SceneCompositionBuilder
         }
 
         var layers = new List<CompositionLayer>();
-        var hostLayer = Array.IndexOf(container.Scene.LayerIds, instance.SceneLayerId);
-        var hostOutline = hostLayer >= 0 && container.Scene.IsLayerEffectivelyOutlined(hostLayer);
+        var hostLayer = Array.IndexOf(containerScene.LayerIds, instance.SceneLayerId);
+        var hostOutline = hostLayer >= 0 && containerScene.IsLayerEffectivelyOutlined(hostLayer);
         if (hostLayer >= 0
-            && hostLayer < container.Scene.LayerBlendModes.Length
-            && container.Scene.LayerBlendModes[hostLayer] != LayerBlendMode.Normal)
+            && hostLayer < containerScene.LayerBlendModes.Length
+            && containerScene.LayerBlendModes[hostLayer] != LayerBlendMode.Normal)
         {
             throw new InvalidDataException("Break Apart cannot flatten a symbol instance from a blended host layer.");
         }
@@ -376,7 +410,7 @@ internal static class SceneCompositionBuilder
             inheritedOpacity: 1f,
             synchronize: false,
             inheritedOutline: hostOutline,
-            inheritedOutlineColorArgb: hostOutline ? container.Scene.LayerColorArgb[hostLayer] : 0,
+            inheritedOutlineColorArgb: hostOutline ? containerScene.LayerColorArgb[hostLayer] : 0,
             bakeAppearanceGroups: true);
         if (layers.Any(layer => layer.Source.HasLayerEffects || layer.Filters.HasEnabled
             || layer.BlendMode != LayerBlendMode.Normal))
@@ -570,33 +604,20 @@ internal static class SceneCompositionBuilder
         void AddPreview(int previewFrame, int offset, bool isPrevious)
         {
             if (previewFrame < 0 || previewFrame > lastFrame) return;
-            if (!HasDifferentLayerExposure(sceneDefinition, timeline, currentFrame, previewFrame)) return;
+            var changedLayers = sceneDefinition.Layers.Where(layer =>
+            {
+                if (layer.Kind != SceneLayerKind.Content) return false;
+                var current = timeline.EvaluateTargetExposure(layer.Id, currentFrame);
+                var neighbour = timeline.EvaluateTargetExposure(layer.Id, previewFrame);
+                return neighbour.HasContent && (!current.HasContent
+                    || current.SourceKeyframeFrame != neighbour.SourceKeyframeFrame);
+            }).Select(layer => layer.Id).ToHashSet(StringComparer.Ordinal);
+            if (changedLayers.Count == 0) return;
             var preview = new VectorScene();
-            Build(preview, sceneDefinition, drawingObjects, previewFrame, parentFps);
+            Build(preview, sceneDefinition, drawingObjects, previewFrame, parentFps, sceneLayerFilter: changedLayers);
             if (preview.ObjectCount == 0) return;
             previews.Add((preview, 0.18f + 0.32f / offset, isPrevious));
         }
-    }
-
-    private static bool HasDifferentLayerExposure(
-        SceneDefinition sceneDefinition,
-        AnimationTimeline timeline,
-        int currentFrame,
-        int previewFrame)
-    {
-        foreach (var layer in sceneDefinition.Layers)
-        {
-            if (layer.Kind != SceneLayerKind.Content) continue;
-            var current = timeline.EvaluateTargetExposure(layer.Id, currentFrame);
-            var preview = timeline.EvaluateTargetExposure(layer.Id, previewFrame);
-            if (current.HasContent != preview.HasContent
-                || current.SourceKeyframeFrame != preview.SourceKeyframeFrame)
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private static SceneCompositionResult BuildDrawingObjectChildrenCore(

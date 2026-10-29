@@ -8,6 +8,7 @@ internal sealed partial class MainForm : Form
 {
     private void UpdateInspector(bool refreshLineEndpointStyles = true)
     {
+        ApplyPendingObjectInspectorSelection();
         UpdateCanvasWorkspace();
         UpdateToolInspectorSummary();
         UpdateDocumentInfoPanel();
@@ -25,6 +26,7 @@ internal sealed partial class MainForm : Form
         var materialEditorWasVisible = _materialEditor.Visible;
         var materialEditorParent = _materialEditor.Parent;
         var textSettingsWasVisible = _textSettingsPanel.Visible;
+        var objectGeometryWasVisible = _objectGeometryPanel.Visible;
         var textSettingsParent = _textSettingsPanel.Parent;
         var imageInspectorWasVisible = _imageInspector.Visible;
         var imageInspectorParent = _imageInspector.Parent;
@@ -36,12 +38,12 @@ internal sealed partial class MainForm : Form
         try
         {
         drawingParameterPanelsMoved = PlaceDrawingParameterPanels();
-        _objectInspector.ObjectsText = $"{UiLocalization.T("Objects:")} {CompactFormat.Number(_scene.ObjectCount)}";
         if (refreshLineEndpointStyles) UpdateLineEndpointStyleControl();
         UpdateTextSettingsPanel();
         var validSelection = _selectedObjects
             .Where(index => index >= 0 && index < _scene.ObjectCount)
             .ToArray();
+        UpdateObjectGeometryPanel(validSelection);
         UpdateImageInspector(validSelection);
         if (_selectedElement.IsValid && (uint)_selectedElement.Key.ObjectIndex < _scene.ObjectCount)
         {
@@ -86,16 +88,15 @@ internal sealed partial class MainForm : Form
                 : drawingLayer >= 0
                     ? _scene.LayerNames[drawingLayer]
                     : null;
-            _objectInspector.SelectedText = selectedSceneInstances.Count > 1
-                ? $"{UiLocalization.T("Selected:")} {selectedSceneInstances.Count} {UiLocalization.T("Symbol Instances")}"
-                : $"{UiLocalization.T("Selected:")} {sceneInstance.Name}";
-            _objectInspector.LayerText =
-                $"{UiLocalization.T("Layer:")} {layerName ?? UiLocalization.T("Missing layer")} / "
-                + $"{UiLocalization.T("Symbol:")} {drawingObject?.Name ?? UiLocalization.T("Missing object")}";
-            _objectInspector.AtomsText =
-                $"{UiLocalization.T("Transform:")} {sceneInstanceState.ScaleX:0.##}, {sceneInstanceState.ScaleY:0.##} / "
+            _objectInspector.SetSummary(selectedSceneInstances.Count > 1
+                ? $"{selectedSceneInstances.Count} {UiLocalization.T("Symbol Instances")}"
+                : sceneInstance.Name,
+                $"{layerName ?? UiLocalization.T("Missing layer")} / "
+                + $"{UiLocalization.T("Symbol:")} {drawingObject?.Name ?? UiLocalization.T("Missing object")}",
+                "Transform",
+                $"{sceneInstanceState.ScaleX:0.##}, {sceneInstanceState.ScaleY:0.##} / "
                 + $"{sceneInstanceState.RotationZ:0.#} {UiLocalization.T("deg")} / "
-                + $"{UiLocalization.T("skew")} {sceneInstanceState.SkewX:0.#}, {sceneInstanceState.SkewY:0.#}";
+                + $"{UiLocalization.T("skew")} {sceneInstanceState.SkewX:0.#}, {sceneInstanceState.SkewY:0.#}", _scene.ObjectCount);
             return;
         }
 
@@ -106,11 +107,9 @@ internal sealed partial class MainForm : Form
             var mixedLayer = validSelection.Any(index => _scene.ObjectLayer[index] != firstLayer);
             var atoms = _selectedElements.Sum(hit => _scene.EstimateElementAtomCount(hit, _frame));
             var kindLabel = kinds.Length == 1 ? kinds[0].ToString() : "Mixed";
-            _objectInspector.SelectedText = $"{UiLocalization.T("Selected:")} {CompactFormat.Number(_selectedElements.Count)} {kindLabel} {UiLocalization.T("parts")}";
-            _objectInspector.LayerText = mixedLayer
-                ? UiLocalization.T("Layer: Mixed")
-                : firstLayer >= 0 ? $"{UiLocalization.T("Layer:")} {_scene.LayerNames[firstLayer]}" : UiLocalization.T("Layer: -");
-            _objectInspector.AtomsText = $"{UiLocalization.T("Atoms:")} {CompactFormat.Number(atoms)}";
+            _objectInspector.SetSummary($"{CompactFormat.Number(_selectedElements.Count)} {UiLocalization.T(kindLabel)} {UiLocalization.T("parts")}",
+                mixedLayer ? UiLocalization.T("Mixed") : firstLayer >= 0 ? _scene.LayerNames[firstLayer] : null,
+                "Geometry atoms", CompactFormat.Number(atoms), _scene.ObjectCount);
             return;
         }
 
@@ -125,32 +124,28 @@ internal sealed partial class MainForm : Form
                 if (_scene.ObjectLayer[index] != firstLayer) mixedLayer = true;
             }
 
-            _objectInspector.SelectedText = $"{UiLocalization.T("Selected:")} {CompactFormat.Number(validSelection.Length)} {UiLocalization.T("objects")}";
-            _objectInspector.LayerText = mixedLayer ? UiLocalization.T("Layer: Mixed") : $"{UiLocalization.T("Layer:")} {_scene.LayerNames[firstLayer]}";
-            _objectInspector.AtomsText = $"{UiLocalization.T("Atoms:")} {CompactFormat.Number(atoms)}";
+            _objectInspector.SetSummary($"{CompactFormat.Number(validSelection.Length)} {UiLocalization.T("objects")}",
+                mixedLayer ? UiLocalization.T("Mixed") : _scene.LayerNames[firstLayer],
+                "Geometry atoms", CompactFormat.Number(atoms), _scene.ObjectCount);
             return;
         }
 
         if (validSelection.Length == 1 && _selectedObject != validSelection[0]) _selectedObject = validSelection[0];
         if (_selectedObject < 0 || _selectedObject >= _scene.ObjectCount)
         {
-            _objectInspector.SelectedText = $"{UiLocalization.T("Selected:")} {UiLocalization.T("None")}";
-            _objectInspector.LayerText = _scene.LayerNames.Length > 0
-                ? $"{UiLocalization.T("Layer:")} {_scene.LayerNames[_scene.ActiveLayer]}"
-                : UiLocalization.T("Layer: -");
-            _objectInspector.AtomsText = $"{UiLocalization.T("Atoms:")} -";
+            _objectInspector.SetSummary(null, null, null, null, _scene.ObjectCount);
             return;
         }
 
         var layer = _scene.ObjectLayer[_selectedObject];
-        _objectInspector.SelectedText = _selectedElement.IsValid && _selectedElement.Key.ObjectIndex == _selectedObject
-            ? $"Selected: #{_selectedObject} {_selectedElement.Key.Kind} part {_selectedElement.Key.PartIndex}"
-            : $"Selected: #{_selectedObject}";
-        _objectInspector.LayerText = $"Layer: {_scene.LayerNames[layer]}";
+        var selectionSummary = _selectedElement.IsValid && _selectedElement.Key.ObjectIndex == _selectedObject
+            ? $"#{_selectedObject} · {UiLocalization.T(_selectedElement.Key.Kind.ToString())} · {_selectedElement.Key.PartIndex}"
+            : $"{UiLocalization.T(_scene.ShapeKind[_selectedObject].ToString())} · #{_selectedObject}";
         var selectedAtoms = _selectedElement.IsValid
             ? _scene.EstimateElementAtomCount(_selectedElement, _frame)
             : _scene.AtomCount[_selectedObject];
-        _objectInspector.AtomsText = $"Atoms: {CompactFormat.Number(selectedAtoms)}";
+        _objectInspector.SetSummary(selectionSummary, _scene.LayerNames[layer],
+            "Geometry atoms", CompactFormat.Number(selectedAtoms), _scene.ObjectCount);
         var fill = Color.FromArgb(_scene.Argb[_selectedObject]);
         var stroke = _scene.StrokeArgb.Length > _selectedObject ? Color.FromArgb(_scene.StrokeArgb[_selectedObject]) : ActiveStrokeColor();
         var strokePoints = VectorUnits.UnitsToStrokePoints(_scene.Stroke[_selectedObject]);
@@ -218,6 +213,7 @@ internal sealed partial class MainForm : Form
             var imageLayoutChanged = imageInspectorWasVisible != _imageInspector.Visible
                 || !ReferenceEquals(imageInspectorParent, _imageInspector.Parent);
             var basicLayoutChanged = drawingParameterPanelsMoved || imageLayoutChanged
+                || objectGeometryWasVisible != _objectGeometryPanel.Visible
                 || spatialMaterialWasVisible != _spatialMaterialPanel.Visible
                 || (drawingObjectLayoutChanged
                     && ReferenceEquals(drawingObjectPanelParent, _basicInspectorPage.Content))
@@ -255,11 +251,15 @@ internal sealed partial class MainForm : Form
     private void UpdateTextSettingsPanel()
     {
         var hasSelectedText = TryGetSelectedTextObject(out _, out var selectedData);
-        _textSettingsPanel.Visible = IsDrawingInspectorContext()
-            && (_tool == ToolMode.Text || IsTextEditActive() || hasSelectedText);
-        if (!_textSettingsPanel.Visible) return;
+        var drawingContext = IsDrawingInspectorContext();
+        _textToolSettingsPanel.SetEditingContext(toolDefaults: true);
+        _textToolSettingsPanel.Visible = drawingContext && _tool == ToolMode.Text;
+        _textSettingsPanel.SetEditingContext(toolDefaults: false);
+        _textSettingsPanel.Visible = drawingContext && (IsTextEditActive() || hasSelectedText);
 
-        var data = IsTextEditActive() ? _textEditData : hasSelectedText ? selectedData : null;
+        var data = drawingContext
+            ? IsTextEditActive() ? _textEditData : hasSelectedText ? selectedData : null
+            : null;
         if (data is null) return;
         _textSettingsPanel.SetSettings(
             data.FontFamilyName,
@@ -283,12 +283,7 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        _objectInspector.SelectedText = "Selected: None";
-        _objectInspector.LayerText =
-            _scene.LayerNames.Length > 0 && _scene.ActiveLayer >= 0 && _scene.ActiveLayer < _scene.LayerNames.Length
-                ? $"Layer: {_scene.LayerNames[_scene.ActiveLayer]}"
-                : "Layer: -";
-        _objectInspector.AtomsText = "Atoms: -";
+        _objectInspector.SetSummary(null, null, null, null, _scene.ObjectCount);
     }
 
     private void RestoreInspectorScrollPosition(ThemedScrollPanel page, int verticalPosition)
@@ -307,7 +302,7 @@ internal sealed partial class MainForm : Form
 
     private int[] SelectedLineEndpointStyleTargets()
     {
-        if (IsSceneCompositionContext() || _selectedElements.Count > 0) return [];
+        if (!IsEditableDrawingContext() || _selectedElements.Count > 0) return [];
         var selected = _selectedObjects
             .Where(index => (uint)index < _scene.ObjectCount)
             .Distinct()
@@ -324,7 +319,7 @@ internal sealed partial class MainForm : Form
 
     private DrawingElementHit[] SelectedLineEndpointStyleElements()
     {
-        if (IsSceneCompositionContext() || _selectedElements.Count == 0) return [];
+        if (!IsEditableDrawingContext() || _selectedElements.Count == 0) return [];
         var selected = _selectedElements
             .Where(hit => hit.IsValid)
             .GroupBy(hit => hit.Key)
@@ -459,7 +454,7 @@ internal sealed partial class MainForm : Form
 
     private void ApplyGradientToSelection(GradientChangedEventArgs gradient)
     {
-        if (IsSceneCompositionContext()) return;
+        if (!IsEditableDrawingContext()) return;
         int[] targets;
         if (_selectedElements.Count > 0)
         {
@@ -1037,7 +1032,7 @@ internal sealed partial class MainForm : Form
             UpdateSceneDimensionButton();
             ApplyShotTimelineFilter(sceneWorkspace ? ActiveScene() : null);
 
-            if (!basicDrawing && !IsSceneMaskEditing() && IsBasicDrawingOnlyTool(_tool))
+            if (!basicDrawing && !IsEditableDrawingContext() && !IsSceneDrawingAvailable() && IsBasicDrawingOnlyTool(_tool))
             {
                 _tool = ToolMode.Select;
                 CancelTraditionalPenPath();
@@ -1097,7 +1092,8 @@ internal sealed partial class MainForm : Form
     private bool IsDrawingInspectorContext()
     {
         return IsDrawingWorkspaceContext
-            || IsSceneMaskDrawingInspectorContext();
+            || IsSceneMaskDrawingInspectorContext()
+            || IsSceneDrawingContext();
     }
 
     private static bool IsDrawingTool(ToolMode tool)
@@ -1111,7 +1107,10 @@ internal sealed partial class MainForm : Form
             || tool is ToolMode.Text or ToolMode.Fill or ToolMode.InkBottle or ToolMode.Eyedropper or ToolMode.Gradient or ToolMode.SnapPoint or ToolMode.Eraser;
     }
 
-    internal static bool IsToolVisibleInWorkspace(WorkspaceView view, ToolMode tool)
+    internal static bool IsToolVisibleInWorkspace(
+        WorkspaceView view,
+        ToolMode tool,
+        bool sceneDrawingEditing = false)
     {
         if (view == WorkspaceView.Animation) view = WorkspaceView.SceneEditor;
         // Shots & Directing is a camera-only stage. Camera wireframe handles are routed separately
@@ -1121,7 +1120,9 @@ internal sealed partial class MainForm : Form
             return tool is ToolMode.Select or ToolMode.Transform or ToolMode.Hand;
         }
         if (tool == ToolMode.Transform3D) return view == WorkspaceView.SceneEditor;
-        return view == WorkspaceView.BasicDrawing || !IsBasicDrawingOnlyTool(tool);
+        return view == WorkspaceView.BasicDrawing
+            || view == WorkspaceView.SceneEditor && sceneDrawingEditing
+            || !IsBasicDrawingOnlyTool(tool);
     }
 
     private bool IsToolVisibleForCurrentContext(ToolMode tool)
@@ -1134,14 +1135,14 @@ internal sealed partial class MainForm : Form
         {
             return tool != ToolMode.Transform3D;
         }
-        if (!IsToolVisibleInWorkspace(workspace, tool)) return false;
+        if (!IsToolVisibleInWorkspace(workspace, tool, IsSceneDrawingAvailable())) return false;
         if (workspace == WorkspaceView.ShotDirector) return true;
         if (workspace != WorkspaceView.SceneEditor) return true;
         return IsSceneReferenceView()
                 ? IsScene3DView()
                 ? tool is ToolMode.Select or ToolMode.Transform3D or ToolMode.Hand
                 : IsScene2DFrontView()
-                    ? tool is ToolMode.Select or ToolMode.PolygonLasso or ToolMode.FreehandLasso or ToolMode.Transform or ToolMode.Distort or ToolMode.Hand
+                    ? tool != ToolMode.Transform3D
                     : tool is ToolMode.Select or ToolMode.Hand
             : tool != ToolMode.Transform3D;
     }
@@ -1297,32 +1298,36 @@ internal sealed partial class MainForm : Form
     internal static bool ShouldShowShapeSettings(
         WorkspaceView view,
         ToolMode tool,
-        bool sceneMaskEditing = false)
+        bool sceneMaskEditing = false,
+        bool sceneDrawingEditing = false)
     {
         return (view == WorkspaceView.BasicDrawing
-                || view == WorkspaceView.SceneEditor && sceneMaskEditing)
+                || view == WorkspaceView.SceneEditor && (sceneMaskEditing || sceneDrawingEditing))
             && tool is ToolMode.Polygon or ToolMode.Star;
     }
 
     internal static bool ShouldShowPencilSettings(
         WorkspaceView view,
         ToolMode tool,
-        bool sceneMaskEditing = false)
+        bool sceneMaskEditing = false,
+        bool sceneDrawingEditing = false)
     {
         return (view == WorkspaceView.BasicDrawing
-                || view == WorkspaceView.SceneEditor && sceneMaskEditing)
+                || view == WorkspaceView.SceneEditor && (sceneMaskEditing || sceneDrawingEditing))
             && tool == ToolMode.Pencil;
     }
 
     private void UpdatePencilSettingsPanelPresentation()
     {
         var sceneMaskEditing = IsSceneMaskDrawingInspectorContext();
+        var sceneDrawingEditing = IsSceneDrawingContext();
         _drawSettingsPanel.Visible = ShouldShowPencilSettings(
             EditingWorkspace,
             _tool,
-            sceneMaskEditing);
-        if (_drawSettingsPanel.Visible && !sceneMaskEditing) ArrangeBasicDrawingInspectorPanels();
-        if (sceneMaskEditing) ArrangeSceneMaskInspectorPanels();
+            sceneMaskEditing,
+            sceneDrawingEditing);
+        if (_drawSettingsPanel.Visible && !sceneMaskEditing && !sceneDrawingEditing) ArrangeBasicDrawingInspectorPanels();
+        if (sceneMaskEditing || sceneDrawingEditing) ArrangeSceneMaskInspectorPanels();
     }
 
     private void UpdateShapeSettingsPanelPresentation()
@@ -1334,11 +1339,13 @@ internal sealed partial class MainForm : Form
         }
 
         var sceneMaskEditing = IsSceneMaskDrawingInspectorContext();
+        var sceneDrawingEditing = IsSceneDrawingContext();
         _shapeSettingsPanel.Visible = ShouldShowShapeSettings(
             EditingWorkspace,
             _tool,
-            sceneMaskEditing);
-        if (sceneMaskEditing) ArrangeSceneMaskInspectorPanels();
+            sceneMaskEditing,
+            sceneDrawingEditing);
+        if (sceneMaskEditing || sceneDrawingEditing) ArrangeSceneMaskInspectorPanels();
     }
 
     private static bool IsLineTool(ToolMode tool)

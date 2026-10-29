@@ -11,6 +11,7 @@ internal static partial class Benchmark
         RunImmediateColorEditingRegression();
         RunUiCompositionRegression();
         RunInspectorCompositionWorkspaceRegression();
+        RunInspectorWorkflowRegression();
         RunUiDiscoverabilityRegression();
         RunVaultPresentationRegression();
         using (var form = new MainForm())
@@ -395,6 +396,325 @@ internal static partial class Benchmark
         }
     }
 
+    private static void RunInspectorWorkflowRegression()
+    {
+        var directory = CreateTemporaryDirectory("inspector-workflow");
+        try
+        {
+            var imagePath = Path.Combine(directory, "preview.png");
+            WriteFixturePng(imagePath, 64, 48);
+            using var form = new MainForm { ShowInTaskbar = false, Location = new Point(-30000, -30000) };
+            form.Show();
+            Application.DoEvents();
+            ((System.Windows.Forms.Timer)RequireField(typeof(MainForm), "_timer").GetValue(form)!).Stop();
+            var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+            var drawing = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+            var timeline = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+            var page = (ThemedScrollPanel)RequireField(typeof(MainForm), "_basicInspectorPage").GetValue(form)!;
+            var geometry = (ObjectGeometryPanel)RequireField(typeof(MainForm), "_objectGeometryPanel").GetValue(form)!;
+            var editors = (ModernNumericUpDown[])RequireField(typeof(ObjectGeometryPanel), "_values").GetValue(geometry)!;
+            var image = (ImageInspectorPanel)RequireField(typeof(MainForm), "_imageInspector").GetValue(form)!;
+            var summary = (SelectionSummaryPanel)RequireField(typeof(MainForm), "_objectInspector").GetValue(form)!;
+            var textProperties = (TextSettingsPanel)RequireField(typeof(MainForm), "_textSettingsPanel").GetValue(form)!;
+            var textDefaults = (TextSettingsPanel)RequireField(typeof(MainForm), "_textToolSettingsPanel").GetValue(form)!;
+            var category = RequireField(typeof(MainForm), "_inspectorCategory");
+            var update = RequireMethod(typeof(MainForm), "UpdateInspector", [typeof(bool)]);
+            var select = RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]);
+            var shortcut = RequireMethod(typeof(MainForm), "HandleInspectorCategoryShortcut", [typeof(Keys)]);
+            var undo = RequireMethod(typeof(MainForm), "UndoLastEdit");
+            void Refresh() => update.Invoke(form, [true]);
+            void Reveal(int number) => shortcut.Invoke(form, [Keys.Control | Keys.Alt | (Keys)((int)Keys.D1 + number - 1)]);
+            void AssertCategory(string expected) => AssertTimeline(category.GetValue(form)?.ToString() == expected,
+                $"Inspector category mismatch: expected={expected}, actual={category.GetValue(form)}.");
+            void Near(float actual, float expected, string message) => AssertTimeline(Math.Abs(actual - expected) < 1.1f,
+                $"{message}: expected={expected}, actual={actual}.");
+            void Edit(ObjectTransformField field, float value) => editors[(int)field].Value = (decimal)value;
+            void Select(int index)
+            {
+                select.Invoke(form, [index, false]);
+                Refresh();
+            }
+            int UndoCount()
+            {
+                var stack = RequireField(typeof(MainForm), "_undoStack").GetValue(form)!;
+                return (int)stack.GetType().GetProperty("Count")!.GetValue(stack)!;
+            }
+            void AssertOrder()
+            {
+                Application.DoEvents();
+                AssertTimeline(geometry.Visible, "Selected object lost Position and Size.");
+                foreach (var name in new[] { "_objectInspector", "_imageInspector", "_textSettingsPanel",
+                    "_drawingObjectInstancePanel", "_spatialMaterialPanel", "_tweenCurveEditorPanel" })
+                {
+                    var panel = (Control)RequireField(typeof(MainForm), name).GetValue(form)!;
+                    AssertTimeline(!panel.Visible || !ReferenceEquals(panel.Parent, geometry.Parent)
+                        || panel.Bottom <= geometry.Top,
+                        $"Object-specific panel {name} overlaps or follows Position and Size.");
+                }
+            }
+            void CheckSelection(int index)
+            {
+                Select(-1);
+                Reveal(7);
+                AssertCategory("Document");
+                Select(index);
+                AssertCategory("None");
+                AssertOrder();
+                foreach (var manual in new[] { (6, "Tools"), (7, "Document"), (2, "Color") })
+                {
+                    Reveal(manual.Item1);
+                    Refresh();
+                    Refresh();
+                    RequireMethod(typeof(MainForm), "SyncSelectionToStage", [typeof(bool), typeof(bool)])
+                        .Invoke(form, [false, true]);
+                    Refresh();
+                    AssertCategory(manual.Item2);
+                }
+                Reveal(1);
+            }
+            foreach (var shape in new[] { ShapeKind.Rectangle, ShapeKind.Ellipse, ShapeKind.Triangle,
+                ShapeKind.Polygon, ShapeKind.Star, ShapeKind.Line })
+            {
+                var index = drawing.AddObject(0, new PointF(300, 100), new SizeF(100, 60), 0, 2,
+                    Color.Blue, 64, shape, 5);
+                CheckSelection(index);
+                Edit(ObjectTransformField.X, 420);
+                Edit(ObjectTransformField.Width, 200);
+                Edit(ObjectTransformField.Rotation, 25);
+                Near(drawing.X[index], 420, $"{shape} center");
+                Near(drawing.Width[index], 200, $"{shape} width");
+                Near(drawing.Angle[index] * 180 / MathF.PI, 25, $"{shape} rotation");
+                AssertTimeline(shape != ShapeKind.Line || !editors[3].Enabled,
+                    "Line selection height must not masquerade as editable thickness.");
+            }
+            var path = drawing.AddPathObject(0, [new(0, 0), new(100, 0), new(100, 60), new(0, 60)],
+                0, Color.Blue, Color.Transparent, 64);
+            CheckSelection(path);
+            Edit(ObjectTransformField.Width, 200);
+            Near(drawing.Width[path], 200, "Path bounds width");
+            Edit(ObjectTransformField.Rotation, 30);
+            AssertTimeline(editors[4].Value == 0, "Baked path rotation must use an increment.");
+            var rotatedWidth = drawing.Width[path];
+            Edit(ObjectTransformField.Rotation, 30);
+            AssertTimeline(Math.Abs(drawing.Width[path] - rotatedWidth) > 5, "Repeated path rotation was ignored.");
+            var pencil = drawing.AddFreehandStroke(0, [new(0, 0), new(100, 0), new(100, 60)],
+                4, Color.Blue, false, 64);
+            CheckSelection(pencil);
+            Edit(ObjectTransformField.Width, 300);
+            Near(drawing.Width[pencil], 300, "Pencil bounds including stroke");
+            var svg = drawing.AddImportedSvgObject(0, new PointF(400, 100), new SizeF(100, 50),
+                "<svg xmlns='http://www.w3.org/2000/svg' width='100' height='50'><rect width='100' height='50'/></svg>", "Fixture SVG");
+            CheckSelection(svg);
+            Edit(ObjectTransformField.X, 500);
+            Edit(ObjectTransformField.Width, 250);
+            Near(drawing.X[svg], 500, "SVG center");
+            Near(drawing.Width[svg], 250, "SVG local size");
+            var text = drawing.AddTextObject(0, new PointF(200, 100), new TextObjectData("Editable text",
+                TextGeometry.FallbackFontFamilyName, 24, TextFontStyle.Regular, TextHorizontalAlignment.Left,
+                new SizeF(200, 80)), Color.White);
+            CheckSelection(text);
+            Edit(ObjectTransformField.Rotation, 40);
+            Edit(ObjectTransformField.Width, 300);
+            AssertTimeline(drawing.ShapeKind[text] == ShapeKind.Text, "Local resizing converted native text to a path.");
+            Near(drawing.Width[text], 300, "Text local width");
+            RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.Text]);
+            var defaultsSize = textDefaults.FontSizePoints;
+            textProperties.SetSettings(textProperties.FontFamilyName, 36, TextFontStyle.Bold, TextHorizontalAlignment.Center);
+            RequireMethod(typeof(MainForm), "ApplyTextSettingsChange").Invoke(form, null);
+            AssertTimeline(drawing.TryGetTextObjectData(text, out var editedText) && editedText.FontSizePoints == 36
+                && textDefaults.FontSizePoints == defaultsSize, "Text object settings overwrote tool defaults.");
+            Reveal(6);
+            var beforeDefaults = UndoCount();
+            textDefaults.SetSettings(textDefaults.FontFamilyName, 18, TextFontStyle.Italic, TextHorizontalAlignment.Right);
+            Refresh();
+            AssertTimeline(UndoCount() == beforeDefaults && drawing.TryGetTextObjectData(text, out editedText)
+                && editedText.FontSizePoints == 36, "Text tool defaults mutated selected text or undo history.");
+            AssertCategory("Tools");
+            AssertTimeline(project.TryAddImageAssetFromSource("Inspector image", imagePath,
+                BitmapImageRasterizer.ComputeSha256(imagePath), 64, 48, 96, BitmapImageImportSettings.Default, out var asset)
+                && asset is not null, "Could not register inspector image.");
+            var imageId = asset!.Id;
+            var bitmap = drawing.AddBitmapObject(0, new PointF(100, 100),
+                new BitmapObjectData { ImageAssetId = imageId, PlacedSize = new SizeF(640, 480) });
+            var secondBitmap = drawing.AddBitmapObject(0, new PointF(1000, 100),
+                new BitmapObjectData { ImageAssetId = imageId, PlacedSize = new SizeF(320, 240) });
+            CheckSelection(bitmap);
+            Edit(ObjectTransformField.Rotation, 30);
+            Edit(ObjectTransformField.Width, 300);
+            Near(drawing.Width[bitmap], 300, "Rotated bitmap local width");
+            Near(drawing.Height[bitmap], 480, "Unlocked bitmap height");
+            var numeric = editors[0];
+            var beforeGesture = UndoCount();
+            var previousX = drawing.X[bitmap];
+            RequireMethod(typeof(ModernNumericUpDown), "BeginStepperInteraction").Invoke(numeric, null);
+            numeric.Value = 350;
+            numeric.Value = 370;
+            Near(drawing.X[bitmap], previousX, "Numeric gesture committed before completion");
+            RequireMethod(typeof(ModernNumericUpDown), "EndStepperInteraction", [typeof(bool)]).Invoke(numeric, [false]);
+            Near(drawing.X[bitmap], 370, "Numeric gesture completion");
+            AssertTimeline(UndoCount() == beforeGesture + 1, "Numeric gesture must create one undo entry.");
+            RequireMethod(typeof(ModernNumericUpDown), "BeginStepperInteraction").Invoke(numeric, null);
+            numeric.Value = 450;
+            RequireMethod(typeof(ModernNumericUpDown), "EndStepperInteraction", [typeof(bool)]).Invoke(numeric, [true]);
+            Near(drawing.X[bitmap], 370, "Canceled numeric gesture");
+            AssertTimeline(UndoCount() == beforeGesture + 1, "Cancel added an undo entry.");
+            AssertTimeline(undo.Invoke(form, null) is true, "Numeric transform undo was unavailable.");
+            Near(drawing.X[bitmap], previousX, "Numeric transform undo");
+            Select(bitmap);
+            var preview = (Control)RequireField(typeof(SelectionSummaryPanel), "_preview").GetValue(summary)!;
+            var rasterField = RequireField(preview.GetType(), "_raster");
+            var raster = rasterField.GetValue(preview);
+            Refresh();
+            AssertTimeline(raster is not null && ReferenceEquals(raster, rasterField.GetValue(preview)),
+                "Bitmap preview did not reuse the cached raster.");
+            var display = (ComboBox)RequireField(typeof(ImageInspectorPanel), "_displayMode").GetValue(image)!;
+            display.SelectedIndex = 1;
+            AssertTimeline(project.ImageAssets.Single(item => item.Id == imageId).ImportSettings.FilterMode == ImageFilterMode.Point
+                && RequireField(preview.GetType(), "_sampling").GetValue(preview) is BitmapSampling.Point,
+                "Image display mode did not update the shared asset and preview.");
+            Near(drawing.Width[bitmap], 300, "Display mode resized custom placement");
+            Near(drawing.Width[secondBitmap], 320, "Display mode resized another placement");
+            AssertTimeline(undo.Invoke(form, null) is true
+                && project.ImageAssets.Single(item => item.Id == imageId).ImportSettings.FilterMode == ImageFilterMode.Bilinear,
+                "Image display mode did not retain shared-asset undo.");
+            CheckSelection(bitmap);
+            Select(-1);
+            Reveal(7);
+            AssertCategory("Document");
+            select.Invoke(form, [bitmap, true]);
+            Reveal(6);
+            Refresh();
+            AssertCategory("Tools");
+            RequireMethod(typeof(MainForm), "SelectAllObjectsInCurrentFrame").Invoke(form, null);
+            AssertCategory("None");
+            AssertOrder();
+            AssertTimeline(!preview.Visible, "Multi-selection retained a single bitmap preview.");
+            var keepRatio = (ModernToggleSwitch)RequireField(typeof(ObjectGeometryPanel), "_keepRatio").GetValue(geometry)!;
+            AssertTimeline(keepRatio.Checked && !keepRatio.Enabled, "Group size must remain proportional.");
+            Select(bitmap);
+            drawing.SetLayerLocked(0, true);
+            Refresh();
+            AssertTimeline(!editors[0].Enabled, "Locked object still exposes editable transforms.");
+            drawing.SetLayerLocked(0, false);
+            Reveal(7);
+            RequireMethod(typeof(MainForm), "ToggleInspectorPanel").Invoke(form, null);
+            Select(text);
+            AssertTimeline(RequireField(typeof(MainForm), "_inspectorPanelOpen").GetValue(form) is false,
+                "Selection reopened a closed inspector.");
+            RequireMethod(typeof(MainForm), "ToggleInspectorPanel").Invoke(form, null);
+            Select(bitmap);
+            timeline.AutoKeyframeEnabled = false;
+            drawing.Timeline.SetTrackDuration(drawing.Timeline.Tracks[0].Id, 6);
+            RequireMethod(typeof(MainForm), "ApplyBoundTimelineDuration", [typeof(int), typeof(bool)]).Invoke(form, [0, true]);
+            var setFrame = RequireMethod(typeof(MainForm), "SetFrame", [typeof(int), typeof(bool), typeof(bool), typeof(bool)]);
+            Reveal(7);
+            setFrame.Invoke(form, [5, true, true, false]);
+            AssertTimeline(timeline.CurrentFrame == 5, "Held exposure fixture did not reach the requested frame.");
+            AssertCategory("Document");
+            Select(bitmap);
+            var heldX = drawing.X[bitmap];
+            Edit(ObjectTransformField.X, heldX + 25);
+            AssertTimeline(undo.Invoke(form, null) is true, "Held exposure transform undo unavailable.");
+            Near(drawing.X[bitmap], heldX, "Held exposure undo");
+            timeline.AutoKeyframeEnabled = true;
+            Select(bitmap);
+            Edit(ObjectTransformField.X, heldX + 35);
+            var activeObject = (int)RequireField(typeof(MainForm), "_selectedObject").GetValue(form)!;
+            Near(drawing.X[activeObject], heldX + 35, "Auto Key transform");
+            AssertTimeline(undo.Invoke(form, null) is true, "Auto Key transform undo unavailable.");
+            setFrame.Invoke(form, [0, true, true, false]);
+            Near(drawing.X[bitmap], heldX, "Auto Key undo changed the original exposure");
+            timeline.AutoKeyframeEnabled = false;
+            RunInspectorInstanceSelectionRegression(form, project, geometry);
+            Console.WriteLine("inspector_workflow=ok,selection_routes=all,manual_navigation=stable,transform_order=last,numeric_undo=ok,image_sampling=ok,text_defaults=isolated,autokey=ok");
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    private static void RunInspectorInstanceSelectionRegression(MainForm form, VectorProject project, ObjectGeometryPanel geometry)
+    {
+        var container = (DrawingObjectDefinition)RequireMethod(typeof(MainForm), "ActiveDrawingObject").Invoke(form, null)!;
+        var child = project.AddDrawingObject("Inspector child");
+        child.Scene.AddObject(0, new PointF(50, 30), new SizeF(100, 60), 0, 0, Color.Blue, 64, ShapeKind.Rectangle);
+        AssertTimeline(project.TryAddDrawingObjectInstance(container.Id, child.Id, new PointF(250, 150), out var nested)
+            && nested is not null, "Could not create inspector nested instance.");
+        var select = RequireMethod(typeof(MainForm), "SetSceneInstanceSelection", [typeof(DrawingObjectInstanceDefinition), typeof(bool)]);
+        var shortcut = RequireMethod(typeof(MainForm), "HandleInspectorCategoryShortcut", [typeof(Keys)]);
+        var update = RequireMethod(typeof(MainForm), "UpdateInspector", [typeof(bool)]);
+        var category = RequireField(typeof(MainForm), "_inspectorCategory");
+        var editors = (ModernNumericUpDown[])RequireField(typeof(ObjectGeometryPanel), "_values").GetValue(geometry)!;
+        void RevealDocument() => shortcut.Invoke(form, [Keys.Control | Keys.Alt | Keys.D7]);
+        void AssertSelected()
+        {
+            update.Invoke(form, [true]);
+            var settings = (Control)RequireField(typeof(MainForm), "_drawingObjectInstancePanel").GetValue(form)!;
+            AssertTimeline(category.GetValue(form)?.ToString() == "None" && geometry.Visible && editors[0].Enabled
+                && settings.Visible && settings.Bottom <= geometry.Top,
+                "Instance selection lost Object navigation, editable geometry or specialized-first ordering.");
+        }
+        RequireMethod(typeof(MainForm), "RebuildDrawingObjectUnderlay").Invoke(form, null);
+        RevealDocument();
+        select.Invoke(form, [nested, false]);
+        AssertSelected();
+        var center = editors[0].Value;
+        editors[0].Value = center + 30;
+        AssertTimeline(Math.Abs(editors[0].Value - center - 30) < 1.1m, "Nested instance center did not update.");
+        var width = editors[2].Value;
+        editors[2].Value = width * 2;
+        AssertTimeline(Math.Abs(editors[2].Value - width * 2) < 1.1m, "Nested instance local width did not update.");
+        editors[4].Value = 30;
+        AssertTimeline(Math.Abs(nested!.EvaluateState(0).RotationZ - 30) < 0.01f,
+            "Nested instance rotation did not update.");
+        AssertTimeline(RequireMethod(typeof(MainForm), "UndoLastEdit").Invoke(form, null) is true
+            && Math.Abs(container.Instances.Single(instance => instance.Id == nested.Id).EvaluateState(0).RotationZ) < 0.01f,
+            "Nested instance transform undo failed.");
+        nested = container.Instances.Single(instance => instance.Id == nested.Id);
+        select.Invoke(form, [nested, false]);
+        update.Invoke(form, [true]);
+        RevealDocument();
+        select.Invoke(form, [nested, false]);
+        update.Invoke(form, [true]);
+        AssertTimeline(category.GetValue(form)?.ToString() == "Document", "Stable-ID instance refresh stole manual navigation.");
+        AssertTimeline(project.TryAddSceneInstance(project.Scenes[0].Id, child.Id, new PointF(400, 200), 0, out var instance)
+            && instance is not null, "Could not create scene inspector instance.");
+        var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        tabs.SelectedView = WorkspaceView.SceneEditor;
+        RevealDocument();
+        select.Invoke(form, [instance, false]);
+        AssertSelected();
+        editors[4].Value = 25;
+        AssertTimeline(Math.Abs(instance!.EvaluateState(0).RotationZ - 25) < 0.01f,
+            "Scene instance rotation did not update.");
+        AssertTimeline(RequireMethod(typeof(MainForm), "UndoLastEdit").Invoke(form, null) is true,
+            "Scene instance transform undo unavailable.");
+        tabs.SelectedView = WorkspaceView.BasicDrawing;
+        RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.Select]);
+        var drawing = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        var clickObject = drawing.AddObject(0, new PointF(1800, 1200), new SizeF(600, 400), 0, 0,
+            Color.Blue, 64, ShapeKind.Rectangle);
+        RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]).Invoke(form, [clickObject, false]);
+        update.Invoke(form, [true]);
+        RevealDocument();
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var screen = Point.Round(stage.WorldToScreen(1800, 1200));
+        var mouse = new MouseEventArgs(MouseButtons.Left, 1, screen.X, screen.Y, 0);
+        RequireMethod(typeof(MainForm), "StageMouseDown").Invoke(form, [stage, mouse]);
+        RequireMethod(typeof(MainForm), "StageMouseUp").Invoke(form, [stage, mouse]);
+        update.Invoke(form, [true]);
+        AssertTimeline(category.GetValue(form)?.ToString() == "None", "Clicking an already selected object did not reveal Object.");
+        RevealDocument();
+        var space = RequireField(typeof(MainForm), "_spacePanHeld");
+        space.SetValue(form, true);
+        try
+        {
+            RequireMethod(typeof(MainForm), "StageMouseDown").Invoke(form, [stage, mouse]);
+            RequireMethod(typeof(MainForm), "StageMouseUp").Invoke(form, [stage, mouse]);
+        }
+        finally { space.SetValue(form, false); }
+        update.Invoke(form, [true]);
+        AssertTimeline(category.GetValue(form)?.ToString() == "Document", "Space panning stole inspector navigation.");
+    }
+
     private static void RunInspectorCompositionWorkspaceRegression()
     {
         using var form = new MainForm { ShowInTaskbar = false, Location = new Point(-30000, -30000) };
@@ -697,8 +1017,21 @@ internal static partial class Benchmark
         requestedAsset = null;
         edit.PerformClick();
         AssertTimeline(requestedAsset is null && !edit.Enabled, "Empty image state emitted an edit.");
+        using var context = new ToolContextPanel();
+        var optionChanges = 0;
+        context.OptionChanged += (_, _) => optionChanges++;
+        var drawSettings = new DrawSettings();
+        foreach (var tool in Enum.GetValues<ToolMode>())
+            context.SetContext(tool, tool.ToString(), SvgIconKind.Info, available: true, drawSettings);
+        AssertTimeline(optionChanges == 0, "Tool context binding emitted a user edit.");
+        context.SetContext(ToolMode.Rectangle, "Rectangle", SvgIconKind.Rectangle, available: true, drawSettings);
+        AssertTimeline(optionChanges == 0 && !drawSettings.KeepAspectRatio,
+            "Tool context refresh mutated drawing defaults.");
+        using var geometry = new ObjectGeometryPanel();
+        geometry.SetGeometry(new RectangleF(-10, 20, 100, 200), "Rectangle", appearanceAvailable: true);
         var routing = HotReloadModuleResolver.Resolve([typeof(UiComposition), typeof(UiSection),
-            typeof(SelectionSummaryPanel), typeof(ImageInspectorPanel), typeof(ShapeSettingsState)]);
+            typeof(SelectionSummaryPanel), typeof(ImageInspectorPanel), typeof(ShapeSettingsState),
+            typeof(ToolContextPanel), typeof(ToolOptionKind), typeof(ObjectGeometryPanel), typeof(ObjectTransformField)]);
         AssertTimeline(routing.Modules == HotReloadModule.Inspector && routing.RequiresProcessRestart,
             "Composable inspector types lost their hot-reload route.");
 
@@ -715,15 +1048,18 @@ internal static partial class Benchmark
                 Theme.Configure(nextTheme, 220, 180);
                 UiLocalization.SetLanguage(nextLanguage);
                 using var page = new ThemedScrollPanel { Size = new Size(width, 530) };
-                using var summary = new SelectionSummaryPanel
-                {
-                    SelectedText = UiLocalization.T("Selected:") + " A very long reusable symbol name 0123456789",
-                    LayerText = UiLocalization.T("Layer:") + " Foreground", AtomsText = "Atoms: 128", ObjectsText = "Objects: 64"
-                };
+                using var summary = new SelectionSummaryPanel();
+                summary.SetSummary("A very long reusable symbol name 0123456789",
+                    "Foreground", "Geometry atoms", "128", 64);
                 using var shapePanel = new ShapeSettingsPanel();
                 shapePanel.SetState(new(ShapeKind.Star, 12));
                 using var imagePanel = new ImageInspectorPanel();
-                imagePanel.SetState(new("preview", "Example image.png" + Environment.NewLine + "1920 × 1080"));
+                imagePanel.SetState(new("preview", "Example image.png")
+                {
+                    SourcePath = @"C:\images\Example image.png", SourceResolution = "1920 × 1080 px",
+                    FilterMode = ImageFilterMode.Point, PixelsPerUnit = "100", MaximumResolution = "8192 px",
+                    DecodedResolution = "1920 × 1080 px", KeepTransparency = UiLocalization.T("Yes")
+                });
                 UiComposition.MountVertical(page.Content,
                     [new(summary, summary.PreferredHeight), new(shapePanel, shapePanel.PreferredHeight),
                      new(imagePanel, imagePanel.PreferredHeight)]);

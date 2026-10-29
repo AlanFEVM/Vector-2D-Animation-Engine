@@ -4,7 +4,7 @@
 
 界面刷新会复用当前元件标签和添加按钮；灯光参数变化采用列表增量更新，保持当前选择与滚动位置。主动选择其他灯光时，列表仍会定位到所选项。此优化不改变元件切换、拖放或灯光编辑命令。
 
-初次使用时，可悬停顶部工作区标签查看用途与快捷键：先在“基础绘图”绘制元件（Ctrl+1），再到“场景与动画”装配并制作关键帧动画（Ctrl+2），需要相机构图时使用“镜头与导演”（Ctrl+3）。吸附栏的网格、对象、对齐和角度按钮提供用途与开关状态提示；总吸附关闭时会说明前置条件，数值框会解释单位和步长。提示随中英文语言与当前设置更新，不改变已选的吸附选项。
+初次使用时，可悬停顶部工作区标签查看用途与快捷键：在“基础绘制”独立制作可复用元件（Ctrl+1），或直接在“场景与动画”的二维正面视图绘制、装配并制作逐帧动画（Ctrl+2）；相机构图在场景时间轴的“镜头”分组中完成（Ctrl+3）。吸附栏的网格、对象、对齐和角度按钮提供用途与开关状态提示；总吸附关闭时会说明前置条件，数值框会解释单位和步长。提示随中英文语言与当前设置更新，不改变已选的吸附选项。
 
 ## 使用本指南
 
@@ -140,16 +140,20 @@ Properties, Timeline and workspace color controls are centered in the first work
 
 底部状态栏中的“渲染 FPS”统计实际完成呈现的画面次数；即使时间轴帧号未变化，重复呈现也会计入。它与项目设置的“动画 FPS”是两个独立指标。
 
-两个工作区的职责不同；镜头已集成到场景与动画：
+两个工作区按编辑对象分工，而不是按绘制工具分工；镜头已集成到场景与动画：
 
 | 工作区 | 用途 | 是否直接绘制 |
 | --- | --- | --- |
-| `Basic Drawing` | 编辑可复用的元件、图层和 Cel | 是 |
-| `Scene & Animation` | 装配场景、制作关键帧动画，并通过时间轴的“镜头”分组管理相机 | 仅编辑 Scene Mask 时可以 |
+| `Basic Drawing` | 独立编辑可复用元件，或在开放画布准备素材 | 是 |
+| `Scene & Animation` | 在同一场景直接绘画、放置元件和制作逐帧／补间动画，通过“镜头”分组管理相机 | 二维正面视图支持全部基础绘制工具，场景遮罩也可绘制 |
 
 相机不再使用单独的顶部工作区。进入 `Scene & Animation` 后，时间轴默认显示“全部”；场景时间轴初始包含“图层”“地形”“镜头”分组。“镜头”只显示相机轨道；进入时优先选中之前的相机，否则选中第一个可用相机，右侧显示相机面板。没有相机时也可从此面板新建。在“全部”中，相机轨道固定排在普通图层上方，不受图层分组排序、移动或文件夹／遮罩关系影响；相机不能移入普通分组，普通图层也不能移入“镜头”。选中普通图层后恢复场景检查器。相机仍观察完整场景，不拥有场景图层。
 
-机制：元件是可复用的绘制资产；Scene 保存元件实例，不复制其源几何。修改源元件后，引用它的场景和嵌套实例会使用新内容。
+机制：元件是可复用的绘制资产；Scene 可以同时保存自己的手绘内容和元件实例，不复制所引用元件的源几何。修改源元件后，引用它的场景和嵌套实例会使用新内容。场景手绘内容属于场景本身，不会自动生成隐藏元件，也不要求建立特殊的“绘制层”。
+
+在场景的普通内容图层上直接使用形状、钢笔、铅笔、普通／压感／混色笔刷、文字、填充、取色、渐变、吸附点和擦除等工具；图层也可放元件实例。图形可选择、变形、复制粘贴、删除、打散或按 `F8` 转为可复用元件。场景和元件使用同一套 Cel、曝光、`F6` 复制关键帧、`F7` 空白关键帧、Auto Key 与洋葱皮操作。场景空白曝光上首次落笔会从当前播放头开始，不会把新内容补到更早的空白帧；普通保持曝光仍按 Auto Key 规则编辑来源 Cel。
+
+例如角色和枪继续使用元件，把播放头移到中枪帧，在任意未锁定普通内容图层按 `F7` 并绘制血花，随后用 `F6` 复制修改或用 `F7` 逐张重画。全手绘火柴人也可以从空场景直接开始，无需先回基础绘制制作每帧素材。需要补间手绘图形时，同一补间图层不要同时放元件实例；把它们分到不同普通图层即可分别补间。场景绘画随工程保存、打开和编辑器重启恢复。
 
 基础绘制顶部的“当前 / 开放”（`Current scope` / `Open scope`）切换实际编辑范围。“当前”沿用原有逻辑，整个画布为当前元件服务；“开放”进入独立的项目画布，不改变当前元件的几何。开放画布随工程保存、打开，不在 Vault 的可复用元件列表中显示，也不能拖入场景。切换画布会结束当前绘制操作并清空该编辑上下文的撤销记录。
 
@@ -164,9 +168,9 @@ Properties, Timeline and workspace color controls are centered in the first work
 - 窗口变窄或变矮时，Vault、右侧检查器和底部时间轴会按可用空间收紧；画布上方指标会按空间隐藏，属性、时间轴和颜色入口随工作区标签行的可用空间收紧，缩放入口保持在右侧；吸附栏收紧为六个开关，网格间距和角度步长输入框在恢复宽窗口后重新显示。空间不足时顶部 FPS 输入会暂时隐藏。工作区、网格与工具栏也会自动收紧或换列，核心窗口命令始终保留。
 - 检查器内容较长时可滚轮滚动；刷新后会尽量保留当前位置。
 - 随工具或选择出现的笔尖、混色、形状、文本、元件实例、滤镜、补间曲线、图片信息及 3D 材质／灯光面板沿用轻量模块标题；线条起始／末端连接选项使用紧凑按钮，形状参数行不会随面板空白拉高。
-- 模块标题在窄栏中以省略号显示，禁用时保持清晰的单色文字，不叠加系统浮雕阴影。形状边数／顶点数采用 32 逻辑像素高的标准输入框。图片信息逐行显示，长路径省略但不会挤走后续参数；悬停可查看完整信息，底部设置按钮采用主题图标与标准高度。
+- 模块标题在窄栏中以省略号显示，禁用时保持清晰的单色文字，不叠加系统浮雕阴影。形状边数／顶点数采用 32 逻辑像素高的标准输入框。图片属性采用图标标题与分隔线，名称、源文件、原始尺寸组成摘要区，显示方式、每单位像素、最大尺寸、解码尺寸与透明背景组成只读导入参数区；标签和值按列对齐。单选位图时，对象摘要右侧显示等比图片预览和透明棋盘格；使用现有解码缓存与采样设置，切换图片时刷新，取消选择、多选或选择其他类型时清除，资源不可用时显示占位图标。长名称和路径省略显示，悬停可查看完整内容，底部“图片导入设置”按钮保留现有编辑入口，内容超出视口时可滚动查看全部参数。
 
-Inspector module titles ellipsize in narrow panels and retain clean, single-color disabled text. Polygon sides and star points use standard 32-logical-pixel fields. Image metadata stays on separate rows; long paths ellipsize without displacing later settings, and hovering reveals the full summary. The image settings action uses a themed icon and standard button height.
+Inspector module titles ellipsize in narrow panels and retain clean, single-color disabled text. Polygon sides and star points use standard 32-logical-pixel fields. The image inspector uses a shared icon header and dividers, separating its name/source/original-size summary from read-only import parameters. Captions and values align in columns. A single selected bitmap shows an aspect-fitted preview with a transparency checkerboard to the right of the object summary, reusing the existing raster cache and sampling settings. Changing selection refreshes or clears it, and unavailable images show a placeholder. Long names and paths ellipsize with complete hover text. Display mode, pixel density, maximum size, decoded size and transparency remain visible through scrolling. The standard-height Image Import Settings action opens the existing editor.
 
 - 文本、绘制工具、笔尖、元件实例、滤镜、空间材质与灯光等条件面板统一使用主题字段标签、分区标题和输入框间距；完整属性输入框采用 32 逻辑像素高度，普通数值使用 11pt 字体，滑条和 XYZ 联合输入保持紧凑。空间材质的覆盖开关、预设和阴影开关分行显示，避免窄栏互相挤压。镜头、视差、文档和播放面板沿用同一文字层级；灯光名称及 Codex / MCP 单行文本输入使用主题边框与垂直居中，密码令牌继续遮蔽。
 
@@ -915,7 +919,7 @@ Scene & Animation 光学在 2D 与 3D 视图中使用同一套与场景组合缓
 
 Scene & Animation 的 2D Front 始终使用正交空间投影，并按实例在当前帧求值后的 Z 深度从远到近绘制和命中。Z 轴经典补间经过 `Z = 0` 时不会切回普通二维画布或丢失深度排序；同一位置的共面元件才回退到图层和对象顺序。
 
-编辑普通场景内容时，左侧工具栏只显示当前视图可用的工具。2D Front 视图提供 `Select`、`Free Transform`、`Distort` 和 Vault；2D 侧向或顶/底参考视图只保留 `Select` 和 Vault；3D 视图提供 `Select`、`3D Transform` 和 Vault。形状、线条、笔刷、文字、填充、取色、渐变与擦除等绘制工具会隐藏，相关工具快捷键也不会激活；平移仍可使用鼠标中键或临时 `Space` 手形操作。
+编辑普通场景内容时，左侧工具栏按视图提供工具。2D Front 视图保留全部基础绘制工具与快捷键，同时支持 `Select`、`Free Transform`、`Distort` 和 Vault；可以不离开场景直接绘画。2D 侧向或顶/底参考视图仍只保留 `Select` 和 Vault，3D 视图提供 `Select`、`3D Transform` 和 Vault，不在这些空间参考视图直接落笔，以免误写二维坐标。平移仍可使用鼠标中键或临时 `Space` 手形操作。
 
 2D 视图中的 `Select` 可以直接拖动场景实例。Front 视图移动 X/Y 并保持 Z，Left/Right 视图移动 Y/Z 并保持 X，Top/Bottom 视图移动 X/Z 并保持 Y；一次拖动只产生一条撤销记录。在 Front 视图使用 `Free Transform` 或 `Distort` 时，控制框、锚点、方向柄、命中和预览都投影到当前镜头画面，提交后写回所选场景实例；右键或 `Escape` 会恢复操作前状态。侧向和顶/底参考视图不显示这两种变形工具，避免把屏幕包围框误写到不同空间平面。
 
@@ -967,7 +971,7 @@ SVG 位图会复用同一内容、宽高比相容且分辨率足够的已有缓�
 
 在 `Scene & Animation` 的二维正面视图中双击实例，会留在当前工作区就地编辑其源元件。左侧绘画工具和快捷键重新启用，时间轴切到元件自身的图层与帧；编辑直接更新共享源元件，因此返回后所有引用它的实例都会更新。场景其余内容以进入时的画面加半透明白色遮罩作参考，不可选中或绘改，也不会保存为实际蒙版图层。参考图随编辑画布平移和缩放；实例的旋转、缩放或倾斜会换算到元件局部坐标，元件按自身坐标编辑。参考范围为进入时的可见画面。
 
-就地编辑时，双击元件中的嵌套实例可以继续逐层进入编辑。左上角显示完整路径，例如 `场景 → 角色 → 手臂 → 手掌`；长路径可横向滚动查看，不会省略中间层级。点击路径中的场景或任一祖先元件可直接返回该层；在没有未完成绘画操作时按 `Esc` 返回上一层。返回会恢复该层进入前的帧、视图和实例选择，每一层的周围内容均保留为不可编辑的淡化参考。切换到基础绘制会退出全部就地编辑层级。空间旋转或非线性变形实例沿用独立元件编辑入口，三维和非正面参考视图不提供该就地绘画入口。普通场景模式仍只允许实例操作。右侧场景和实例列表采用增量刷新，切换工作区或帧时不会重复清空列表。
+就地编辑时，双击元件中的嵌套实例可以继续逐层进入编辑。左上角显示完整路径，例如 `场景 → 角色 → 手臂 → 手掌`；长路径可横向滚动查看，不会省略中间层级。点击路径中的场景或任一祖先元件可直接返回该层；在没有未完成绘画操作时按 `Esc` 返回上一层。返回会恢复该层进入前的帧、视图和实例选择，每一层的周围内容均保留为不可编辑的淡化参考。切换到基础绘制会退出全部就地编辑层级。空间旋转或非线性变形实例沿用独立元件编辑入口，三维和非正面参考视图不提供该就地绘画入口。返回普通场景后，可继续编辑场景自己的图形和实例；元件内部的图形仍需进入元件编辑，避免意外修改所有引用。右侧场景和实例列表采用增量刷新，切换工作区或帧时不会重复清空列表。
 
 Double-click a placement in the 2D Front view of Scene & Animation to edit its shared source symbol in place. Drawing tools and shortcuts are enabled, and the timeline shows the symbol's own layers and frames. Double-click nested placements to edit successive symbol levels. The top-left breadcrumb shows the complete scene-to-symbol path, with horizontal scrolling for long paths. Click the scene or any ancestor symbol to return directly to that level; Esc after finishing a drawing gesture returns one level. Each return restores that parent's frame, view and placement selection. Surrounding content at each level is a frozen viewport reference faded with a translucent white veil; it is neither selectable nor saved as a mask layer, and follows canvas pan and zoom in symbol-local coordinates. Switching to Basic Drawing exits all levels. All placements of the shared symbol reflect source edits. Spatially rotated or warped placements retain the independent symbol editor; 3D and other reference directions do not offer in-place drawing.
 
@@ -1279,11 +1283,11 @@ The **Charcoal** theme adds neutral charcoal panels, darker fields, subtle borde
 
 ### 操作偏好
 
-**工具栏位置 / Toolbar position**：在操作偏好中选择 **左侧 / Left**（默认）或 **顶部 / Top**，点击 `OK` 返回设置，再点击 `Save` 即时应用并保存，下次启动仍保留。左侧沿用紧凑纵向工具栏；顶部仅使用元件页签右侧、吸附设置左侧的原有顶部空白，显示适度大小的图标及下方名称，不新增功能区高度、不压缩画布。工具按钮随可用宽度缩排，空间仍不足时可横向滚动；极窄窗口回退到原有视图操作行中的紧凑图标布局。选择、形状、线条、笔刷、填色等折叠工具组向下展开为带图标与名称的网格，点击工具后收起。取消子面板或设置窗口不改变已保存的位置。
+**工具栏位置 / Toolbar position**：在操作偏好中选择 **左侧 / Left**（默认）或 **顶部 / Top**，点击 `OK` 返回设置，再点击 `Save` 即时应用并保存，下次启动仍保留。左侧沿用紧凑纵向工具栏；顶部仅使用元件页签右侧、吸附设置左侧的原有顶部空白，显示适度大小的图标及下方名称，不新增功能区高度、不压缩画布。工具按钮随可用宽度缩排，不显示底部横向滚动条；普通分屏仍保留图标及下方名称，不提前移到下一行。仅在顶部可用宽度极窄时回退到原有视图操作行中的紧凑方形图标，图标保持比例，不随按钮横向拉伸。顶部选择、形状、线条、笔刷、填色等折叠工具组改为右键展开带图标与名称的网格，悬停仅显示提示，左键直接启用当前工具；点击网格中的工具后收起。左侧工具栏保留原有悬停展开行为。取消子面板或设置窗口不改变已保存的位置。
 
 顶部工具栏不绘制容器外框，下方名称保持 8pt 字体；图标在原有图标槽内缩小显示，文字位置、按钮点击区域及整体布局保持不变。选中状态及键盘焦点提示保留，左侧工具栏、右侧分类栏和展开网格的图标不受影响。从顶部切回左侧时，工具栏立即显示在画布上方，无需重启。
 
-In **Settings → General → Operation preferences**, choose **Toolbar position → Left** (default) or **Top**, confirm with `OK`, then `Save`. Top uses only the existing header space between the symbol tabs and snapping controls, with smaller icons centered in their existing slots and unchanged 8pt labels underneath, without a container border; selection and keyboard focus cues remain visible. It adds no header height and takes no extra canvas space. Buttons adapt to the available width, with horizontal scrolling when needed and compact icons in the existing view-action row for very narrow windows. Grouped tools open below as a labeled grid and close after selection. Switching from Top back to Left immediately restores the toolbar above the canvas without restarting. The position persists across restarts; canceling either dialog leaves the saved position unchanged.
+In **Settings → General → Operation preferences**, choose **Toolbar position → Left** (default) or **Top**, confirm with `OK`, then `Save`. Top uses only the existing header space between the symbol tabs and snapping controls, with smaller icons centered in their existing slots and unchanged 8pt labels underneath, without a container border; selection and keyboard focus cues remain visible. It adds no header height and takes no extra canvas space. Buttons adapt to the available width without a bottom horizontal scrollbar; ordinary split-screen layouts retain the icons and labels in the header rather than moving them to another row prematurely. Only extremely narrow header space uses compact square icons in the existing view-action row, preserving icon proportions without horizontal stretching. Right-click a grouped tool in the top toolbar to open its labeled grid; hovering only shows a tooltip, and left-click activates its current tool. The grid closes after selection. The left toolbar retains hover-to-open behavior. Switching from Top back to Left immediately restores the toolbar above the canvas without restarting. The position persists across restarts; canceling either dialog leaves the saved position unchanged.
 
 点击 `Settings → General → Operation preferences... / 操作偏好...` 打开独立面板，调整与具体工具操作相关的开关。点击 `OK` 返回设置，再点击 `Save` 后写入 `settings.json`，重新打开软件仍然生效；取消子面板或设置窗口不会改变已保存值。
 
@@ -1480,7 +1484,7 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:43521/mcp/' -Method Post `
 ### Fill 或 Stroke 颜色模块不显示
 
 - 用 `F1` 展开检查器。
-- 返回 `Basic Drawing`，选择绘制工具或可编辑对象。
+- 在 `Basic Drawing` 或 `Scene & Animation` 的二维正面视图中，选择绘制工具或可编辑图形。
 - 在基础着色面板顶部点击 `Fill` 或 `Stroke` 目标。
 - 滚动检查器，确认图层混合面板下方的基础着色区域已展开。
 
@@ -1561,21 +1565,37 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:43521/mcp/' -Method Post `
 
 右侧检查器不显示滚动条；内容超出面板时可使用鼠标滚轮浏览下方参数。
 
-右侧检查器按固定职责分为**属性、工具设置、外观、物理、镜头、场景**。属性显示当前对象／元件／图像／文字与普通补间的属性，无选区时显示文档信息；工具设置集中管理笔尖、笔刷大小、压力平滑、混色、铅笔和形状绘制参数，文字排版仍在属性页；外观集中管理填充、描边颜色、线宽和渐变。场景页保留场景、播放和适用的灯光设置，镜头页保留相机列表、构图和镜头补间，物理尚未实现，保持禁用。
+右侧检查器的一级分类为**属性、外观、物理、镜头、场景**。选中属性后，在侧栏该入口下展开**对象、工具、文档**三个同级子项；三个子项共用次级底色，当前项另有选中标记，不使用遮挡正文的弹出菜单。对象显示当前对象／元件／图像／文字与普通补间的属性；工具集中管理笔尖、笔刷大小、压力平滑、混色、铅笔和形状绘制参数，文本工具提供新建文字的默认字体、字形、字号与对齐；选中文字的排版在对象页独立编辑，互不覆盖；文档始终可手动打开，不要求先取消对象选择。切到其他一级分类后子项收起，返回属性恢复上次子项。外观集中管理填充、描边颜色、线宽和渐变。场景页保留场景、播放和适用的灯光设置，镜头页保留相机列表、构图和镜头补间，物理尚未实现，保持禁用。
 
-右侧分类栏使用导入的矢量图标：列表对应属性、调色板对应颜色、原子对应物理、视频对应镜头、场景图标对应场景。工具设置使用笔刷图标，原颜色入口更名为外观。分类栏采用 38 逻辑像素宽的紧凑纯图标布局，不常驻显示名称，也不随语言加宽；完整名称通过悬停提示及无障碍名称提供。颜色跟随主题、选中及禁用状态，物理入口仍禁用。图标已随应用内置，不需要安装图标字体。
+“属性 → 对象”的默认摘要与相机、文本面板采用统一的图标标题、分隔线和字段对齐。没有选区时显示“未选择对象”及舞台选择提示，不再堆叠空图层／原子数；选中后突出对象类型与编号或元件名称，下面显示所属图层及几何原子数（元件实例显示变换摘要）。绘制对象总数与当前选区分开标注，不代表选中数量；长名称和完整变换可悬停查看。此区域只读，不改变工具默认值、文档状态或当前分类。
 
-The category rail uses the supplied vector icons in a compact, fixed 38-logical-pixel icon-only strip: list for Properties, palette for Color, atom for Physics, video for Camera, and scene for Scene. Full names remain available through hover tips and accessible names; changing language does not widen the rail. Icons follow theme, selection and disabled colors. They are built into the application and require no font installation.
+The default **Properties → Object** summary shares the camera/text panel styling. With no selection, it shows a selection hint instead of empty metadata. A selection presents its type/ID or instance name, layer and geometry atom count (instance transform summary for symbols). **Drawing objects** is the total, not the selection count. Full names and transforms are available in tooltips; this read-only summary never changes tools, document data or navigation.
+
+“对象”页先展示对象限定的参数，统一的“位置和大小”放在面板最底部：普通矢量图形、线条、路径、自由形状、笔刷／混色笔触、文本、位图、SVG 和 2D 元件实例都可直接编辑中心 X／Y、局部宽／高及旋转。位置和尺寸使用 vu（矢量单位），不是屏幕像素；单选可开启“保持宽高比”，多选只允许整体等比缩放，旋转字段改为相对的“旋转增量”。局部填充／描边选择仍编辑整个对象，文本在正常局部缩放后保留可编辑文本类型。专用文字、图片和实例参数仍保留在下方；SVG、位图和实例不提供无效的外观入口。
+
+路径、自由笔触和混色笔触的变换已存入几何，因此宽高显示整对象的轴对齐边界、旋转使用增量而不伪造绝对角度；线条编辑长度和方向，选择高度只读，粗细在“外观”页调整。绘制对象与元件实例混选时，提示分开选择后编辑，不会只修改混选的一部分。
+
+数值编辑沿用现有撤销、关键帧／曝光与 Auto Key 流程；长按步进或拖动数值结束时统一提交，取消交互不修改对象。播放中、图层锁定、正文编辑中或 3D 视图下，通用 2D 变换字段禁用；3D 实例仍通过原有空间变换面板编辑。
+
+位图的“图片 → 显示方式”可直接切换“平滑／像素风格”，并同步舞台与缩略预览。此项是图片资产设置，会应用到同一资产的所有放置对象，可撤销；不会更改对象的位置和自定义尺寸。像素密度、最大尺寸及透明处理仍通过“图片导入设置”调整。
+
+工具页为所有工具提供统一图标标题和操作说明。有参数的工具复用真实设置：形状的保持宽高比，形状／直线／钢笔的共享吸附开关，直线／钢笔的角度步长，以及橡皮擦的描边／填充目标；这些入口与原工具栏双向同步，不创建第二份默认值，也不修改已有选区。多边形／星形的边数、铅笔平滑、笔刷和混色设置仍由原面板提供。吸附总开关关闭时，依赖选项禁用；角度吸附未启用时，角度步长禁用。选择、套索、自由变换、3D 变换、变形、填充、墨水瓶、吸管、渐变和吸附点没有独立且已实现的其他参数时，显示其实际用法及适用的“对象属性”／“外观”入口，不添加虚假的容差等控件。手形提供视图缩放按钮，不编辑文档。手动选工具不切页；选中对象时打开“属性 → 对象”，随后仍可手动切换页面，普通刷新不会抢回对象页。
+
+**Panel coverage:** object-specific settings appear first; the shared Position and Size section is last. The Object page edits center position, size and rotation for vector shapes, text, bitmaps, imported SVGs and 2D instances. Multiple selections use proportional group scaling and relative rotation; partial geometry selections edit the whole object. Native text remains editable. Existing undo, held exposure and Auto Key rules apply, with one commit per completed numeric gesture. Paths and brush geometry use bounds and incremental rotation; line thickness remains in Appearance. Mixed geometry/instance selections must be edited separately. Locked layers, playback, active text editing and 3D views disable these 2D fields. Bitmap display mode is directly editable and shared by all placements of the same image asset; advanced import settings remain in the existing dialog. Every tool retains its context help and existing settings, without dummy controls. Object selection reveals Object; ordinary refreshes do not override manual page choices.
+
+右侧分类栏使用单色矢量图标：滑杆对应属性入口，属性下的标签对应对象、扳手对应工具、原来的列表图标对应文档；调色板对应外观、原子对应物理、视频对应镜头、场景图标对应场景。分类栏保持 38 逻辑像素宽，不随语言加宽；三个子项在常规侧栏与窄栏横向导航中都使用等大纯图标和统一次级底色，当前项使用主题高亮与侧边标记。完整名称通过悬停提示及无障碍名称提供。所有导入图标统一使用主题色，而非素材自带的固定颜色，物理入口仍禁用。图标已随应用内置，不需要安装图标字体。
+
+The 38-logical-pixel category rail uses monochrome vector icons. Sliders identify Properties; its Object, Tool and Document pages use a tag, a wrench and the existing document-list icon. The group shares a secondary surface, with a theme-colored active page and side marker. Both the vertical rail and compact horizontal navigation use equally sized icon-only buttons, with full names in tooltips and accessible names. Imported icons follow theme colors rather than fixed source colors. Leaving Properties hides the group; returning restores its last page. Theme and language changes do not widen the rail. Physics remains disabled, and no icon-font installation is required.
 
 右侧检查器在常规窗口中比原布局加宽一个分类栏（38 逻辑像素），展开总宽上限为 410 逻辑像素；窄窗口仍自适应收缩，保留原有 272 逻辑像素下限。所有分类页共用该宽度，切换分类不改变舞台宽度；字体、控件高度及图标栏宽度不变。
 
 The right inspector gains one category-rail width (38 logical pixels) in regular windows, with an expanded width cap of 410 logical pixels. Narrow windows still adapt down to the existing 272-logical-pixel minimum. All category pages share the same width, so switching categories does not resize the stage. Fonts, control heights and rail width remain unchanged.
 
-未选中对象时，属性检查器显示“文档与图层”：工程名称与真实保存状态、保存位置、当前场景、当前图层及混合模式、画布与背景。点击工程名称可重命名，`Enter` 提交、`Esc` 取消；混合模式沿用原有图层编辑与撤销流程。“设置画布与背景”打开实际设置弹窗，不提供仅供设计预览的尺寸控件。工程概览可折叠，显示现有统计与素材数量；空工程提示在当前工作内容中有对象后隐藏。内容超出窗口时可滚动，切换到工具设置、外观、镜头或场景分类不会与文档页叠加。
+在“属性 → 文档”查看“文档与图层”：工程名称与真实保存状态、保存位置、当前场景、当前图层及混合模式、画布与背景；即使选中对象或切换工具也不会离开文档页。点击工程名称可重命名，`Enter` 提交、`Esc` 取消；混合模式沿用原有图层编辑与撤销流程。“设置画布与背景”打开实际设置弹窗，不提供仅供设计预览的尺寸控件。工程概览可折叠，显示现有统计与素材数量；空工程提示在当前工作内容中有对象后隐藏。内容超出窗口时可滚动，文档与其他页面互斥显示。
 
-With no object selected, Properties shows **Document & layers**: project name, actual save state and location, current scene and layer, blend mode, and canvas/background status. Click the project name to rename it (`Enter` commits; `Esc` cancels). Blend mode keeps the existing layer editing and undo path. **Set canvas & background** opens the real settings dialog rather than a design-only size selector. The collapsible project overview presents existing statistics and asset counts; the empty-content hint disappears once the current working content contains objects. Overflow scrolls, and Tool Settings, Appearance, Camera and Scene remain mutually exclusive with the document page.
+Open **Properties → Document** for **Document & layers**: project name, actual save state and location, current scene and layer, blend mode, and canvas/background status. Selecting objects or changing tools does not leave this page. Click the project name to rename it (`Enter` commits; `Esc` cancels). Blend mode keeps the existing layer editing and undo path. **Set canvas & background** opens the real settings dialog. The collapsible project overview presents existing statistics and asset counts. Overflow scrolls, and document content remains mutually exclusive with other pages.
 
-笔刷和形状等绘制工具的参数统一在“工具设置”页；文字排版在“属性”页。切换工具不会自动切换分类，无选区时属性页保留文档信息，文字编辑期间保留排版设置。
+笔刷和形状等绘制工具的参数统一在“属性 → 工具”页。文本面板采用与相机面板一致的图标标题、编辑范围摘要、通宽分隔线及“字符／段落”折叠分区；不再重复堆叠通用工具标题和长说明，完整编辑范围提示可悬停查看。字段保持统一高度与留白，字号显示 pt，折叠只影响显示，不清除参数。选择文本工具时，该页显示“静态文本”，按“字符／段落”分组提供字体、字形（常规、粗体、斜体、粗斜体）、字号（4–512 pt）和左／中／右对齐；这些是新建文本的默认值，即使同时选中了已有文本，也不会修改它或增加文档撤销记录。“属性 → 对象”只在选中单个文本或编辑文本草稿时显示对应排版，修改仅作用于当前文本，不反向覆盖工具默认值。进入已有文本编辑、切换选区或继续输入，都不会把对象参数带入下次新建文本；新建文本使用工具默认值。字号拖动或按住箭头在结束时一次应用，取消不提交。填充与透明度继续在“外观”页设置，不重复建立颜色状态。当前没有实现动态／输入文本、字距／自动字距、字体嵌入、文本专用抗锯齿选项、上下标、段落缩进或文本滤镜，不提供无效控件。选中对象时打开对象子项，切换工具或取消选择不切页；没有文本选区或草稿时，对象页不显示残留的文字设置，也不自动变成文档页。
 
 文档页用明亮文字显示标题、工程名称和实际数值，次级文字显示字段名、路径、统计标签与操作提示；未保存状态使用警示色。次级色按面板背景保持可读对比度，跟随深浅主题切换；系统高对比度模式使用系统文字色。
 
@@ -1585,19 +1605,23 @@ The document page uses primary text for headings, the project name and actual va
 
 **Scene & Animation** uses scene cards, the active-scene indicator and instance counts, with a real Add Instance action in the empty state. Playback presents FPS/loop and start/end frames in two columns using the actual playback range. **Camera** is organized into lens settings, transforms, display/preview and 2D parallax. In 2D, X/Y position and rotation/zoom sit side by side and stack in narrow panels; 3D axes and existing camera parameters remain available. Expanding **2D Parallax** directly exposes strength, camera Z, reference-plane Z, Keep Size, layer depths and the draggable depth diagram. Near/far hints and layer color markers clarify the spatial relationship. Only horizontal/vertical response and dolly depth scaling live under **Advanced Response**, whose expansion state survives refreshes. Camera creation, locating, ordering, removal, resetting, preview and continuous edits keep the existing commands and undo path. Smaller windows scroll rather than lose settings.
 
-Tool Settings owns brush-tip, brush-size, pressure smoothing, mixing, pencil and shape-drawing options. Properties owns selected-object attributes, text typography and ordinary tween curves. Appearance owns fill, stroke color, line width and gradients. Camera retains camera tween curves. With no selection, Properties shows document information; active text editing keeps typography available.
+Properties → Tool owns drawing options and independent defaults for new static text. Character provides font family, Regular/Bold/Italic/Bold Italic and 4–512 pt size; Paragraph provides left/center/right alignment. Properties → Object edits only the selected text or active draft, without changing tool defaults. Existing-text editing and typing preserve its own typography; new text uses Tool defaults. Size scrubbing and held steppers apply once on completion and do not commit on cancellation. Fill and opacity remain in Appearance. Unsupported dynamic/input text, tracking/kerning, embedding, text-specific anti-alias settings, superscript/subscript, paragraph indents and text filters are not presented as working controls. Object also owns other selected-object attributes and ordinary tween curves. Properties → Document is explicitly accessible with or without a selection. Appearance owns fill, stroke color, line width and gradients. Camera retains camera tween curves. Selecting an object opens Properties → Object. Tool changes and ordinary refreshes preserve the current page; manual navigation remains available after selection.
 
 选中普通图层或灯光补间时，检查器会切换到“属性”显示曲线；选中相机补间时切换到“相机”。清除补间选择后隐藏对应曲线，不修改曲线数据或增加撤销记录。
 
 Selecting a layer or light tween reveals its curve in Properties; selecting a camera tween reveals Camera. Clearing the tween selection hides the curve without modifying it or adding an undo entry.
 
-分类由用户主动选择。选择／取消选择对象、切换工具、切换帧和普通刷新只更新内容，不自动切换分类，也不重新打开已关闭的检查器。外观页显示当前编辑目标；无选区时说明使用当前绘图外观，选中不支持着色的 SVG／位图时说明原因并禁用编辑器。
+选中舞台或层级中的对象时，检查器统一跳到“属性 → 对象”，适用于图形、文字、位图、SVG、元件实例及多选，不仅限于图片。选中后仍可手动打开工具、文档或其他分类，普通刷新、同一选区的属性修改、取消选择、切换工具与帧不会抢回对象页，也不会重新打开已关闭的检查器。再次点击已选对象或全选可返回对象页。外观页显示当前编辑目标；无选区时说明使用当前绘图外观，选中不支持着色的 SVG／位图时说明原因并禁用编辑器。
 
-Selecting or clearing objects, changing tools or frames, and ordinary refreshes update data without switching the active category or reopening a closed inspector. Appearance identifies its editing target and disables unsupported SVG/bitmap material editing with an explanation.
+Selecting stage or hierarchy objects opens Properties → Object for shapes, text, bitmaps, SVGs, instances and multiple selections. Manual navigation remains available afterwards. Ordinary refreshes, same-selection property edits, deselection, tool changes and frame changes preserve the current page and never reopen a closed inspector. Clicking a selected object again or using Select All returns to Object. Appearance identifies its editing target and disables unsupported SVG/bitmap material editing with an explanation.
 
-分类页互斥占用检查器正文。重复点击当前分类保持该页；点击属性或在分类栏中按 `Esc` 返回属性页。悬停不切换；`↑` / `↓` / `Home` / `End` 移动焦点，`Enter` / `Space` 确认并跳过禁用项。`Ctrl+Alt+1..5` 保留属性、外观、物理、镜头、场景的原有顺序，`Ctrl+Alt+6` 打开工具设置。分类切换不自动更换工作区；不适用时显示原因和“进入基础绘制／场景与动画”按钮，点击该按钮才切换工作区。手动切换工作区仍保留已选分类。打开镜头页、添加灯光或调用绘画色板这类明确编辑命令可定位对应分类。检查器宽度小于 324 逻辑像素时，图标栏改为顶部分类下拉框，释放正文宽度；仍可使用分类快捷键。笔尖操作在窄栏自动换行，绘图参数保持可访问。
+分类页互斥占用检查器正文。从其他分类返回属性时恢复上次子项；在属性的工具／文档页再次点击属性主按钮返回对象。点击对象子项或按 `Ctrl+Alt+1`，返回对象并定位到顶部摘要；其他分类和子项重复点击保持该页。在导航区按 `Esc` 返回对象页。悬停不切换；`↑` / `↓` / `Home` / `End` 移动焦点，`Enter` / `Space` 确认并跳过禁用项。`Ctrl+Alt+1..5` 对应对象、外观、物理、镜头、场景，`Ctrl+Alt+6` 打开属性的工具页，`Ctrl+Alt+7` 打开文档页。分类切换不自动更换工作区；不适用时显示原因和“进入基础绘制／场景与动画”按钮，点击该按钮才切换工作区。手动切换工作区仍保留已选分类。打开镜头页、添加灯光或调用绘画色板这类明确编辑命令可定位对应分类。检查器宽度小于 324 逻辑像素时，图标栏改为顶部分类下拉框，属性下显示对象／工具／文档横向子导航，释放正文宽度；仍可使用分类快捷键。笔尖操作在窄栏自动换行，绘图参数保持可访问。
 
-Inspector tabs have stable ownership: Properties, Tool Settings, Appearance, Physics, Camera and Scene. Physics remains disabled. Clicking the active tab keeps it open; Properties or Escape with rail focus returns to Properties. Arrow/Home/End moves focus and Enter/Space activates. Ctrl+Alt+1..5 retains Properties/Appearance/Physics/Camera/Scene; Ctrl+Alt+6 opens Tool Settings. Category navigation never changes workspaces automatically. An incompatible category explains its required context and offers an explicit Open Basic Drawing / Open Scene & Animation action. Manual workspace changes preserve the chosen category. Explicit editing commands such as opening the shot page, adding a light or invoking the brush color palette may reveal the relevant category. Below 324 logical pixels, a top category selector replaces the icon rail to preserve usable content width; category shortcuts remain available. Brush-tip actions wrap in narrow panels rather than clipping controls.
+Inspector categories have stable ownership: Properties (Object / Tool / Document), Appearance, Physics, Camera and Scene. Physics remains disabled. Returning from another category restores the last Properties page. Clicking the Properties parent while Tool or Document is active returns to Object. Clicking Object or pressing Ctrl+Alt+1 opens Object at its top summary; other repeated page clicks keep the page open. Escape with navigation focus opens Object. Arrow/Home/End moves focus and Enter/Space activates. Ctrl+Alt+1..5 opens Object/Appearance/Physics/Camera/Scene; Ctrl+Alt+6 opens Tool and Ctrl+Alt+7 opens Document. Category navigation never changes workspaces automatically. An incompatible category explains its required context and offers an explicit workspace action. Manual workspace changes preserve the chosen category. Explicit editing commands may reveal their category. Below 324 logical pixels, a top category selector replaces the icon rail, with a horizontal Object / Tool / Document row beneath Properties. Brush-tip actions wrap in narrow panels rather than clipping controls.
+
+笔尖面板使用统一的图标标题和分隔线：预览、笔尖名称、导入和样式选择组成独立区域；传统笔刷的形状、笔尖宽度和角度各占一行，笔触参数另行分组。面板高度随笔尖类型自动调整，窄栏不挤占底部的硬度与压力平滑设置；宽度与大小分别显示 % 和 pt，颜色仍在“外观”页设置。
+
+The brush-tip panel uses the shared icon header and dividers. Preview, tip name, import and style selection occupy their own area; traditional-tip shape, width and angle each have a separate row, followed by grouped stroke settings. Its height follows the tip type so hardness and pressure smoothing remain accessible in narrow inspectors. Width and size show % and pt respectively; color remains in Appearance.
 
 时间轴图层组栏右上角齿轮直接打开较大的图层组排序弹窗，可拖动组标签调整顺序，确认后应用、取消不应用。重命名、颜色与删除保留在图层组右键菜单中。
 

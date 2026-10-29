@@ -18,7 +18,7 @@ internal sealed partial class MainForm
 
     private sealed class SnapPointEditSession
     {
-        public required DrawingObjectDefinition DrawingObject { get; init; }
+        public required IEditableSnapPointOwner DrawingObject { get; init; }
         public required DrawingObjectSnapPointDefinition[] Snapshot { get; init; }
         public required VectorSceneSnapshot CanvasSnapshot { get; init; }
         public required string SnapPointId { get; init; }
@@ -65,10 +65,13 @@ internal sealed partial class MainForm
         float ReferenceTargetY,
         float ReferenceTargetZ);
 
+    private IEditableSnapPointOwner? ActiveSnapPointOwner()
+        => IsSceneDrawingContext() ? ActiveScene() : ActiveDrawingObject();
+
     private void BeginSnapPointPointer(MouseEventArgs e)
     {
-        var drawingObject = ActiveDrawingObject();
-        if (!IsDrawingWorkspaceContext
+        var drawingObject = ActiveSnapPointOwner();
+        if (!IsDrawingWorkspaceContext && !IsSceneDrawingContext()
             || drawingObject is null
             || DrawingToolsBlocked())
         {
@@ -86,8 +89,8 @@ internal sealed partial class MainForm
                 {
                     PushUndoSnapshot(
                         canvasSnapshot,
-                        drawingObject,
-                        snapPointSnapshot: snapshot);
+                        drawingObject as DrawingObjectDefinition,
+                        snapPointSnapshot: snapshot, snapPointOwner: drawingObject);
                     _hoveredSnapPointId = "";
                     UpdateSnapPointOverlay();
                 }
@@ -165,8 +168,8 @@ internal sealed partial class MainForm
         {
             PushUndoSnapshot(
                 session.CanvasSnapshot,
-                session.DrawingObject,
-                snapPointSnapshot: session.Snapshot);
+                session.DrawingObject as DrawingObjectDefinition,
+                snapPointSnapshot: session.Snapshot, snapPointOwner: session.DrawingObject);
         }
         _snapPointCandidate = null;
         _lastMouse = null;
@@ -192,7 +195,7 @@ internal sealed partial class MainForm
 
     private void UpdateSnapPointHover(Point screen)
     {
-        var drawingObject = ActiveDrawingObject();
+        var drawingObject = ActiveSnapPointOwner();
         if (_tool != ToolMode.SnapPoint || drawingObject is null)
         {
             ClearSnapPointPresentation();
@@ -215,7 +218,7 @@ internal sealed partial class MainForm
     }
 
     private DrawingObjectSnapPointDefinition? HitTestSnapPoint(
-        DrawingObjectDefinition drawingObject,
+        IEditableSnapPointOwner drawingObject,
         Point screen)
     {
         DrawingObjectSnapPointDefinition? nearest = null;
@@ -312,9 +315,9 @@ internal sealed partial class MainForm
 
     private void UpdateSnapPointOverlay()
     {
-        var drawingObject = ActiveDrawingObject();
+        var drawingObject = ActiveSnapPointOwner();
         if (_tool != ToolMode.SnapPoint
-            || !IsDrawingWorkspaceContext
+            || !IsDrawingWorkspaceContext && !IsSceneDrawingContext()
             || drawingObject is null)
         {
             ClearSnapPointPresentation();

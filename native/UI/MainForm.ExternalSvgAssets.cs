@@ -100,7 +100,7 @@ internal sealed partial class MainForm
         {
             ModernMessageDialog.Show(
                 this,
-                UiLocalization.T("Open a Basic Drawing or scene mask drawing layer before using an SVG link."),
+                UiLocalization.T("Open an unlocked drawing layer in Basic Drawing or the 2D Front scene before using an SVG link."),
                 UiLocalization.T("SVG Assets"),
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);

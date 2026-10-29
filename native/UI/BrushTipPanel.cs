@@ -2,19 +2,21 @@ namespace VectorAnimationEngine;
 
 internal sealed class BrushTipPanel : UserControl
 {
-    private const int PreviewRowHeight = 58;
-    private const int SettingRowHeight = 30;
-    private const int FieldRowHeight = Theme.InspectorRowHeightComfortable;
-    private const int SettingRowCount = 7;
+    private const int SettingsTop = 144;
+    private const int RowPitch = 40;
 
+    private readonly Label _title = new();
+    private readonly Label _strokeTitle = InspectorModuleStyle.CreateFieldLabel("Brush stroke");
+    private readonly Button _import = new();
+    private readonly ToolTip _toolTip = new();
+    private readonly List<(Label Caption, Control Input, Label? Value)> _rows = [];
     private readonly BrushTipPreview _preview = new();
     private readonly Label _name = InspectorModuleStyle.CreateTextLabel();
-    private readonly FlowLayoutPanel _tipActions = new();
     private readonly ComboBox _preset = new();
     private readonly ModernNumericUpDown _size = new();
     private readonly ModernSlider _frequency = new();
     private readonly Label _frequencyValue = InspectorModuleStyle.CreateTextLabel();
-    private readonly CheckBox _continuous = new();
+    private readonly ModernToggleSwitch _continuous = new();
     private readonly ModernSlider _hardness = new();
     private readonly Label _hardnessValue = InspectorModuleStyle.CreateTextLabel();
     private readonly ComboBox _traditionalTip = new();
@@ -23,79 +25,40 @@ internal sealed class BrushTipPanel : UserControl
     private readonly Label _traditionalDirectionValue = InspectorModuleStyle.CreateTextLabel();
     private readonly ModernSlider _pressureSmoothing = new();
     private readonly Label _pressureSmoothingValue = InspectorModuleStyle.CreateTextLabel();
-    private readonly TableLayoutPanel _content;
     private bool _updating;
     private bool _traditionalRowsVisible;
+    private bool _layoutReady;
+    private bool _arranging;
     private bool _compactLayout;
+    private int _strokeTop;
 
     public BrushTipPanel()
     {
+        AutoScaleMode = AutoScaleMode.None;
         BackColor = Theme.Panel;
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
-        Padding = Theme.InspectorSectionPadding;
-        MinimumSize = new Size(0, PreferredHeight);
-
-        var title = InspectorModuleStyle.CreateTitle("Brush Tip");
-        title.Dock = DockStyle.Top;
-        _content = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 3,
-            RowCount = 8,
-            Padding = new Padding(0, Theme.InspectorContentPaddingTop, 0, 0)
-        };
-        _content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
-        _content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        _content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 46));
-        _content.RowStyles.Add(new RowStyle(SizeType.Absolute, PreviewRowHeight));
-        for (var row = 1; row < _content.RowCount; row++)
-        {
-            _content.RowStyles.Add(new RowStyle(SizeType.Absolute,
-                row is 1 or 2 ? FieldRowHeight : SettingRowHeight));
-        }
-
-        _preview.Dock = DockStyle.Fill;
-        _preview.Margin = new Padding(0, 2, 8, 4);
-        _content.Controls.Add(_preview, 0, 0);
-
-        var tipDetails = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel, Margin = Padding.Empty };
-        _name.Dock = DockStyle.Top;
-        _name.Height = 24;
-        _name.BackColor = Theme.Panel;
+        Padding = Padding.Empty;
+        AccessibleName = "Brush Tip";
+        AccessibleRole = AccessibleRole.Pane;
+        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        InspectorModuleStyle.StylePageTitle(_title);
+        _title.Text = "Brush Tip";
+        _strokeTitle.Dock = DockStyle.None;
         _name.ForeColor = Theme.PanelSecondaryText;
         _name.Font = Theme.UiFont(Theme.InspectorLabelFontSize);
-        _name.TextAlign = ContentAlignment.MiddleLeft;
-        _name.AutoEllipsis = true;
-        tipDetails.Controls.Add(_name);
-
-        var actions = _tipActions;
-        actions.Dock = DockStyle.Bottom;
-        actions.Height = 28;
-        actions.BackColor = Theme.Panel;
-        actions.FlowDirection = FlowDirection.LeftToRight;
-        actions.WrapContents = true;
-        actions.Padding = Padding.Empty;
-        actions.Margin = Padding.Empty;
-        var import = new Button
-        {
-            Text = "Import",
-            Width = 72,
-            Height = 26,
-            AccessibleName = "Import brush tip",
-            Margin = new Padding(0, 0, 5, 0)
-        };
-        Theme.StyleButton(import);
-        import.Click += (_, _) => ImportRequested?.Invoke(this, EventArgs.Empty);
-        Theme.StyleComboBox(_preset);
+        _preview.AccessibleName = "Brush tip preview";
+        _preview.AccessibleRole = AccessibleRole.Graphic;
+        _import.Text = "Import";
+        _import.AccessibleName = "Import brush tip";
+        Theme.StyleStandardButton(_import);
+        _import.Click += (_, _) => ImportRequested?.Invoke(this, EventArgs.Empty);
+        Theme.StyleToolTip(_toolTip);
+        _toolTip.SetToolTip(_preset, UiLocalization.T("Brush style"));
         _preset.DropDownStyle = ComboBoxStyle.DropDownList;
-        _preset.Font = Theme.UiFont(8.5f);
-        _preset.Width = 106;
-        _preset.Height = 26;
         _preset.AccessibleName = "Brush style";
-        _preset.Margin = Padding.Empty;
         _preset.Items.AddRange(["Soft Round", "Traditional Brush"]);
+        InspectorModuleStyle.StyleField(_preset);
         _preset.SelectedIndex = 0;
         _preset.SelectedIndexChanged += (_, _) =>
         {
@@ -103,28 +66,22 @@ internal sealed class BrushTipPanel : UserControl
             if (_preset.SelectedIndex == 0) SoftRoundRequested?.Invoke(this, EventArgs.Empty);
             else if (_preset.SelectedIndex == 1) TraditionalBrushRequested?.Invoke(this, EventArgs.Empty);
         };
-        actions.Controls.Add(import);
-        actions.Controls.Add(_preset);
-        tipDetails.Controls.Add(actions);
-        _content.Controls.Add(tipDetails, 1, 0);
-        _content.SetColumnSpan(tipDetails, 2);
+        Controls.AddRange([_title, _strokeTitle, _preview, _name, _import, _preset]);
 
         _size.Minimum = 0.1m;
         _size.Maximum = 128m;
         _size.DecimalPlaces = 1;
         _size.Increment = 0.1m;
         _size.Value = 8m;
-        _size.Suffix = UiLocalization.T("pt");
+        _size.Suffix = "pt";
+        _size.ShowSuffix = true;
         _size.ValueChanged += (_, _) =>
         {
             if (!_updating) BrushSizeChanged?.Invoke(this, EventArgs.Empty);
         };
-        AddSettingRow(_content, "Size", _size, null, 1);
+        AddSettingRow("Size", _size);
 
-        Theme.StyleComboBox(_traditionalTip);
         _traditionalTip.DropDownStyle = ComboBoxStyle.DropDownList;
-        _traditionalTip.Width = 96;
-        _traditionalTip.Dock = DockStyle.Fill;
         _traditionalTip.AccessibleName = "Traditional brush tip shape";
         _traditionalTip.Items.AddRange(["Round", "Square"]);
         _traditionalTip.SelectedIndex = 0;
@@ -133,14 +90,14 @@ internal sealed class BrushTipPanel : UserControl
             UpdateTraditionalInputState();
             if (!_updating) TraditionalSettingsChanged?.Invoke(this, EventArgs.Empty);
         };
+        AddSettingRow("Shape", _traditionalTip);
         _traditionalWidth.Minimum = 25m;
         _traditionalWidth.Maximum = 400m;
         _traditionalWidth.DecimalPlaces = 0;
         _traditionalWidth.Increment = 5m;
         _traditionalWidth.Suffix = "%";
+        _traditionalWidth.ShowSuffix = true;
         _traditionalWidth.Value = 100m;
-        _traditionalWidth.Dock = DockStyle.Fill;
-        _traditionalWidth.Margin = Padding.Empty;
         _traditionalWidth.AccessibleName = "Traditional brush shape width";
         _traditionalWidth.AccessibleDescription = "Width percentage relative to the brush size";
         _traditionalWidth.ValueChanged += (_, _) =>
@@ -148,22 +105,7 @@ internal sealed class BrushTipPanel : UserControl
             UpdateTraditionalInputState();
             if (!_updating) TraditionalSettingsChanged?.Invoke(this, EventArgs.Empty);
         };
-        var shapeInput = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill, BackColor = Theme.Panel, Margin = Padding.Empty,
-            ColumnCount = 2, RowCount = 1
-        };
-        shapeInput.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
-        shapeInput.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
-        shapeInput.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        InspectorModuleStyle.StyleField(_traditionalTip);
-        InspectorModuleStyle.StyleField(_traditionalWidth);
-        _traditionalTip.Margin = new Padding(0, 0, Theme.GapXs, 0);
-        _traditionalWidth.Margin = Padding.Empty;
-        shapeInput.Controls.Add(_traditionalTip, 0, 0);
-        shapeInput.Controls.Add(_traditionalWidth, 1, 0);
-        AddSettingRow(_content, "Shape %", shapeInput, null, 2);
-
+        AddSettingRow("Tip width", _traditionalWidth);
         ConfigureSlider(_traditionalDirection, 0, 359, 0, 45);
         _traditionalDirection.AccessibleName = "Traditional brush direction in degrees";
         _traditionalDirection.ValueChanged += (_, _) =>
@@ -171,50 +113,40 @@ internal sealed class BrushTipPanel : UserControl
             _traditionalDirectionValue.Text = $"{_traditionalDirection.Value}°";
             if (!_updating) TraditionalSettingsChanged?.Invoke(this, EventArgs.Empty);
         };
-        AddSettingRow(_content, "Angle", _traditionalDirection, _traditionalDirectionValue, 3);
-
+        AddSettingRow("Angle", _traditionalDirection, _traditionalDirectionValue);
         ConfigureSlider(_frequency, 1, 24, 8, 4);
         _frequency.ValueChanged += (_, _) =>
         {
             _frequencyValue.Text = $"{_frequency.Value}x";
             if (!_updating) FrequencyChanged?.Invoke(this, EventArgs.Empty);
         };
-        AddSettingRow(_content, "Freq", _frequency, _frequencyValue, 4);
-
-        _continuous.Text = "Continuous";
-        _continuous.AutoSize = true;
+        AddSettingRow("Freq", _frequency, _frequencyValue);
+        _continuous.AutoSize = false;
+        _continuous.AccessibleName = "Continuous stroke";
         _continuous.Checked = true;
-        _continuous.ForeColor = Theme.PanelSecondaryText;
-        _continuous.BackColor = Theme.Panel;
-        _continuous.FlatStyle = FlatStyle.Flat;
-        _continuous.Font = Theme.UiFont(Theme.InspectorLabelFontSize);
-        _continuous.Margin = new Padding(0, 4, 0, 0);
         _continuous.CheckedChanged += (_, _) =>
         {
             if (!_updating) ContinuousChanged?.Invoke(this, EventArgs.Empty);
         };
-        AddSettingRow(_content, "Stroke", _continuous, null, 5);
-
+        AddSettingRow("Continuous", _continuous);
         ConfigureSlider(_hardness, 0, 100, 0, 20);
         _hardness.ValueChanged += (_, _) =>
         {
             _hardnessValue.Text = $"{_hardness.Value}%";
             if (!_updating) HardnessChanged?.Invoke(this, EventArgs.Empty);
         };
-        AddSettingRow(_content, "Hard", _hardness, _hardnessValue, 6);
-
+        AddSettingRow("Hard", _hardness, _hardnessValue);
         ConfigureSlider(_pressureSmoothing, 0, 100, 70, 20);
         _pressureSmoothing.ValueChanged += (_, _) =>
         {
             _pressureSmoothingValue.Text = $"{_pressureSmoothing.Value}%";
             if (!_updating) PressureSmoothingChanged?.Invoke(this, EventArgs.Empty);
         };
-        AddSettingRow(_content, "Smooth", _pressureSmoothing, _pressureSmoothingValue, 7);
-
-        Controls.Add(_content);
-        Controls.Add(title);
-        SizeChanged += (_, _) => UpdateResponsiveLayout();
+        AddSettingRow("Smooth", _pressureSmoothing, _pressureSmoothingValue);
+        _layoutReady = true;
         SetBrushShape(BrushShape.CreateTraditionalBrush());
+        PerformLayout();
+        UiLocalization.Watch(this);
     }
 
     public event EventHandler? ImportRequested;
@@ -238,16 +170,8 @@ internal sealed class BrushTipPanel : UserControl
         : TraditionalBrushTipKind.Round;
     public int TraditionalWidthPercent => (int)_traditionalWidth.Value;
     public int TraditionalDirectionDegrees => _traditionalDirection.Value;
-    // Row 0 is the tip preview strip; the remaining dense rows are tip size, frequency,
-    // hardness, pressure smoothing, the two traditional-brush rows and the stroke row.
-    public int PreferredHeight => Theme.InspectorSectionPaddingVertical * 2
-        + Theme.InspectorTitleHeight
-        + Theme.InspectorContentPaddingTop
-        + PreviewRowHeight
-        + (_compactLayout ? 28 : 0)
-        + SettingRowHeight * SettingRowCount
-        + (FieldRowHeight - SettingRowHeight) * 2
-        - (_traditionalRowsVisible ? 0 : FieldRowHeight + SettingRowHeight);
+    public int PreferredHeight => ScaleMetric(SettingsTop + (_compactLayout ? 44 : 0)
+        + RowPitch * (_traditionalRowsVisible ? 8 : 5) + 48);
 
     public void SetBrushShape(BrushShape brushShape)
     {
@@ -255,6 +179,7 @@ internal sealed class BrushTipPanel : UserControl
         SetTraditionalRowsVisible(brushShape.IsTraditionalBrush);
         _preview.BrushShape = brushShape;
         _name.Text = brushShape.Name;
+        _toolTip.SetToolTip(_name, brushShape.Name);
         _preset.SelectedIndex = brushShape.IsDefaultSoftRound
             ? 0
             : brushShape.IsTraditionalBrush
@@ -300,82 +225,124 @@ internal sealed class BrushTipPanel : UserControl
         slider.Maximum = maximum;
         slider.Value = value;
         slider.TickFrequency = tickFrequency;
-        slider.Dock = DockStyle.Fill;
+        slider.Dock = DockStyle.None;
         slider.Margin = Padding.Empty;
     }
 
-    private static void AddSettingRow(TableLayoutPanel parent, string label, Control input, Label? value, int row)
+    private void AddSettingRow(string label, Control input, Label? value = null)
     {
         var labelControl = InspectorModuleStyle.CreateFieldLabel(label);
-        if (input is ModernNumericUpDown or TableLayoutPanel)
-        {
-            var fieldRow = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                BackColor = Theme.Panel,
-                ColumnCount = 2,
-                RowCount = 1,
-                Margin = Padding.Empty
-            };
-            fieldRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, input is TableLayoutPanel ? 32 : 48));
-            fieldRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, input is TableLayoutPanel ? 68 : 52));
-            fieldRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            input.Dock = DockStyle.Fill;
-            InspectorModuleStyle.StyleField(input);
-            fieldRow.Controls.Add(labelControl, 0, 0);
-            fieldRow.Controls.Add(input, 1, 0);
-            parent.Controls.Add(fieldRow, 0, row);
-            parent.SetColumnSpan(fieldRow, parent.ColumnCount);
-            return;
-        }
-        parent.Controls.Add(labelControl, 0, row);
-
-        input.Dock = input is CheckBox ? DockStyle.Left : DockStyle.Fill;
-        parent.Controls.Add(input, 1, row);
+        labelControl.Dock = DockStyle.None;
+        labelControl.AutoSize = false;
+        input.Dock = DockStyle.None;
+        input.AccessibleName ??= label;
+        if (input is ComboBox or ModernNumericUpDown) InspectorModuleStyle.StyleField(input);
+        input.Dock = DockStyle.None;
+        _rows.Add((labelControl, input, value));
+        Controls.Add(labelControl);
+        Controls.Add(input);
         if (value is null) return;
-        value.Dock = DockStyle.Fill;
+        value.Dock = DockStyle.None;
+        value.AutoSize = false;
         value.BackColor = Theme.Panel;
         value.ForeColor = Theme.PanelSecondaryText;
         value.Font = Theme.UiFont(Theme.InspectorLabelFontSize);
         value.TextAlign = ContentAlignment.MiddleRight;
-        parent.Controls.Add(value, 2, row);
+        Controls.Add(value);
     }
 
     private void SetTraditionalRowsVisible(bool visible)
     {
         if (_traditionalRowsVisible == visible) return;
         _traditionalRowsVisible = visible;
-        SetSettingRowVisible(2, visible);
-        SetSettingRowVisible(3, visible);
-        MinimumSize = new Size(0, PreferredHeight);
+        PerformLayout();
         PreferredHeightChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private void UpdateResponsiveLayout()
+    protected override void OnLayout(LayoutEventArgs eventArgs)
     {
-        var scale = DeviceDpi / 96f;
-        var compact = ClientSize.Width < 300 * scale;
-        if (_compactLayout == compact) return;
-        _compactLayout = compact;
-        _content.SuspendLayout();
-        _content.ColumnStyles[0].Width = (compact ? 56 : 62) * scale;
-        _content.ColumnStyles[2].Width = (compact ? 40 : 46) * scale;
-        _content.RowStyles[0].Height = (PreviewRowHeight + (compact ? 28 : 0)) * scale;
-        _tipActions.Height = (int)Math.Round((compact ? 56 : 28) * scale);
-        MinimumSize = new Size(0, PreferredHeight);
-        _content.ResumeLayout(true);
-        PreferredHeightChanged?.Invoke(this, EventArgs.Empty);
-    }
-
-    private void SetSettingRowVisible(int row, bool visible)
-    {
-        _content.RowStyles[row].Height = visible ? row == 2 ? FieldRowHeight : SettingRowHeight : 0;
-        for (var column = 0; column < _content.ColumnCount; column++)
+        base.OnLayout(eventArgs);
+        if (!_layoutReady || _arranging) return;
+        _arranging = true;
+        try
         {
-            var control = _content.GetControlFromPosition(column, row);
-            if (control is not null) control.Visible = visible;
+            var compact = ClientSize.Width < ScaleMetric(300);
+            var preferredHeightChanged = _compactLayout != compact;
+            _compactLayout = compact;
+            var inset = ScaleMetric(16);
+            var width = Math.Max(1, ClientSize.Width - inset * 2);
+            var right = inset + width;
+            var rowHeight = ScaleMetric(Theme.ControlHeight);
+            var split = inset + (int)Math.Round(width * 0.44);
+            _title.SetBounds(inset + ScaleMetric(24), ScaleMetric(16), Math.Max(1, width - ScaleMetric(24)), ScaleMetric(28));
+            _preview.SetBounds(inset, ScaleMetric(70), ScaleMetric(56), ScaleMetric(56));
+            var detailsLeft = inset + ScaleMetric(68);
+            var detailsWidth = Math.Max(1, right - detailsLeft);
+            _name.AutoEllipsis = true;
+            _name.AutoSize = false;
+            _name.SetBounds(detailsLeft, ScaleMetric(compact ? 86 : 66), detailsWidth, ScaleMetric(24));
+            var actionLeft = compact ? inset : detailsLeft;
+            var actionWidth = compact ? width : detailsWidth;
+            var actionTop = ScaleMetric(compact ? 138 : 94);
+            var importWidth = Math.Min(ScaleMetric(64), actionWidth / 2);
+            _import.SetBounds(actionLeft, actionTop, importWidth, rowHeight);
+            var presetLeft = actionLeft + importWidth + ScaleMetric(6);
+            _preset.SetBounds(presetLeft, actionTop, Math.Max(1, right - presetLeft), rowHeight);
+            var cursorY = ScaleMetric(SettingsTop + (compact ? 44 : 0));
+            var tabIndex = 2;
+            foreach (var (caption, input, value) in _rows)
+            {
+                var traditional = input == _traditionalTip || input == _traditionalWidth || input == _traditionalDirection;
+                var rowVisible = !traditional || _traditionalRowsVisible;
+                caption.Visible = input.Visible = rowVisible;
+                if (value is not null) value.Visible = rowVisible;
+                if (traditional && !_traditionalRowsVisible) continue;
+                if (input == _frequency)
+                {
+                    _strokeTop = cursorY;
+                    _strokeTitle.SetBounds(inset, cursorY + ScaleMetric(8), width, ScaleMetric(24));
+                    cursorY += ScaleMetric(40);
+                }
+                var captionHeight = Math.Min(rowHeight, caption.Font.Height + ScaleMetric(4));
+                caption.SetBounds(inset, cursorY + (rowHeight - captionHeight) / 2,
+                    Math.Max(1, split - inset - ScaleMetric(8)), captionHeight);
+                var valueWidth = value is null ? 0 : ScaleMetric(38);
+                input.SetBounds(split, cursorY, Math.Max(1, right - split - valueWidth), rowHeight);
+                input.TabIndex = tabIndex++;
+                value?.SetBounds(right - valueWidth, cursorY, valueWidth, rowHeight);
+                cursorY += ScaleMetric(RowPitch);
+            }
+            if (Height != PreferredHeight) Height = PreferredHeight;
+            if (preferredHeightChanged) PreferredHeightChanged?.Invoke(this, EventArgs.Empty);
+            Invalidate();
         }
+        finally { _arranging = false; }
     }
+
+    protected override void OnPaint(PaintEventArgs eventArgs)
+    {
+        base.OnPaint(eventArgs);
+        SvgIcons.Draw(eventArgs.Graphics, SvgIconKind.Brush,
+            new Rectangle(ScaleMetric(16), ScaleMetric(21), ScaleMetric(18), ScaleMetric(18)), Theme.PanelSecondaryText);
+        InspectorModuleStyle.DrawDivider(this, eventArgs.Graphics, ScaleMetric(54));
+        InspectorModuleStyle.DrawDivider(this, eventArgs.Graphics, _strokeTop);
+        InspectorModuleStyle.DrawBottomDivider(this, eventArgs.Graphics);
+    }
+
+    protected override void OnDpiChangedAfterParent(EventArgs eventArgs)
+    {
+        base.OnDpiChangedAfterParent(eventArgs);
+        PerformLayout();
+        PreferredHeightChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _toolTip.Dispose();
+        base.Dispose(disposing);
+    }
+
+    private int ScaleMetric(int value) => Math.Max(1, (int)Math.Round(value * DeviceDpi / 96f));
 
     private void UpdateTraditionalInputState()
     {

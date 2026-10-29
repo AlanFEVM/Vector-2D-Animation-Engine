@@ -1,20 +1,15 @@
 namespace VectorAnimationEngine;
 
 /// <summary>
-/// Host glue for the document summary that replaces the inspector body while
-/// nothing is selected. Values come from the project/scene; the panel stays dumb.
+/// Host glue for the explicitly selected document page.
+/// Values come from the project/scene; the panel stays dumb.
 /// </summary>
 internal sealed partial class MainForm
 {
     private readonly DocumentInfoPanel _documentInfoPanel = new();
     private readonly ThemedScrollPanel _documentInspectorPage = new();
 
-    private bool IsDocumentInspectorContext => _selectedObjects.Count == 0
-        && !_selectedElement.IsValid
-        && SelectedSceneInstances().Count == 0
-        && _timeline.SelectedTween is null
-        && _inspectorCategory == InspectorCategory.None
-        && !IsTextEditActive() && _tool != ToolMode.Text;
+    private bool IsDocumentInspectorContext => _inspectorCategory == InspectorCategory.Document;
 
     private void BuildDocumentInfoPanel()
     {

@@ -6,6 +6,8 @@ internal static partial class Benchmark
 {
     private static void RunSceneToolPaletteVisibilityRegression()
     {
+        RunSceneDrawingInteractionRegression();
+        RunSceneToolPaletteControlsRegression();
         RunSceneSymbolEditingRegression();
         RunRecursiveSceneSymbolEditingRegression();
         RunReferenceCameraKeyboardNavigationFixtureRegression();
@@ -15,13 +17,22 @@ internal static partial class Benchmark
         RunReferenceWheelDollyDirectionRegression();
         RunReferenceCameraTransitionRegression();
         RunHierarchyFocusRegression();
+    }
+
+    private static void RunSceneToolPaletteControlsRegression()
+    {
         var basicVisibleTools = Enum.GetValues<ToolMode>()
             .Where(tool => MainForm.IsToolVisibleInWorkspace(WorkspaceView.BasicDrawing, tool))
+            .ToHashSet();
+        var sceneDrawingTools = Enum.GetValues<ToolMode>()
+            .Where(tool => MainForm.IsToolVisibleInWorkspace(WorkspaceView.SceneEditor, tool, sceneDrawingEditing: true))
             .ToHashSet();
         var sceneVisibleTools = Enum.GetValues<ToolMode>()
             .Where(tool => MainForm.IsToolVisibleInWorkspace(WorkspaceView.SceneEditor, tool))
             .ToHashSet();
         if (!basicVisibleTools.SetEquals(Enum.GetValues<ToolMode>().Where(tool => tool != ToolMode.Transform3D))
+            || !sceneDrawingTools.SetEquals(Enum.GetValues<ToolMode>())
+            || !MainForm.AllowsPressureBrushPointerInput(WorkspaceView.SceneEditor, sceneMaskEditing: false, sceneDrawingEditing: true)
             || !sceneVisibleTools.SetEquals(
                 [
                     ToolMode.Select,
@@ -55,7 +66,6 @@ internal static partial class Benchmark
         var projectField = RequireField(typeof(MainForm), "_project");
         var sceneField = RequireField(typeof(MainForm), "_scene");
         var stageField = RequireField(typeof(MainForm), "_stage");
-        var zoomMetricField = RequireField(typeof(MainForm), "_zoom");
         var sceneDimensionButtonField = RequireField(typeof(MainForm), "_sceneDimensionButton");
         var sceneProjectionButtonField = RequireField(typeof(MainForm), "_sceneProjectionButton");
         var sceneEditorPanelField = RequireField(typeof(MainForm), "_sceneEditorPanel");
@@ -148,8 +158,6 @@ internal static partial class Benchmark
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the project.");
             var stage = stageField.GetValue(form) as StageControl
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the Stage.");
-            var zoomMetric = zoomMetricField.GetValue(form) as Label
-                ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the zoom metric.");
             var dimensionButton = sceneDimensionButtonField.GetValue(form) as Button
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the dimension button.");
             var projectionButton = sceneProjectionButtonField.GetValue(form) as Button
@@ -187,6 +195,9 @@ internal static partial class Benchmark
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the mixing-brush panel.");
             var textSettingsPanel = textSettingsPanelField.GetValue(form) as TextSettingsPanel
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the text-settings panel.");
+            var textToolSettingsPanel = (TextSettingsPanel)RequireField(typeof(MainForm), "_textToolSettingsPanel").GetValue(form)!;
+            var toolInspectorPage = (ThemedScrollPanel)RequireField(typeof(MainForm), "_toolInspectorPage").GetValue(form)!;
+            var appearanceInspectorPage = (ThemedScrollPanel)RequireField(typeof(MainForm), "_colorInspectorPage").GetValue(form)!;
             var drawSettingsPanel = drawSettingsPanelField.GetValue(form) as DrawSettingsPanel
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the drawing-settings panel.");
             var shapeSettingsPanel = shapeSettingsPanelField.GetValue(form) as ShapeSettingsPanel
@@ -198,10 +209,14 @@ internal static partial class Benchmark
                 materialEditor,
                 brushTipPanel,
                 mixingBrushPanel,
-                textSettingsPanel,
+                textToolSettingsPanel,
                 drawSettingsPanel,
                 shapeSettingsPanel
             ];
+
+            bool DrawingParameterHostsMatch() => drawingParameterPanels.All(panel => ReferenceEquals(panel.Parent,
+                ReferenceEquals(panel, materialEditor) ? appearanceInspectorPage.Content : toolInspectorPage.Content))
+                && ReferenceEquals(textSettingsPanel.Parent, basicInspectorPage.Content);
 
             ToolMode[] VisiblePaletteTools() => palette.Controls
                 .Cast<Control>()
@@ -238,8 +253,11 @@ internal static partial class Benchmark
                 && tools.Contains(ToolMode.Gradient)
                 && tools.Contains(ToolMode.SnapPoint)
                 && tools.Contains(ToolMode.Eraser);
-            static bool HasScenePalette(IReadOnlyCollection<ToolMode> tools) =>
-                tools.Count == 1 && IsSelectionTool(tools.Single());
+            bool HasScenePalette(IReadOnlyCollection<ToolMode> tools) =>
+                stage.ReferenceDimension == SceneDimension.TwoD
+                    && stage.Reference2DViewDirection == ReferenceViewDirection.Front
+                    ? HasFullDrawingPalette(tools)
+                    : tools.Count == 1 && IsSelectionTool(tools.Single());
             bool TryShortcut(Keys keys) => tryActivateShortcut.Invoke(form, [keys]) is true;
             int SceneUndoCount()
             {
@@ -291,10 +309,10 @@ internal static partial class Benchmark
                 || shapeFlyout.Visible
                 || !palette.AutoSize
                 || palette.WrapContents
-                || scenePaletteSize.Height >= basicPaletteSize.Height)
+                || scenePaletteSize.Height != basicPaletteSize.Height)
             {
                 throw new InvalidOperationException(
-                    "Scene Building 2D did not hide drawing-only tools, close flyouts, or shrink the tool palette: "
+                    "Scene Building 2D did not retain the full drawing palette or close flyouts: "
                     + $"workspace={workspaceTabs.SelectedView}, "
                     + $"tools=[{string.Join(',', VisiblePaletteTools())}], "
                     + $"vault={vaultButton.Visible}, projectionVisible={projectionButton.Visible}, "
@@ -334,32 +352,33 @@ internal static partial class Benchmark
                     "The 2D Scene projection shortcut did not restore the preferred perspective mode across the camera and inspector.");
             }
 
-            if (TryShortcut(Keys.R)
-                || toolField.GetValue(form) is not ToolMode.Select
+            if (!TryShortcut(Keys.R)
+                || toolField.GetValue(form) is not ToolMode.Rectangle
                 || !TryShortcut(Keys.Q)
                 || toolField.GetValue(form) is not ToolMode.Transform
                 || !TryShortcut(Keys.V)
                 || toolField.GetValue(form) is not ToolMode.Select)
             {
                 throw new InvalidOperationException(
-                    "Scene Building tool shortcuts activated a hidden drawing tool or blocked available selection tools.");
+                    "Scene Building 2D tool shortcuts did not activate drawing and selection tools.");
             }
 
             drawSettings.ShapeKind = ShapeKind.Ellipse;
             drawSettings.NotifyChanged();
             Application.DoEvents();
-            if (toolField.GetValue(form) is not ToolMode.Select
+            if (toolField.GetValue(form) is not ToolMode.Ellipse
                 || !HasScenePalette(VisiblePaletteTools()))
             {
                 throw new InvalidOperationException(
-                    "A Scene Building draw-settings change bypassed tool availability and re-armed a hidden shape tool.");
+                    "A Scene Building draw-settings change did not activate the available shape tool.");
             }
 
             showToolPairFlyout.Invoke(form, [paintGroup]);
             Application.DoEvents();
-            if (paintFlyout.Visible)
+            if (!paintFlyout.Visible
+                || !VisibleFlyoutTools(paintFlyout).ToHashSet().SetEquals([ToolMode.Fill, ToolMode.InkBottle]))
             {
-                throw new InvalidOperationException("Scene Building opened an empty drawing-only paint flyout.");
+                throw new InvalidOperationException("Scene Building did not expose Fill and Ink Bottle.");
             }
             showToolPairFlyout.Invoke(form, [selectionGroup]);
             Application.DoEvents();
@@ -376,6 +395,7 @@ internal static partial class Benchmark
                 throw new InvalidOperationException(
                     "Scene Building did not retain Select, both Lasso tools, Free Transform, and Distort in the selection flyout.");
             }
+            Console.WriteLine("scene_drawing_tool_controls=ok");
 
             dimensionButton.PerformClick();
             Application.DoEvents();
@@ -458,14 +478,13 @@ internal static partial class Benchmark
             Console.WriteLine("scene_projection_shortcut=ok");
 
             var regularFormSize = form.Size;
-            form.Size = form.MinimumSize;
+            form.Size = new Size(form.MinimumSize.Width, regularFormSize.Height);
             Application.DoEvents();
             spatialTransformRightInset = spatialTransformHost.ClientSize.Width - spatialTransformPanel.Right;
             spatialTransformTopInset = spatialTransformPanel.Top - stageMetrics.Bottom;
             if (!projectionButton.Visible
                 || projectionButton.Right >= dimensionButton.Left
                 || zoomOutButton.Right >= projectionButton.Left
-                || zoomMetric.Visible && zoomMetric.Right + 6 > zoomOutButton.Left
                 || !ReferenceEquals(spatialTransformPanel.Parent, stage.Parent)
                 || spatialTransformPanel.Left < stage.Left + 8
                 || Math.Abs(spatialTransformTopInset - spatialTransformExpectedMargin) > 1
@@ -473,7 +492,19 @@ internal static partial class Benchmark
                 || Math.Abs(spatialTransformRightInset - spatialTransformExpectedMargin) > 1)
             {
                 throw new InvalidOperationException(
-                    "The minimum-width Scene toolbar or Transform floating panel overlapped or left the Stage bounds.");
+                    "The minimum-width Scene toolbar or Transform floating panel overlapped or left the Stage bounds: "
+                    + $"stage={stage.Bounds}, transform={spatialTransformPanel.Bounds}, visible={spatialTransformPanel.Visible}, "
+                    + $"projection={projectionButton.Bounds}, zoomOut={zoomOutButton.Bounds}, dimension={dimensionButton.Bounds}, "
+                    + $"topInset={spatialTransformTopInset}, rightInset={spatialTransformRightInset}, margin={spatialTransformExpectedMargin}.");
+            }
+            form.Size = form.MinimumSize;
+            Application.DoEvents();
+            if (spatialTransformPanel.Visible || spatialTransformPanel.FloatingVisibilityRequested
+                || !projectionButton.Visible || zoomOutButton.Right >= projectionButton.Left
+                || projectionButton.Right >= dimensionButton.Left)
+            {
+                throw new InvalidOperationException(
+                    "The minimum-size Scene toolbar overlapped or exposed a Transform panel without selection.");
             }
             form.Size = regularFormSize;
             Application.DoEvents();
@@ -864,6 +895,7 @@ internal static partial class Benchmark
             var maskSelectionTools = VisibleFlyoutTools(selectionFlyout);
             var maskBrushShortcut = TryShortcut(Keys.B);
             var maskActiveTool = toolField.GetValue(form);
+            RequireMethod(typeof(MainForm), "HandleInspectorCategoryShortcut").Invoke(form, [Keys.Control | Keys.Alt | Keys.D6]);
             if (!HasFullDrawingPalette(maskPaletteTools)
                 || !vaultButton.Visible
                 || dimensionButton.Enabled
@@ -882,8 +914,8 @@ internal static partial class Benchmark
                     ])
                 || !maskBrushShortcut
                 || maskActiveTool is not ToolMode.Brush
-                || drawingParameterPanels.Any(panel => !ReferenceEquals(panel.Parent, sceneInspectorPage.Content))
-                || !materialEditor.Visible
+                || !DrawingParameterHostsMatch()
+                || materialEditor.Visible
                 || !brushTipPanel.Visible)
             {
                 throw new InvalidOperationException(
@@ -917,7 +949,7 @@ internal static partial class Benchmark
             }
             activateTool.Invoke(form, [ToolMode.Text]);
             Application.DoEvents();
-            if (!textSettingsPanel.Visible)
+            if (!textToolSettingsPanel.Visible || textSettingsPanel.Visible)
             {
                 throw new InvalidOperationException(
                     "Scene Mask text parameters were not visible with the tool active.");
@@ -1058,7 +1090,7 @@ internal static partial class Benchmark
                 || spatialTransformPanel.FloatingVisibilityRequested
                 || referenceViewPad.Visible
                 || eraserOptionsStrip.Visible
-                || drawingParameterPanels.Any(panel => !ReferenceEquals(panel.Parent, basicInspectorPage.Content)))
+                || !DrawingParameterHostsMatch())
             {
                 throw new InvalidOperationException(
                     "Leaving Scene Mask editing did not restore the saved 3D Scene view with selection-only spatial controls.");
@@ -1198,8 +1230,8 @@ internal static partial class Benchmark
             && stage.Frame == parentFrame && stage.CaptureViewState() == parentView
             && stage.Scene.ObjectCount == editedCount * 2,
             "Returning to scene did not restore the frame/view or rebuild both shared placements.");
-        AssertTimeline(toolVisible.Invoke(form, [ToolMode.Rectangle]) is false,
-            "Returning to scene left drawing tools active on instance composition.");
+        AssertTimeline(toolVisible.Invoke(form, [ToolMode.Rectangle]) is true,
+            "Returning to the 2D scene hid an available drawing tool.");
         var owner = new SceneCompositionObjectOwner(selected.Id, symbol.Id, selected.Id);
         AssertTimeline(RequireMethod(typeof(MainForm), "BeginSceneSymbolEditing").Invoke(form, [owner]) is true,
             "A second in-place session could not start.");

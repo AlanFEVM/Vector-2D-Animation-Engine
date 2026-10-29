@@ -34,7 +34,7 @@ internal sealed partial class MainForm
         _stageContextMenu.Opening += (_, _) =>
         {
             var canOfferTerrain = CanOfferRandomFractureCollisionTerrain();
-            var canOffer = !IsSceneCompositionContext()
+            var canOffer = IsEditableDrawingContext()
                 && SelectedSceneInstances().Count == 0
                 && _selectedElements.Count == 0;
             var targets = canOffer ? SelectedActiveDrawingObjectIndices() : [];
@@ -49,8 +49,8 @@ internal sealed partial class MainForm
 
     private bool CanOfferRandomFractureCollisionTerrain()
     {
-        return IsDrawingWorkspaceContext
-            && !IsSceneCompositionContext()
+        return (IsDrawingWorkspaceContext || IsSceneDrawingContext())
+            && IsEditableDrawingContext()
             && _timeline.Context is DrawingObjectDefinition or VectorScene
             && _scene.LayerCount > 0;
     }
@@ -321,7 +321,7 @@ internal sealed partial class MainForm
     {
         objectIndex = -1;
         error = string.Empty;
-        if (IsSceneCompositionContext())
+        if (!IsEditableDrawingContext())
         {
             error = "Random Fracture is unavailable in a scene composition.";
             return false;

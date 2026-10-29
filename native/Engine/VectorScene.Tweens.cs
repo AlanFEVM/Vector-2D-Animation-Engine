@@ -1110,6 +1110,7 @@ internal sealed partial class VectorScene
         var hasAffectedLayer = false;
         for (var layer = 0; layer < LayerCount; layer++)
         {
+            if (CanMaterializeTimelineTweenLayer?.Invoke(LayerIds[layer]) == false) continue;
             var track = Timeline.FindTrackByTargetId(LayerIds[layer]);
             if (track is null || !track.Tweens.Any(tween =>
                     tween.StartFrame == frame || tween.EndFrame == frame))
@@ -1179,6 +1180,7 @@ internal sealed partial class VectorScene
     {
         for (var layer = 0; layer < LayerCount; layer++)
         {
+            if (CanMaterializeTimelineTweenLayer?.Invoke(LayerIds[layer]) == false) continue;
             if (affectedLayers is not null
                 && ((uint)layer >= affectedLayers.Length || !affectedLayers[layer]))
             {
