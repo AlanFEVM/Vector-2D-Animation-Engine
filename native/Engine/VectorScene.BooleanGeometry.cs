@@ -573,7 +573,7 @@ internal sealed partial class VectorScene
             for (var index = 0; index < currentContours.Count; index++)
             {
                 var path = ToClipperPath(currentContours[index], closed: true);
-                if (path.Count < 3 || Math.Abs(Clipper.Area(path)) < 0.5d * ClipperCoordinateScale * ClipperCoordinateScale)
+                if (path.Count < 3)
                 {
                     return false;
                 }
@@ -623,8 +623,12 @@ internal sealed partial class VectorScene
             var comparison = new Clipper64 { PreserveCollinear = true };
             comparison.AddSubject(currentEvenOdd);
             comparison.AddClip(desired);
-            if (!comparison.Execute(ClipType.Xor, FillRule.NonZero, difference)
-                || difference.Sum(path => Math.Abs(Clipper.Area(path))) < 0.5d * ClipperCoordinateScale * ClipperCoordinateScale)
+            if (!comparison.Execute(ClipType.Xor, FillRule.NonZero, difference)) return false;
+            // A self-crossing contour can cover exactly the same area after splitting
+            // into simple faces. Area equality alone does not mean topology is valid.
+            if (desired.Count == currentPaths.Length
+                && !currentContours.Any(ContourHasProperSelfIntersection)
+                && difference.Sum(path => Math.Abs(Clipper.Area(path))) < 0.5d * ClipperCoordinateScale * ClipperCoordinateScale)
             {
                 return false;
             }
@@ -636,6 +640,26 @@ internal sealed partial class VectorScene
         {
             return false;
         }
+    }
+
+    private static bool ContourHasProperSelfIntersection(PointF[] contour)
+    {
+        for (var first = 0; first < contour.Length; first++)
+        {
+            var a = contour[first];
+            var b = contour[(first + 1) % contour.Length];
+            for (var second = first + 2; second < contour.Length; second++)
+            {
+                if (first == 0 && second == contour.Length - 1) continue;
+                var c = contour[second];
+                var d = contour[(second + 1) % contour.Length];
+                static double Side(PointF p, PointF q, PointF r) =>
+                    ((double)q.X - p.X) * (r.Y - p.Y) - ((double)q.Y - p.Y) * (r.X - p.X);
+                if (Side(a, b, c) * Side(a, b, d) < 0
+                    && Side(c, d, a) * Side(c, d, b) < 0) return true;
+            }
+        }
+        return false;
     }
 
     private static int[] DetermineReferenceContourDepths(IReadOnlyList<PointF[]> contours)

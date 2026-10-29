@@ -4441,13 +4441,16 @@ internal sealed partial class StageControl : Control
         var distance = SquaredDistance(screen, WorldToScreen(world));
         if (distance > radius * radius) return;
 
+        // A nearby control must never displace an endpoint inside its hit area.
+        if (best.IsValid && bestIsAnchor && !isAnchor) return;
+
         const float distanceTieTolerance = 0.001f;
         var closer = distance < bestDistance - distanceTieTolerance;
         var tied = Math.Abs(distance - bestDistance) <= distanceTieTolerance;
         var preferred = tied
             && (isAnchor && !bestIsAnchor
                 || isAnchor == bestIsAnchor && isActive && !bestIsActive);
-        if (!closer && !preferred) return;
+        if (!closer && !preferred && !(isAnchor && !bestIsAnchor)) return;
 
         best = new FillEdgeBezierOverlayHit(
             segment.PartIndex,

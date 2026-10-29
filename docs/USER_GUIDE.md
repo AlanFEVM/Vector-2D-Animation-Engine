@@ -402,6 +402,12 @@ Distort 控制框：
 
 机制：选择可能落在完整对象，也可能落在填色、描边或由交点分割出的局部。移动局部时，软件会把虚拟拓扑部分实体化为可编辑对象；一次拖动仍只生成一个撤销步骤。
 
+图形调整提交时，按既有 Adobe Animate 风格的合并绘制规则重新计算局部拓扑：自交填色拆成有效轮廓，同色填色合并、异色填色覆盖，独立描边在新交点处分割。端点、曲率、移动、变换及边界拉弧复用同一套规则。计算以被修改对象及其关联填色为起点，通过空间查询寻找同图层、同 Cel 的相关邻居；不对远处无关图形执行全场景布尔运算。拖动预览结束后提交，拓扑变化包含在原操作的一步撤销中。
+On commit, shape edits recompute local topology using the existing Adobe Animate-style merge drawing rules: resolve self-crossing fills into valid contours, merge matching fills, overwrite different fills, and split independent strokes at new intersections. Endpoint, curvature, move, transform, and boundary-arc edits share these rules. Edited objects and linked fills seed spatial queries for relevant neighbours in the same layer and Cel; distant objects do not undergo a scene-wide Boolean pass. Topology commits after the drag preview and remains part of the same undo step.
+
+单条封闭边界自交形成两个封闭填色区域时，两块填色均保留，边界曲线在交点处切分并建立端点；不会通过删除回环来消除自交。
+When a closed boundary crosses itself into two filled faces, both faces remain, with boundary curves split into endpoints at the intersection. The loop is not discarded.
+
 移动填色时，当前被拖动的填色会临时显示在所属图层的最上方，便于在纯色、线性渐变、径向渐变和形状渐变中持续确认位置；松开或取消后恢复原有显示顺序，不会改写对象的永久层级。多个填色一起移动时仍保留它们原来的相对顺序。
 
 ### 锚点与曲线
@@ -418,6 +424,10 @@ Distort 控制框：
   Connected endpoints stay joined during dragging; the actual stroke, yellow editing outline and endpoint handles update together, including straight corners. Endpoint and corner editing snaps within 8 screen pixels, while drawing retains its 32-pixel radius. Disabling snapping allows free adjustment. A new corner excludes both edited segments from snap targets; holding Ctrl to create it does not force object snapping on. The initial grab offset is preserved, and returning to the press position restores the original anchor.
 - 线段（`Line`、Pencil 描边、未填充的 Path 描边）作为独立对象编辑：**调整曲率**时可让重合的填色边界一起变化——拖动曲率方向柄（三次线段的两条方向柄、二次线段的单个控制方格）、在未选中线段上拖动中段拉弧、`Ctrl+拖动` 拉折角、拖动 Pencil 锚点，以及与边界重合的端点共享关系，都会同步该填色的对应边。**只移动线段本身**时不带动任何填色——选中整条线段拖动、拖动端点、使用变换框缩放/旋转/倾斜，填色边界保持在原处（三次贝塞尔线段同样如此）。填色也可以随时通过自己的边界控制点单独编辑。
   Strokes (`Line`, Pencil freehand, unfilled Path strokes) are independent objects: dragging a **curvature** handle (either direction handle of a cubic stroke, the single control of a quadratic one), pulling the arc of an unselected stroke, `Ctrl`+dragging a corner, dragging a Pencil anchor, or moving an endpoint shared with the fill boundary keeps a coincident fill edge in sync. **Moving the stroke itself** — dragging a selected stroke, dragging an endpoint, or scaling/rotating/skewing it with the transform box — never moves a fill edge (cubic-Bezier strokes included). Fills stay editable through their own boundary controls.
+- 独立线段（包括封闭填色外的线段）的端点命中优先于曲率控制柄和中段拉弧；端点与曲率调整区域重叠时，拖动会调整端点，未选中线段也遵循此规则。
+  Independent Line endpoints, including lines outside closed fills, take priority over curvature handles and arc dragging. When their hit areas overlap, dragging edits the endpoint, even when the line is unselected.
+- 封闭填色的边界描边同样优先命中黄色端点，避免曲率手柄或未选中边界的拉弧手势抢占端点拖动。拖动这种边界端点会同时调整填色轮廓与相连边界，不会把描边分离成独立线段。
+  Closed-fill boundary strokes also prioritize yellow endpoints over curvature handles and unselected-edge arc dragging. Dragging a boundary endpoint reshapes the fill and connected boundary edges together, without detaching the stroke into an independent line.
 - 拖动曲线锚点会同时平移该锚点附着的控制柄，保留原有曲率；直接拖动控制柄只调整对应切线。
 - 直接用左键拖动 Line 的独立端点会重新弯曲该段：被拖端跟随指针，另一端固定，位移沿整段逐渐减弱，带动较大范围的曲线一起移动，避免控制点钉在原处造成局部过度折弯。二次控制点跟随一半位移；三次方向柄从靠近被拖端到远端分别跟随三分之二、三分之一位移，不锁定原切线。二次段保留一个控制点，三次段保留两个方向柄，编辑类型不变；原本笔直的段仍保持新的直线弦。共享折点使用独立的角点拖动：所有相连端点一起移动，外侧端点及按下时的控制点保持固定，允许尖角左右摆动、切线转向和反向回弯；不会把独立端点的整段跟随规则套到折点上。单独拖动外侧端点只重塑对应线段。弯曲段可以拉平后继续反向回弯，拖回按下位置可恢复原形，一次拖动作为一步撤销。
   Dragging an unshared Line endpoint reshapes its curve: the dragged endpoint follows the pointer, the opposite endpoint stays fixed, and displacement decreases linearly along the segment so the curve body follows instead of folding around stationary controls. The quadratic control follows half the displacement; cubic handles follow two thirds near the dragged end and one third near the fixed end, allowing the tangent to change. Quadratic segments retain one control and cubic segments retain both handles without changing degree; originally straight segments remain straight. A shared corner moves all connected endpoints together while keeping the outer endpoints and gesture-start controls fixed, allowing the tip to swing left and right and its tangents to reverse. The distributed motion used for free endpoints does not apply to shared corners. Dragging an outer endpoint reshapes only its own segment. Curves can pass through a flat position and reverse their bend. Returning to the press position restores the original shape, and each drag uses one undo step.

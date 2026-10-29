@@ -452,6 +452,12 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (TryFindLineEndpointHit(screen, out var endpointLine, out _))
+        {
+            _stage.SetHoveredLineElement(endpointLine);
+            return;
+        }
+
         var overlayHit = _stage.HitTestFillEdgeBezierOverlay(screen);
         var hit = _scene.HitTestElement(_stage.ScreenToWorld(screen), _frame, SelectionToleranceWorld());
         if (FillEdgeOverlayOwnsPointer(overlayHit, IsSelectableLineHit(hit)))
@@ -2181,6 +2187,34 @@ internal sealed partial class MainForm : Form
             vector.X * sin + vector.Y * cos);
     }
 
+    private bool TryFindLineEndpointHit(Point screen, out DrawingElementHit line, out EditHandleKind handle)
+    {
+        // Resolve anchors across candidates before a retained curvature handle or
+        // an unselected line's body gets a chance to start an arc drag.
+        line = DrawingElementHit.None;
+        handle = EditHandleKind.None;
+        var hit = _scene.HitTestElement(_stage.ScreenToWorld(screen), _frame, SelectionToleranceWorld());
+        var candidates = new[] { hit, _selectedElement, _stage.HoveredLineElement }
+            .Concat(_selectedElements)
+            .Concat(_selectedObjects.Select(objectIndex => new DrawingElementHit(
+                new DrawingElementKey(objectIndex, DrawingElementKind.Stroke, 0), 0, 0, 1)));
+        foreach (var candidate in candidates)
+        {
+            var selectableBoundary = candidate.IsValid
+                && candidate.Key.Kind == DrawingElementKind.BoundaryStroke
+                && (uint)candidate.Key.ObjectIndex < _scene.ObjectCount
+                && _scene.IsObjectSelectable(candidate.Key.ObjectIndex, _frame);
+            if (!(IsSelectableLineHit(candidate) || selectableBoundary)
+                || !_stage.TryResolveEditableBezierHit(screen, candidate, out var editable)) continue;
+            var candidateHandle = _stage.HitTestLineElementHandle(screen, editable);
+            if (candidateHandle is not (EditHandleKind.LineStart or EditHandleKind.LineEnd)) continue;
+            line = editable;
+            handle = candidateHandle;
+            return true;
+        }
+        return false;
+    }
+
     private bool TryFindSelectedLineControlHit(Point screen, out DrawingElementHit line)
     {
         line = DrawingElementHit.None;
@@ -3104,7 +3138,13 @@ internal sealed partial class MainForm : Form
                 .ToArray();
             var linesChanged = !preserveSharedBoundarySplit
                 && MergeCompatibleLinesAfterDrawingOperation(LocalLineMergeScope(lineMergeSeeds));
-            if (fillsOverwritten || fillsChanged || linesChanged)
+            var topologySeeds = _selectedObjects
+                .Concat(lineMergeSeedKeys.Select(FindObjectByStackKey))
+                .Where(index => (uint)index < _scene.ObjectCount)
+                .Distinct()
+                .ToArray();
+            var strokesSplit = MaterializeEditedStrokeIntersections(topologySeeds);
+            if (fillsOverwritten || fillsChanged || linesChanged || strokesSplit)
             {
                 _hierarchyPanel.RefreshScene();
                 ConsumeDeferredPresentationRefresh(DeferredPresentationRefresh.Hierarchy);

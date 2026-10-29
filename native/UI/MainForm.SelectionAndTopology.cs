@@ -31,6 +31,13 @@ internal sealed partial class MainForm : Form
             if (_scene.ObjectCount == 0) break;
             var source = mergeIndex.Find(key.Order, key.SubOrder);
             if (source < 0 || !IsFillShape(_scene.ShapeKind[source])) continue;
+            // Only edited owners are seeds; the existing merge/overwrite operations
+            // discover neighbours through spatial queries in the same layer and Cel.
+            if (_scene.ShapeKind[source] == ShapeKind.Path && _scene.HasFill(source))
+            {
+                changed |= _scene.NormalizeFillBoundaryOverlaps(
+                    source, _scene.GetObjectBoundaryContours(source));
+            }
             var beforeCount = _scene.ObjectCount;
             var merged = _scene.MergeSameColorFillsAround(source, connectNearby, frame: _frame);
             if ((uint)merged >= _scene.ObjectCount) continue;
@@ -60,6 +67,13 @@ internal sealed partial class MainForm : Form
             .Select(index => new DrawingStackKey(_scene.ObjectOrder[index], _scene.ObjectSubOrder[index]))
             .ToHashSet();
         var geometryRevision = _scene.GeometryRevision;
+        foreach (var source in selectedFills)
+        {
+            if (_scene.ShapeKind[source] == ShapeKind.Path && _scene.HasFill(source))
+            {
+                _scene.NormalizeFillBoundaryOverlaps(source, _scene.GetObjectBoundaryContours(source));
+            }
+        }
         var overwritten = _scene.ApplyFillOverwriteToNewObjects(selectedFills, _frame);
         if (_scene.GeometryRevision == geometryRevision) return false;
 
@@ -119,13 +133,18 @@ internal sealed partial class MainForm : Form
                 : newObject;
         if ((uint)topologySeed >= _scene.ObjectCount) return changed;
 
+        return MaterializeEditedStrokeIntersections([topologySeed]) || changed;
+    }
+
+    private bool MaterializeEditedStrokeIntersections(IReadOnlyCollection<int> seeds)
+    {
         var selectedBefore = _selectedObjects
             .Where(index => (uint)index < _scene.ObjectCount)
             .Distinct()
             .ToArray();
         var primaryBefore = (uint)_selectedObject < _scene.ObjectCount ? _selectedObject : -1;
-        var materialized = _scene.MaterializeLineIntersections([topologySeed], _frame);
-        if (!materialized.Success || !materialized.Changed) return changed;
+        var materialized = _scene.MaterializeLineIntersections(seeds, _frame);
+        if (!materialized.Success || !materialized.Changed) return false;
 
         IEnumerable<int> Remap(int source)
         {
@@ -208,7 +227,8 @@ internal sealed partial class MainForm : Form
             return false;
         }
 
-        return MergeCompatibleLinesAfterDrawingOperation();
+        var changed = MergeCompatibleLinesAfterDrawingOperation(LocalLineMergeScope(_selectedObjects));
+        return MaterializeEditedStrokeIntersections(_selectedObjects.ToArray()) || changed;
     }
 
     private bool MergeSelectedFillsAfterMaterialChange()
