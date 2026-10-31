@@ -47,6 +47,7 @@ internal class SvgIconButton : Button
 
     public bool ShowsToolGroupIndicator { get; set; }
     public bool ShowsLabelBelowIcon { get; set; }
+    public bool IsInspectorSubpage { get; set; }
 
     // Disclosure headers express expansion through the chevron, not a selected toolbar surface.
     public bool IsDisclosureHeader { get; set; }
@@ -139,6 +140,11 @@ internal class SvgIconButton : Button
         {
             var iconSize = Math.Min(Math.Max(1, Width), Math.Min(ScaleLogical(30), Math.Max(1, Height - ScaleLogical(22))));
             iconBounds = new Rectangle((Width - iconSize) / 2, ScaleLogical(2), iconSize, iconSize);
+        }
+        if (IsInspectorSubpage)
+        {
+            var iconSize = Math.Min(ScaleLogical(20), Math.Min(Width, Height));
+            iconBounds = new Rectangle((Width - iconSize) / 2, (Height - iconSize) / 2, iconSize, iconSize);
         }
         var iconPadding = ShowsLabelBelowIcon
             ? Math.Min(ScaleLogical(3), Math.Max(0, (iconBounds.Width - 1) / 2)) : 0;

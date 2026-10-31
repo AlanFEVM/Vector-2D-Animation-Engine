@@ -5533,6 +5533,7 @@ internal static partial class Benchmark
     {
         RunMinimumShotFrameRegression();
         RunShotAspectRatioRegression();
+        RunShotMicroMotionRegression();
         var project = VectorProject.CreateEmpty();
         var scene = project.Scenes[0];
         var firstLayer = scene.Layers[0];
@@ -5648,6 +5649,335 @@ internal static partial class Benchmark
         RunShotParallaxModelRegression();
 
         Console.WriteLine("scene_shot_regression=ok");
+    }
+
+    private static void RunShotMicroMotionRegression()
+    {
+        var settings = (SceneShotSettings.Default with
+        {
+            Kind = SceneShotCameraKind.TwoD, Projection = CameraProjection.Orthographic,
+            OrthographicSize = 4000, X = 150, Y = -80, RotationDegrees = 20
+        }).Normalized();
+        var motion = new SceneShotMicroMotionSettings { Enabled = true, Seed = 37 };
+        var sampled = motion.ApplyTo(settings, 0.5, 1920, 1080);
+        AssertTimeline(sampled != settings && sampled == motion.ApplyTo(settings, 12d / 24, 1920, 1080)
+            && sampled == motion.ApplyTo(settings, 30d / 60, 1920, 1080)
+            && sampled != motion.ApplyTo(settings, 2.5, 1920, 1080)
+            && sampled != (motion with { Seed = 38 }).ApplyTo(settings, 0.5, 1920, 1080),
+            "Camera micro motion was not deterministic, time-based and seed-dependent.");
+        AssertTimeline((motion with { Enabled = false }).ApplyTo(settings, 1, 1920, 1080) == settings
+            && (motion with { HorizontalPercent = 0, VerticalPercent = 0, RotationDegrees = 0 })
+                .ApplyTo(settings, 1, 1920, 1080) == settings
+            && motion.ApplyTo(settings, double.NaN, 1920, 1080) == settings,
+            "Disabled, zero-amplitude or invalid-time camera motion changed the authored camera.");
+        var frame = settings.ResolveWorldFrame(1920, 1080);
+        foreach (var time in Enumerable.Range(0, 180).Select(index => index / 30d))
+        {
+            var evaluated = motion.ApplyTo(settings, time, 1920, 1080);
+            var delta = evaluated.Position - settings.Position;
+            AssertTimeline(evaluated.IsValid && evaluated.Z == settings.Z
+                && Math.Abs(Vector3.Dot(delta, frame.Right)) <= frame.HalfWidth * 2 * motion.HorizontalPercent / 100 + 0.01f
+                && Math.Abs(Vector3.Dot(delta, frame.Up)) <= frame.HalfHeight * 2 * motion.VerticalPercent / 100 + 0.01f
+                && Math.Abs(evaluated.RotationDegrees - settings.RotationDegrees) <= motion.RotationDegrees + 0.001f,
+                "Camera micro motion exceeded its frame-relative amplitude or changed planar depth.");
+        }
+        AssertTimeline(!new SceneShotMicroMotionSettings().Enabled
+            && new SceneShotMicroMotionSettings().IsValid
+            && !(motion with { Speed = float.NaN }).IsValid
+            && !(motion with { HorizontalPercent = -1 }).IsValid
+            && !(motion with { Seed = -1 }).IsValid
+            && (motion with { Speed = float.NaN, VerticalPercent = float.PositiveInfinity }).Normalized().IsValid,
+            "Camera micro-motion defaults or validation accepted invalid values.");
+        var legacy = System.Text.Json.JsonSerializer.Deserialize<SceneShotSnapshot>("{}");
+        AssertTimeline(legacy is not null && !legacy.MicroMotion.Enabled && legacy.MicroMotion.IsValid,
+            "Legacy camera snapshots did not retain disabled motion defaults.");
+        RunShotHandheldDefaultsRegression(settings);
+
+        var project = VectorProject.CreateEmpty();
+        var scene = project.Scenes[0];
+        var shot = scene.AddShot("Overlay camera", 24);
+        scene.UpdateShotAtFrame(shot.Id, 0, settings);
+        scene.InsertShotTimelineKeyframe(shot.Id, 12);
+        scene.UpdateShotAtFrame(shot.Id, 12, settings with { X = 900 });
+        var authoredKeys = shot.StateKeyframes.ToArray();
+        var timelineBefore = System.Text.Json.JsonSerializer.Serialize(scene.Timeline.CreateSnapshot());
+        var before = scene.CreateShotSnapshot();
+        AssertTimeline(scene.TryEvaluateShotSettings(shot.Id, 7, out var authored),
+            "Camera motion fixture could not evaluate the authored camera.");
+        AssertTimeline(scene.UpdateShotMicroMotion(shot.Id, motion)
+            && shot.Settings == settings && shot.StateKeyframes.SequenceEqual(authoredKeys)
+            && timelineBefore == System.Text.Json.JsonSerializer.Serialize(scene.Timeline.CreateSnapshot())
+            && scene.TryEvaluateShotSettings(shot.Id, 7, out var unchanged) && unchanged == authored,
+            "Editing micro motion changed camera frames, exposure, timeline or authored evaluation.");
+        AssertTimeline(!scene.UpdateShotMicroMotion(shot.Id, motion with { Speed = -1 }) && shot.MicroMotion == motion,
+            "An invalid camera overlay edit partially mutated the camera.");
+        var clone = shot.Clone();
+        scene.UpdateShotMicroMotion(shot.Id, motion with { Seed = 12 });
+        shot.RestoreFrom(clone);
+        AssertTimeline(shot.MicroMotion == motion, "Camera clone/restore dropped render-only motion.");
+        scene.RestoreShotSnapshot(before);
+        AssertTimeline(!scene.FindShot(shot.Id)!.MicroMotion.Enabled
+            && scene.FindShot(shot.Id)!.StateKeyframes.SequenceEqual(authoredKeys),
+            "Camera snapshot undo failed to restore motion independently from camera frames.");
+        RunShotMicroMotionPanelRegression(settings, motion);
+        RunShotMicroMotionCaptureRegression(settings, motion);
+        RunShotMicroMotionPlaybackRegression();
+        Console.WriteLine("shot_micro_motion_regression=ok");
+    }
+
+    private static void RunShotHandheldDefaultsRegression(SceneShotSettings settings)
+    {
+        var untouched = new SceneShotMicroMotionSettings { Enabled = true };
+        var initial = settings with { AspectRatio = SceneShotAspectRatio.Landscape16To9, OrthographicSize = 28000 };
+        var fitted = untouched.WithHandheldDefaults(initial, 48000, 28000);
+        var close = untouched.WithHandheldDefaults(initial with { OrthographicSize = 14000 }, 48000, 28000);
+        var wide = untouched.WithHandheldDefaults(initial with { OrthographicSize = 56000 }, 48000, 28000);
+        var portrait = untouched.WithHandheldDefaults(initial with { AspectRatio = SceneShotAspectRatio.Portrait9To16 }, 48000, 28000);
+        AssertTimeline(fitted.Enabled && fitted.IsValid && fitted.HandheldDefaultsInitialized
+            && fitted.Speed == 0.65f && fitted.RotationDegrees is >= 0.11f and <= 0.26f
+            && close.HorizontalPercent > fitted.HorizontalPercent && fitted.HorizontalPercent > wide.HorizontalPercent
+            && portrait.HorizontalPercent > fitted.HorizontalPercent && portrait.VerticalPercent < fitted.VerticalPercent,
+            "Handheld defaults did not adapt to initial framing size and aspect ratio.");
+        AssertTimeline(fitted.WithHandheldDefaults(initial with { OrthographicSize = 8000 }, 48000, 28000) == fitted,
+            "Seeking or reframing regenerated previously initialized handheld defaults.");
+        var custom = untouched with { HorizontalPercent = 1.23f, Speed = 2.3f, Seed = 37 };
+        AssertTimeline(custom.WithHandheldDefaults(initial, 48000, 28000) == custom
+            && (untouched with { HandheldDefaultsInitialized = true }).WithHandheldDefaults(initial, 48000, 28000)
+                == (untouched with { HandheldDefaultsInitialized = true }),
+            "Automatic handheld defaults overwrote manual or legacy settings.");
+        var reset = custom.WithHandheldDefaults(initial, 48000, 28000, force: true);
+        AssertTimeline(reset == (fitted with { Seed = custom.Seed })
+            && untouched.WithHandheldDefaults(initial, float.NaN, float.PositiveInfinity).IsValid
+            && System.Text.Json.JsonSerializer.Deserialize<SceneShotMicroMotionSettings>(
+                System.Text.Json.JsonSerializer.Serialize(fitted)) == fitted,
+            "Handheld reset lost its seed, initialization state or valid size fallback.");
+        Console.WriteLine("shot_handheld_defaults=ok,initial_size=true,manual_preserved=true,persistence=true");
+    }
+
+    private static void RunShotMicroMotionPanelRegression(SceneShotSettings settings, SceneShotMicroMotionSettings motion)
+    {
+        using var panel = new ShotDirectorPanel { Size = new Size(320, 900) };
+        panel.SetExperimental3DEnabled(false);
+        panel.Bind(new ShotDirectorState
+        {
+            IsAvailable = true, ActiveShotId = "motion",
+            Shots = [new ShotDirectorItem { Id = "motion", Name = "Motion", Framing = settings, FramingEditable = false }]
+        });
+        var framingCommits = 0;
+        var motionCommits = 0;
+        var handheldRequests = 0;
+        panel.ShotFramingCommitted += (_, _) => framingCommits++;
+        panel.ShotMicroMotionCommitted += (_, eventArgs) =>
+        {
+            motionCommits++;
+            if (eventArgs.UseHandheldDefaults) handheldRequests++;
+            panel.SetSelectedShotMicroMotion(eventArgs.Settings);
+        };
+        var toggle = (ModernToggleSwitch)RequireField(typeof(ShotDirectorPanel), "_microMotionEnabled").GetValue(panel)!;
+        AssertTimeline(toggle.Enabled, "Render-only motion incorrectly required an editable timeline exposure.");
+        toggle.Checked = true;
+        var speed = (ModernNumericUpDown)RequireField(typeof(ShotDirectorPanel), "_microMotionSpeed").GetValue(panel)!;
+        speed.Value = 2;
+        AssertTimeline(motionCommits == 2 && framingCommits == 0 && panel.SelectedShot!.MicroMotion.Speed == 2
+            && panel.SelectedShot.MicroMotion.HandheldDefaultsInitialized,
+            "Camera motion controls routed edits through framing/keyframe commands.");
+        var handheld = (SvgIconButton)RequireField(typeof(ShotDirectorPanel), "_microMotionHandheldDefaults").GetValue(panel)!;
+        handheld.PerformClick();
+        AssertTimeline(handheldRequests == 1 && motionCommits == 3 && framingCommits == 0,
+            "Handheld preset did not issue one render-only settings request.");
+        panel.SetSelectedShotMicroMotion(motion);
+        foreach (var width in new[] { 320, 272 })
+        {
+            panel.Width = width;
+            panel.PerformLayout();
+            AssertTimeline(speed.Visible && speed.Width > 60
+                && speed.Height == (int)Math.Round(Theme.ControlHeight * panel.DeviceDpi / 96f)
+                && speed.Left >= 0 && speed.Right <= speed.Parent!.ClientSize.Width,
+                "Camera motion fields clipped in a narrow inspector.");
+        }
+        panel.Bind(new ShotDirectorState());
+        AssertTimeline(!toggle.Enabled && !handheld.Enabled, "Camera motion remained editable without a selected camera.");
+    }
+
+    private static void RunShotMicroMotionCaptureRegression(SceneShotSettings settings, SceneShotMicroMotionSettings motion)
+    {
+        var project = VectorProject.CreateEmpty();
+        var scene = project.DrawingObjects[0].Scene;
+        scene.AddObject(0, PointF.Empty, new SizeF(600, 600), 0, 0, Color.Red, 1, ShapeKind.Rectangle);
+        using var stage = new StageControl(scene) { ClientSize = new Size(720, 480) };
+        stage.SetVisibleWorldWidth(10000);
+        settings = settings with { X = 0, Y = 0, RotationDegrees = 0, AspectRatio = SceneShotAspectRatio.Landscape16To9 };
+        motion = motion with { HorizontalPercent = 5, VerticalPercent = 5, RotationDegrees = 2 };
+        stage.SetShotFramingGizmo(settings, "Overlay camera");
+        stage.SetShotPreviewMicroMotion(motion);
+        stage.SetShotPreviewTime(15, 30);
+        var viewBefore = stage.CaptureViewState();
+        Bitmap Capture(SceneShotSettings camera, double time, SceneShotMicroMotionSettings effect)
+        {
+            var captured = stage.TryCaptureShotPreview(camera, new Size(256, 144), out var bitmap,
+                timeSeconds: time, microMotion: effect);
+            AssertTimeline(captured && bitmap is not null, "Camera motion capture returned no frame.");
+            return bitmap!;
+        }
+        bool SamePixels(Bitmap first, Bitmap second) => first.Size == second.Size
+            && Enumerable.Range(0, first.Width).All(column => Enumerable.Range(0, first.Height)
+                .All(row => first.GetPixel(column, row) == second.GetPixel(column, row)));
+        using var first = Capture(settings, 0.5, motion);
+        using var later = Capture(settings, 2.5, motion);
+        using var repeated = Capture(settings, 0.5, motion);
+        using var expected = Capture(motion.ApplyTo(settings, 0.5, stage.CanvasWorldWidth, stage.CanvasWorldHeight),
+            0.5, motion with { Enabled = false });
+        using var disabled = Capture(settings, 0.5, motion with { Enabled = false });
+        using var original = Capture(settings, 0.5, new SceneShotMicroMotionSettings());
+        AssertTimeline(!SamePixels(first, later) && SamePixels(first, repeated) && SamePixels(first, expected)
+            && SamePixels(disabled, original),
+            "Camera preview omitted, double-applied or failed to reproduce the render-only overlay.");
+        AssertTimeline(stage.ShotFramingGizmoSettings == settings && stage.CaptureViewState() == viewBefore
+            && scene.X[0] == 0 && scene.Y[0] == 0,
+            "Rendering camera motion changed framing handles, editor view or scene geometry.");
+    }
+
+    private static void RunShotMicroMotionPlaybackRegression()
+    {
+        using var form = new MainForm
+        {
+            ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30000, -30000), Size = new Size(1400, 900)
+        };
+        ConfigureExperimental3DForRegression(form, enabled: false);
+        form.Show();
+        var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var panel = (ShotDirectorPanel)RequireField(typeof(MainForm), "_shotDirectorPanel").GetValue(form)!;
+        var scene = project.Scenes[0];
+        scene.DrawingScene.AddObject(0, PointF.Empty, new SizeF(600, 600), 0, 0, Color.Red, 1, ShapeKind.Rectangle);
+        var shot = scene.AddShot("Playback motion", 120);
+        var settings = SceneShotSettings.Default with
+        {
+            Kind = SceneShotCameraKind.TwoD, Projection = CameraProjection.Orthographic,
+            OrthographicSize = 4000
+        };
+        scene.UpdateShotAtFrame(shot.Id, 0, settings);
+        var motion = new SceneShotMicroMotionSettings { Enabled = true, HorizontalPercent = 5, VerticalPercent = 5 };
+        scene.UpdateShotMicroMotion(shot.Id, motion);
+        foreach (var track in scene.Timeline.Tracks.ToArray()) scene.Timeline.SetTrackDuration(track.Id, 120);
+        tabs.SelectedView = WorkspaceView.ShotDirector;
+        RequireMethod(typeof(MainForm), "ActivateSceneShot").Invoke(form, [shot.Id]);
+        scene.UpdateShotMicroMotion(shot.Id, new());
+        panel.SetSelectedShotMicroMotion(new());
+        var motionToggle = (ModernToggleSwitch)RequireField(typeof(ShotDirectorPanel), "_microMotionEnabled").GetValue(panel)!;
+        motionToggle.Checked = true;
+        var automatic = new SceneShotMicroMotionSettings { Enabled = true }
+            .WithHandheldDefaults(settings, stage.CanvasWorldWidth, stage.CanvasWorldHeight);
+        AssertTimeline(shot.MicroMotion == automatic && panel.SelectedShot!.MicroMotion == automatic,
+            "First enabling camera motion did not fit and bind the handheld defaults.");
+        motionToggle.Checked = false;
+        motionToggle.Checked = true;
+        AssertTimeline(shot.MicroMotion == automatic, "Toggling motion regenerated its initialized defaults.");
+        scene.UpdateShotMicroMotion(shot.Id, motion);
+        panel.SetSelectedShotMicroMotion(motion);
+        var viewBefore = stage.CaptureViewState();
+        var authoredBefore = System.Text.Json.JsonSerializer.Serialize(scene.CreateShotSnapshot());
+        var timelineBefore = System.Text.Json.JsonSerializer.Serialize(scene.Timeline.CreateSnapshot());
+        var shortcut = RequireMethod(typeof(MainForm), "HandleShotWorkspaceShortcut");
+        var setFrame = RequireMethod(typeof(MainForm), "SetFrame");
+        var stop = RequireMethod(typeof(MainForm), "StopPlayback");
+        var update = RequireMethod(typeof(MainForm), "UpdateShotFramingGizmo");
+        var modeEditor = (ComboBox)RequireField(typeof(ShotDirectorPanel), "_previewModeEditor").GetValue(panel)!;
+        void Enter()
+        {
+            stage.Focus();
+            AssertTimeline(shortcut.Invoke(form, [Keys.Enter]) is true, "Camera playback did not handle Enter.");
+        }
+        Bitmap CaptureStage()
+        {
+            var bitmap = new Bitmap(stage.Width, stage.Height);
+            using var graphics = Graphics.FromImage(bitmap);
+            RequireMethod(typeof(StageControl), "DrawGdiFrame").Invoke(stage, [graphics]);
+            return bitmap;
+        }
+        try
+        {
+            AssertTimeline(stage.CanPreviewPlanarShot && stage.ShotPreviewMode == ShotWorkspacePreviewMode.ObserveCamera,
+                "Camera playback fixture did not begin in the default Observe view.");
+            var applicationSettingsField = RequireField(typeof(MainForm), "_applicationSettings");
+            var applicationSettings = (ApplicationSettings)applicationSettingsField.GetValue(form)!;
+            applicationSettingsField.SetValue(form, applicationSettings with { EnterPlaybackView = new() });
+            Enter();
+            AssertTimeline(stage.ShotPreviewMode == ShotWorkspacePreviewMode.ObserveCamera,
+                "Default Enter playback unexpectedly forced a camera view.");
+            stop.Invoke(form, null);
+            applicationSettingsField.SetValue(form, applicationSettings with
+            {
+                EnterPlaybackView = new() { Mode = EnterPlaybackFitMode.Fit }
+            });
+            Enter();
+            AssertTimeline(stage.ShotWorkspacePreviewActive && stage.ShotPreviewMode == ShotWorkspacePreviewMode.CameraView,
+                "Enter playback left enabled camera micro motion hidden in Observe view.");
+            RequireMethod(typeof(MainForm), "StopPlaybackCompositionPreload").Invoke(form, null);
+            setFrame.Invoke(form, [15, true, false, false]);
+            AssertTimeline(stage.Frame == 15, "Camera motion fixture did not seek to its first sample.");
+            using var first = CaptureStage();
+            setFrame.Invoke(form, [75, true, false, false]);
+            AssertTimeline(stage.Frame == 75, "Camera motion fixture did not seek to its second sample.");
+            using var later = CaptureStage();
+            var firstRed = Point.Empty;
+            var laterRed = Point.Empty;
+            var firstCount = 0;
+            var laterCount = 0;
+            for (var row = 0; row < first.Height; row++)
+            for (var column = 0; column < first.Width; column++)
+            {
+                if (first.GetPixel(column, row) is { R: > 200, G: < 80, B: < 80 })
+                {
+                    firstRed.Offset(column, row);
+                    firstCount++;
+                }
+                if (later.GetPixel(column, row) is { R: > 200, G: < 80, B: < 80 })
+                {
+                    laterRed.Offset(column, row);
+                    laterCount++;
+                }
+            }
+            AssertTimeline(firstCount > 0 && laterCount > 0
+                && (Math.Abs(firstRed.X / (double)firstCount - laterRed.X / (double)laterCount) > 1
+                    || Math.Abs(firstRed.Y / (double)firstCount - laterRed.Y / (double)laterCount) > 1),
+                "Main-stage playback did not visibly move actual scene content.");
+            Enter();
+            AssertTimeline(stage.ShotPreviewMode == ShotWorkspacePreviewMode.ObserveCamera
+                && !stage.ShotWorkspacePreviewActive && stage.CaptureViewState() == viewBefore,
+                "Stopping playback did not restore the original editing view.");
+            applicationSettingsField.SetValue(form, applicationSettings with { EnterPlaybackView = new() });
+            modeEditor.SelectedIndex = (int)ShotWorkspacePreviewMode.LockCamera;
+            Enter();
+            stop.Invoke(form, null);
+            AssertTimeline(stage.ShotPreviewMode == ShotWorkspacePreviewMode.LockCamera,
+                "Micro-motion playback replaced an explicit Locked view.");
+            modeEditor.SelectedIndex = (int)ShotWorkspacePreviewMode.ObserveCamera;
+            Enter();
+            modeEditor.SelectedIndex = (int)ShotWorkspacePreviewMode.LockCamera;
+            stop.Invoke(form, null);
+            AssertTimeline(stage.ShotPreviewMode == ShotWorkspacePreviewMode.LockCamera,
+                "Stopping playback overwrote a manual view choice made while playing.");
+            modeEditor.SelectedIndex = (int)ShotWorkspacePreviewMode.ObserveCamera;
+            scene.UpdateShotMicroMotion(shot.Id, motion with { Enabled = false });
+            update.Invoke(form, null);
+            applicationSettingsField.SetValue(form, applicationSettings with { EnterPlaybackView = new() });
+            Enter();
+            AssertTimeline(!stage.ShotWorkspacePreviewActive,
+                "Disabled micro motion unexpectedly forced a camera preview.");
+            stop.Invoke(form, null);
+            scene.UpdateShotMicroMotion(shot.Id, motion);
+            AssertTimeline(System.Text.Json.JsonSerializer.Serialize(scene.CreateShotSnapshot()) == authoredBefore
+                && System.Text.Json.JsonSerializer.Serialize(scene.Timeline.CreateSnapshot()) == timelineBefore,
+                "Preview playback changed authored camera frames or timeline exposures.");
+        }
+        finally
+        {
+            stop.Invoke(form, null);
+        }
+        Console.WriteLine("shot_micro_motion_enter_playback=ok,visible_content=true,restore_view=true,frames_unchanged=true");
     }
 
     private static void RunShotAspectRatioRegression()
@@ -8192,6 +8522,8 @@ internal static partial class Benchmark
         scene.Shots[0].SetSettingsAtFrame(0, SceneShotSettings.Default with { AspectRatio = SceneShotAspectRatio.Portrait9To16 });
         scene.InsertShotTimelineKeyframe(scene.Shots[0].Id, 12);
         scene.UpdateShotAtFrame(scene.Shots[0].Id, 12, SceneShotSettings.Default with { AspectRatio = SceneShotAspectRatio.Square1To1 });
+        scene.UpdateShotMicroMotion(scene.Shots[0].Id,
+            new SceneShotMicroMotionSettings { Enabled = true, HorizontalPercent = 0.6f, Speed = 1.4f, Seed = 73 });
 
         var restartRestored = VectorProject.RestoreRestartSnapshot(
             EditorRestartStore.RoundTripProjectSnapshot(project.CreateRestartSnapshot()));
@@ -8456,6 +8788,42 @@ internal static partial class Benchmark
         stage.SetShotWorkspacePreviewMode(ShotWorkspacePreviewMode.CameraView);
         AssertTimeline(!stage.CanPreviewPlanarShot && !stage.ShotWorkspacePreviewActive,
             "A camera collection without a selected camera entered camera preview.");
+        foreach (var sharedMask in new[] { false, true })
+        {
+            if (sharedMask)
+            {
+                mask.AddObject(0, PointF.Empty, new SizeF(400, 400), 0, 0, Color.White, 1, ShapeKind.Rectangle);
+                stage.SetSceneCompositionMaskClips([
+                    new SceneCompositionMaskClip(scene, mask, 0, new HashSet<int> { 0, 1 })]);
+            }
+            foreach (var participates in new[] { true, false })
+            {
+                definition.SetLayerParallax(nearLayer.Id, -500, participates);
+                stage.SetSceneCompositionResult(composition, scene);
+                using var expected = Capture(moved);
+                for (var directCount = 1; directCount <= owners.Length; directCount++)
+                {
+                    var directOwners = owners.Select((owner, index) => index < directCount
+                        ? new SceneCompositionObjectOwner("", definition.Id)
+                            { SceneLayerId = definition.Layers[index].Id }
+                        : owner).ToArray();
+                    var directComposition = new SceneCompositionResult(directOwners);
+                    stage.SetSceneCompositionResult(directComposition, scene);
+                    var directView = stage.CaptureViewState();
+                    using var actual = Capture(moved);
+                    for (var pixelY = 0; pixelY < expected.Height; pixelY += 4)
+                        for (var pixelX = 0; pixelX < expected.Width; pixelX += 4)
+                            AssertTimeline(expected.GetPixel(pixelX, pixelY) == actual.GetPixel(pixelX, pixelY),
+                                $"Direct scene parallax differs from instance parallax: direct={directCount}, "
+                                + $"shared_mask={sharedMask}, participates={participates}.");
+                    AssertTimeline(stage.CaptureViewState() == directView
+                        && ReferenceEquals(RequireField(typeof(StageControl), "_sceneCompositionResult").GetValue(stage), directComposition)
+                        && directComposition.ObjectPoses.All(pose => pose == SceneCompositionObjectPose.Identity)
+                        && scene.X.Take(3).All(value => value == 0),
+                        "Direct scene parallax capture did not restore composition, geometry or editor view.");
+                }
+            }
+        }
         Console.WriteLine("camera_parallax_rendering_regression=ok");
     }
 
@@ -8467,6 +8835,9 @@ internal static partial class Benchmark
             restored.ShotCount == 2
             && restored.Shots[0].Settings.AspectRatio == SceneShotAspectRatio.Portrait9To16
             && restored.Shots[0].EvaluateSettings(12).AspectRatio == SceneShotAspectRatio.Square1To1
+            && restored.Shots[0].MicroMotion == new SceneShotMicroMotionSettings
+                { Enabled = true, HorizontalPercent = 0.6f, Speed = 1.4f, Seed = 73 }
+            && !restored.Shots[1].MicroMotion.Enabled
             && restored.Shots[0].Name == "Open"
             && restored.Shots[0].Detail == "Fade in"
             && restored.Shots[0].DurationFrames == 18

@@ -23,11 +23,12 @@ internal sealed partial class Direct2DStageRenderer
 
     private readonly record struct SelectionCommandKey(
         StageControl Stage, VectorScene Scene, long Revision, long Geometry, long Summary,
-        long ActiveContent, int Frame, Size Size, float Pulse, ulong Layers);
+        long ActiveContent, int Frame, Size Size, float Pulse, ulong Layers, int ObjectAccent, int Dpi, float PatternZoom);
 
     private bool TryDrawCachedSelection(StageControl stage)
     {
         if (_target is not ID2D1DeviceContext context
+            || stage.SelectionFeedbackSuppressed
             || stage.SelectedObjects.Count < 64
             || stage.UsesReferenceProjection
             || stage.MarqueeVisible
@@ -37,13 +38,15 @@ internal sealed partial class Direct2DStageRenderer
             return false;
         }
 
-        var pulse = stage.SelectionZoomPreviewActive && _selectionCommands is not null
+        var pulse = stage.UsesObjectSelectionOverlay ? 0 : stage.SelectionZoomPreviewActive && _selectionCommands is not null
             ? _selectionCommandKey.Pulse
             : stage.SelectionHighlightPulse;
         var key = new SelectionCommandKey(stage, stage.Scene, stage.SelectionRenderRevision,
             stage.Scene.GeometryRevision, stage.Scene.SummaryRevision, stage.Scene.ActiveContentRevision,
             stage.Frame, stage.ClientSize, pulse,
-            StageControl.GetReference3DWorkspaceFrameLayerRenderState(stage.Scene, stage.Frame));
+            StageControl.GetReference3DWorkspaceFrameLayerRenderState(stage.Scene, stage.Frame),
+            stage.UsesObjectSelectionOverlay ? Theme.Accent.ToArgb() : 0, stage.DeviceDpi,
+            stage.UsesObjectSelectionOverlay ? stage.Zoom : 0);
         if (_selectionCommands is null || key != _selectionCommandKey)
         {
             ClearSelectionCommands();
@@ -106,7 +109,9 @@ internal sealed partial class Direct2DStageRenderer
             context.Transform = transform
                 * Matrix3x2.CreateScale(scale)
                 * Matrix3x2.CreateTranslation(translateX, translateY);
-            context.DrawImage(_selectionCommands);
+            context.DrawImage(_selectionCommands, null, null,
+                stage.UsesObjectSelectionOverlay ? InterpolationMode.NearestNeighbor : InterpolationMode.Linear,
+                CompositeMode.SourceOver);
         }
         finally { context.Transform = transform; }
         return true;

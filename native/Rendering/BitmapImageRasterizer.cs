@@ -88,10 +88,12 @@ internal static class BitmapImageRasterizer
     private const int MaxSourceBytes = (int)BitmapImageFormats.MaximumSourceBytes;
 
     private static readonly Dictionary<BitmapImageRasterKey, CacheEntry> RasterCache = new();
+    private static readonly Dictionary<SourceCacheKey, SourceCacheEntry> SourceCache = new();
     private static readonly object CacheSync = new();
     private static long _cacheBytes;
     private static long _useSequence;
     private static long _decodeCallCount;
+    private static long _sourceReadCount;
     private static long _cacheHitCount;
     private static long _cacheMissCount;
     private static long _cacheEvictionCount;
@@ -133,6 +135,7 @@ internal static class BitmapImageRasterizer
     }
 
     internal static long DecodeCallCount => Interlocked.Read(ref _decodeCallCount);
+    internal static long SourceReadCount => Interlocked.Read(ref _sourceReadCount);
     internal static long CacheHitCount => Interlocked.Read(ref _cacheHitCount);
     internal static long CacheMissCount => Interlocked.Read(ref _cacheMissCount);
     internal static long CacheEvictionCount => Interlocked.Read(ref _cacheEvictionCount);
@@ -142,6 +145,10 @@ internal static class BitmapImageRasterizer
         public BitmapImageRaster Raster { get; } = raster;
         public long LastUse { get; set; } = lastUse;
     }
+
+    private readonly record struct SourceCacheKey(string FullPath, BitmapImageImportSettings Settings);
+    private readonly record struct SourceStamp(long Length, DateTime LastWriteTimeUtc, DateTime CreationTimeUtc);
+    private readonly record struct SourceCacheEntry(SourceStamp Stamp, BitmapImageRasterKey RasterKey);
 
     /// <summary>
     /// Reads image metadata without decoding pixels, so the import dialog can show
@@ -176,6 +183,7 @@ internal static class BitmapImageRasterizer
 
     internal static string ComputeSha256(string fullPath)
     {
+        Interlocked.Increment(ref _sourceReadCount);
         using var stream = new FileStream(
             fullPath,
             FileMode.Open,
@@ -200,7 +208,21 @@ internal static class BitmapImageRasterizer
         }
 
         Interlocked.Increment(ref _decodeCallCount);
-        ValidateSourceFile(fullPath);
+        fullPath = Path.GetFullPath(fullPath);
+        var file = ValidateSourceFile(fullPath);
+        var stamp = new SourceStamp(file.Length, file.LastWriteTimeUtc, file.CreationTimeUtc);
+        var sourceKey = new SourceCacheKey(fullPath.ToUpperInvariant(), settings);
+        lock (CacheSync)
+        {
+            if (SourceCache.TryGetValue(sourceKey, out var source)
+                && source.Stamp == stamp
+                && RasterCache.TryGetValue(source.RasterKey, out var cached))
+            {
+                Interlocked.Increment(ref _cacheHitCount);
+                cached.LastUse = ++_useSequence;
+                return cached.Raster;
+            }
+        }
         var storedSize = ResolveDecodeSize(fullPath, settings);
         var contentSha256 = ComputeSha256(fullPath);
         var key = new BitmapImageRasterKey(
@@ -212,6 +234,7 @@ internal static class BitmapImageRasterizer
             {
                 Interlocked.Increment(ref _cacheHitCount);
                 cached.LastUse = ++_useSequence;
+                CacheSource(sourceKey, stamp, key, file);
                 return cached.Raster;
             }
 
@@ -237,8 +260,19 @@ internal static class BitmapImageRasterizer
             EvictFor(cacheBytes);
             RasterCache[key] = new CacheEntry(raster, ++_useSequence);
             _cacheBytes += cacheBytes;
+            CacheSource(sourceKey, stamp, key, file);
             return raster;
         }
+    }
+
+    private static void CacheSource(SourceCacheKey sourceKey, SourceStamp stamp,
+        BitmapImageRasterKey rasterKey, FileInfo file)
+    {
+        file.Refresh();
+        if (!file.Exists || stamp != new SourceStamp(file.Length, file.LastWriteTimeUtc, file.CreationTimeUtc)) return;
+        if (SourceCache.Count >= MaxCacheEntries && !SourceCache.ContainsKey(sourceKey))
+            SourceCache.Remove(SourceCache.Keys.First());
+        SourceCache[sourceKey] = new SourceCacheEntry(stamp, rasterKey);
     }
 
     internal static void ClearCache()
@@ -246,6 +280,7 @@ internal static class BitmapImageRasterizer
         lock (CacheSync)
         {
             RasterCache.Clear();
+            SourceCache.Clear();
             _cacheBytes = 0;
         }
     }
@@ -275,9 +310,10 @@ internal static class BitmapImageRasterizer
         return (width, height);
     }
 
-    private static void ValidateSourceFile(string fullPath)
+    private static FileInfo ValidateSourceFile(string fullPath)
     {
-        if (!File.Exists(fullPath))
+        var file = new FileInfo(fullPath);
+        if (!file.Exists)
         {
             throw new InvalidDataException("The image file no longer exists.");
         }
@@ -285,12 +321,13 @@ internal static class BitmapImageRasterizer
         {
             throw new InvalidDataException("The image file format is not supported.");
         }
-        var length = new FileInfo(fullPath).Length;
+        var length = file.Length;
         if (length <= 0 || length > MaxSourceBytes)
         {
             throw new InvalidDataException(
                 $"Image files must be between 1 byte and {MaxSourceBytes} bytes.");
         }
+        return file;
     }
 
     /// <summary>
@@ -300,6 +337,7 @@ internal static class BitmapImageRasterizer
     /// </summary>
     private static Bitmap LoadImage(string fullPath, bool validateOnly)
     {
+        Interlocked.Increment(ref _sourceReadCount);
         byte[] bytes;
         using (var stream = new FileStream(
                    fullPath,

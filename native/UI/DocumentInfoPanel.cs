@@ -7,7 +7,7 @@ internal readonly record struct DocumentInfo(
     string? CanvasSummary = null, string? BackgroundSummary = null,
     bool IsDirty = false, bool HasCanvas = false);
 
-internal sealed class DocumentInfoPanel : UserControl
+internal sealed partial class DocumentInfoPanel : UserControl
 {
     private readonly Label _title = Caption("Document & layers", false);
     private readonly Label _projectCaption = Caption("Current project");
@@ -43,7 +43,7 @@ internal sealed class DocumentInfoPanel : UserControl
     internal LayerBlendModePanel LayerPanel { get; } = new();
     public event EventHandler<string>? RenameCommitted;
     public event EventHandler? CanvasSettingsRequested;
-    public int PreferredHeight => ScaleLogical((_overviewExpanded ? 820 : 646)
+    public int PreferredHeight => ScaleLogical((_overviewExpanded ? 820 : 646) + PlaybackViewHeight
         + (int)Math.Ceiling(LayerPanel.PreferredPanelHeight * 96f / DeviceDpi) - 98
         + (_hintVisible ? 52 : 0));
 
@@ -100,6 +100,7 @@ internal sealed class DocumentInfoPanel : UserControl
         Controls.AddRange(_statCaptions);
         Controls.AddRange(_stats);
         foreach (var stat in _stats) stat.Font = Theme.UiFont(12f);
+        BuildPlaybackViewControls();
         UiLocalization.Watch(this);
         UpdateOverview();
     }
@@ -182,6 +183,8 @@ internal sealed class DocumentInfoPanel : UserControl
         _backgroundValue.SetBounds(inset + captionWidth, _background.Top, width - captionWidth, _background.Height);
         Place(_canvasSettings, 536 + offset, Theme.ControlHeight);
         _canvasBottom = ScaleLogical(586 + offset);
+        LayoutPlaybackViewControls(inset, width, 600 + offset);
+        offset += PlaybackViewHeight;
         Place(_overview, 600 + offset, Theme.ControlHeight);
         for (var index = 0; index < _stats.Length; index++)
         {

@@ -1733,7 +1733,9 @@ internal sealed partial class MainForm : Form
         return Math.Min(160, ShapeGradientPreviewIntervalMilliseconds + (workingVertexCount - 1024) / 128d);
     }
 
-    private float SelectionToleranceWorld() => Math.Max(4, _stage.ScreenLengthToWorld(10));
+    private float SelectionToleranceWorld() => IsSelectionArrow(_tool)
+        ? Math.Max(0.001f, _stage.ScreenLengthToWorld(_applicationSettings.SelectionArrows.HitTolerancePixels))
+        : Math.Max(4, _stage.ScreenLengthToWorld(10));
 
     internal static bool ShouldMoveMarqueeStrokeIndependently(
         IReadOnlyCollection<int> selectedObjects,
@@ -1747,7 +1749,7 @@ internal sealed partial class MainForm : Form
 
     private void CaptureEditStart(int objectIndex)
     {
-        if (_tool == ToolMode.Select) _drawingTransformSession = null;
+        if (IsSelectionArrow(_tool)) _drawingTransformSession = null;
         _pointerTopologyQueriesInvalidated = false;
         if (!_independentMarqueeStrokeMove
             && _marqueeMaterializationSession is { } marqueeSession
@@ -1921,7 +1923,7 @@ internal sealed partial class MainForm : Form
         }
 
         var draggedLocal = WorldToLocalFromEditStart(world);
-        var bitmapCornerResize = _tool == ToolMode.Select
+        var bitmapCornerResize = UsesSelectionGeometryEditing
             && _scene.ShapeKind[_selectedObject] == ShapeKind.Bitmap
             && (_activeHandle is EditHandleKind.BoundsTopLeft
                 or EditHandleKind.BoundsTopRight

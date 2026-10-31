@@ -28,7 +28,7 @@ internal sealed partial class MainForm : Form
 
         if (e.Button == MouseButtons.Left
             && _motionTrackEnabled
-            && _tool is ToolMode.Select or ToolMode.Transform
+            && _tool is ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform
             && (_motionTrackDragSession is not null
                 || _motionTrackMarqueeActive
                 || _stage.MotionTrackVisible && _stage.HitTestMotionTrackAnchor(e.Location) >= 0))
@@ -55,6 +55,7 @@ internal sealed partial class MainForm : Form
         var hit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
         if (IsSceneCompositionContext() && !IsSceneDrawingContext())
         {
+            if (IsSelectionArrow(_tool) && !_applicationSettings.SelectionArrows.DoubleClickEntersSymbols) return;
             var objectIndex = hit.IsValid ? hit.Key.ObjectIndex : -1;
             if (_stage.RendersReferenceProjection)
                 _stage.TryHitTestProjectedObject(e.Location, 5, out objectIndex);
@@ -66,7 +67,8 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (TryResolveSceneInstanceAt(world, out var nestedInstance))
+        if ((!IsSelectionArrow(_tool) || _applicationSettings.SelectionArrows.DoubleClickEntersSymbols)
+            && TryResolveSceneInstanceAt(world, out var nestedInstance))
         {
             var owner = new SceneCompositionObjectOwner(nestedInstance.Id,
                 nestedInstance.DrawingObjectId, nestedInstance.Id);
@@ -74,7 +76,7 @@ internal sealed partial class MainForm : Form
             if (OpenDrawingObjectEditor(owner.DrawingObjectId)) return;
         }
 
-        if (_tool is ToolMode.Select or ToolMode.Transform or ToolMode.Distort
+        if (_tool is ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform or ToolMode.Distort
             && (IsDrawingWorkspaceContext || IsSceneMaskEditing() || IsSceneDrawingContext())
             && !DrawingToolsBlocked()
             && hit.IsValid
@@ -94,7 +96,7 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (_tool != ToolMode.Select) return;
+        if (!UsesSelectionGeometryEditing) return;
         if (hit.IsValid && IsWholeObjectOnlyObject(hit.Key.ObjectIndex))
         {
             _pendingClickSelection = DrawingElementHit.None;
@@ -401,27 +403,25 @@ internal sealed partial class MainForm : Form
         {
             _stage.SetMarquee(_marqueeStart.Value, e.Location);
         }
-        else if (_tool == ToolMode.Select && _pendingClickSelection.IsValid && e.Button == MouseButtons.Left)
+        else if (IsSelectionArrow(_tool) && _pendingClickSelection.IsValid && e.Button == MouseButtons.Left)
         {
             if (PointerDragExceeded(e.Location))
             {
                 var hit = _pendingClickSelection;
                 _pendingClickSelection = DrawingElementHit.None;
-                SetSelection(hit, deferPresentation: true);
-                _pointerHitWasAlreadySelected = true;
-                CaptureEditStart(hit.Key.ObjectIndex);
+                ResolvePendingArrowDragSelection(hit);
                 QueueMoveSelectedFromPointer(_stage.ScreenToWorld(e.Location));
                 UpdateInteractionCursor(e.Location);
             }
         }
-        else if (_tool == ToolMode.Select && _forceMarqueeOnPointerDown && e.Button == MouseButtons.Left)
+        else if (IsSelectionArrow(_tool) && _forceMarqueeOnPointerDown && e.Button == MouseButtons.Left)
         {
             if (PointerDragExceeded(e.Location))
             {
                 BeginBlankMarqueeSelection(e.Location);
             }
         }
-        else if (_tool == ToolMode.Select && _selectedObject >= 0 && _startWorld is not null && _selectedStart is not null && e.Button == MouseButtons.Left)
+        else if (IsSelectionArrow(_tool) && _selectedObject >= 0 && _startWorld is not null && _selectedStart is not null && e.Button == MouseButtons.Left)
         {
             if (!ShouldUpdateSelectionPointer(
                     _activeHandle,
@@ -446,7 +446,7 @@ internal sealed partial class MainForm : Form
 
     private void UpdateHoveredLineControls(Point screen)
     {
-        if (_tool != ToolMode.Select || !IsEditableDrawingContext() || IsScene3DView())
+        if (!UsesSelectionGeometryEditing || !IsEditableDrawingContext() || IsScene3DView())
         {
             _stage.ClearHoveredLineElement();
             return;
@@ -531,7 +531,7 @@ internal sealed partial class MainForm : Form
         {
             return;
         }
-        if (_tool is not (ToolMode.Select or ToolMode.Transform or ToolMode.Distort)) return;
+        if (_tool is not (ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform or ToolMode.Distort)) return;
 
         _stage.Capture = true;
         _lastMouse = e.Location;
@@ -564,7 +564,7 @@ internal sealed partial class MainForm : Form
     {
         if (IsSceneBuildingContext() && !IsSceneDrawingContext()
             || e.Button != MouseButtons.Left
-            || _tool is not (ToolMode.Select or ToolMode.Transform or ToolMode.Distort)
+            || _tool is not (ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform or ToolMode.Distort)
             || ActiveEditableInstances().Count == 0)
         {
             return false;
@@ -738,7 +738,7 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (_tool == ToolMode.Select && _sceneInstanceMoveActive && e.Button == MouseButtons.Left)
+        if (IsSelectionArrow(_tool) && _sceneInstanceMoveActive && e.Button == MouseButtons.Left)
         {
             if (PointerDragExceeded(e.Location)) MoveSelectedSceneInstance(world);
             return;
@@ -1651,7 +1651,8 @@ internal sealed partial class MainForm : Form
         }
         else if (IsSkewHandle(_activeTransformHandle))
         {
-            if (_selectedObjects.Any(IsWholeObjectOnlyObject)) return;
+            if (_selectedObjects.Any(index => IsWholeObjectOnlyObject(index)
+                && _scene.ShapeKind[index] != ShapeKind.Bitmap)) return;
             var factor = SkewFactor(
                 _activeTransformHandle,
                 _drawingTransformStartBounds,
@@ -2384,7 +2385,7 @@ internal sealed partial class MainForm : Form
             && !_viewPanning && !_viewZooming && !_viewOrbiting && !_viewReferencePanning && !_viewReferenceZooming
             && _sceneLightGizmoPointerSession is null && _shotFramingPointerSession is null
             && !_marqueeSelectionCancellationPending && !IsShotDirectorContext()
-            && _tool is ToolMode.Select or ToolMode.Transform or ToolMode.Transform3D
+            && _tool is ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform or ToolMode.Transform3D
                 or ToolMode.Distort or ToolMode.FreehandLasso or ToolMode.PolygonLasso or ToolMode.Text;
         StageMouseUpCore(sender, e);
         if (!selectionGesture || _inspectorCategory == InspectorCategory.None) return;
@@ -2524,19 +2525,17 @@ internal sealed partial class MainForm : Form
         }
 
         if (e.Button == MouseButtons.Left
-            && _tool == ToolMode.Select
+            && IsSelectionArrow(_tool)
             && _pendingClickSelection.IsValid
             && PointerDragExceeded(e.Location))
         {
             var hit = _pendingClickSelection;
             _pendingClickSelection = DrawingElementHit.None;
-            SetSelection(hit, deferPresentation: true);
-            _pointerHitWasAlreadySelected = true;
-            CaptureEditStart(hit.Key.ObjectIndex);
+            ResolvePendingArrowDragSelection(hit);
         }
 
         if (e.Button == MouseButtons.Left
-            && _tool == ToolMode.Select
+            && IsSelectionArrow(_tool)
             && _selectedObject >= 0
             && _selectedStart is not null
             && !_forceMarqueeOnPointerDown
@@ -2660,7 +2659,7 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (_tool == ToolMode.Select && _pendingClickSelection.IsValid)
+        if (IsSelectionArrow(_tool) && _pendingClickSelection.IsValid)
         {
             SetSelection(_pendingClickSelection, deferPresentation: true);
             _stage.InvalidateOverlay();
@@ -3181,6 +3180,9 @@ internal sealed partial class MainForm : Form
         _fillEdgeNoUiArc = null;
         _fillEdgeDetachPending = null;
         _fillEdgeDetachMoving = null;
+        if (UsesObjectSelection && _selectionArrowGeometryFeedback)
+            ClearSelection(deferPresentation: true);
+        RefreshSelectionArrowFeedback();
         RefreshInteractionCursorAtPointer();
     }
 

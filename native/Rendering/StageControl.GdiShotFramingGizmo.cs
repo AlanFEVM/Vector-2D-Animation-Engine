@@ -32,6 +32,7 @@ internal sealed partial class StageControl
 
     internal void ReleaseShotPreviewResources()
     {
+        _direct2DRenderer.ReleaseShotPreviewCaptureResources();
         _shotPreviewSourceBitmap?.Dispose();
         _shotPreviewSourceBitmap = null;
         _shotPreviewSourceState = null;
@@ -511,10 +512,13 @@ internal sealed partial class StageControl
     /// framed viewport, so the director panel can present a real shot preview (rotation included).
     /// </summary>
     internal bool TryCaptureShotPreview(SceneShotSettings settings, Size targetSize, out Bitmap? bitmap,
-        SceneShotSettings? parallaxAnchor = null)
+        SceneShotSettings? parallaxAnchor = null, double? timeSeconds = null,
+        SceneShotMicroMotionSettings? microMotion = null)
     {
         bitmap = null;
         if (Scene is null) return false;
+        settings = microMotion.GetValueOrDefault().ApplyTo(settings, timeSeconds ?? _shotPreviewTimeSeconds,
+            CanvasWorldWidth, CanvasWorldHeight);
         if (settings.PinsPlanarRotation && CanRenderPlanarShotPreview)
             return TryCapturePlanarShotPreview(settings, targetSize, out bitmap, parallaxAnchor);
         var surfaceWidth = ClientSize.Width;

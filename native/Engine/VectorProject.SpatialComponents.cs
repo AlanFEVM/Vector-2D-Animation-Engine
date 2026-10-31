@@ -11,17 +11,31 @@ internal sealed partial class VectorProject
     {
         component = null;
         replacement = null;
-        if (frame < 0 || instanceIds is null || instanceIds.Count < 2) return false;
+        return instanceIds is { Count: >= 2 }
+            && FindScene(sceneId)?.Dimension == SceneDimension.ThreeD
+            && TryConvertSceneInstancesToSymbol(sceneId, instanceIds, frame, out component, out replacement);
+    }
+
+    public bool TryConvertSceneInstancesToSymbol(
+        string sceneId,
+        IReadOnlyCollection<string> instanceIds,
+        int frame,
+        out DrawingObjectDefinition? component,
+        out DrawingObjectInstanceDefinition? replacement)
+    {
+        component = null;
+        replacement = null;
+        if (frame < 0 || instanceIds is null || instanceIds.Count == 0) return false;
 
         var scene = _scenes.SingleOrDefault(candidate =>
             string.Equals(candidate.Id, sceneId, StringComparison.Ordinal));
-        if (scene is null || scene.Dimension != SceneDimension.ThreeD) return false;
+        if (scene is null) return false;
 
         var requestedIds = instanceIds
             .Where(id => !string.IsNullOrWhiteSpace(id))
             .Distinct(StringComparer.Ordinal)
             .ToArray();
-        if (requestedIds.Length < 2 || requestedIds.Length != instanceIds.Count) return false;
+        if (requestedIds.Length == 0 || requestedIds.Length != instanceIds.Count) return false;
 
         var requestedIdSet = requestedIds.ToHashSet(StringComparer.Ordinal);
         var selected = scene.Instances
@@ -36,6 +50,8 @@ internal sealed partial class VectorProject
         {
             return false;
         }
+        var drawingLayer = Array.IndexOf(scene.DrawingScene.LayerIds, layerId);
+        if (drawingLayer >= 0 && scene.DrawingScene.IsLayerEffectivelyLocked(drawingLayer)) return false;
 
         var layerInstances = scene.InstancesInLayer(layerId);
         var selectedLayerIndices = layerInstances
@@ -58,11 +74,12 @@ internal sealed partial class VectorProject
 
         var instanceSnapshot = scene.CreateInstanceSnapshot();
         var timelineSnapshot = scene.Timeline.CreateSnapshot();
+        var spatial = scene.Dimension == SceneDimension.ThreeD;
         var created = new DrawingObjectDefinition
         {
-            Name = $"3D Symbol {_drawingObjects.Count + 1:000}",
-            Kind = DrawingObjectAssetKinds.ThreeDimensional,
-            Detail = "Reusable 3D symbol"
+            Name = $"{(spatial ? "3D Symbol" : "Symbol")} {_drawingObjects.Count + 1:000}",
+            Kind = spatial ? DrawingObjectAssetKinds.ThreeDimensional : DrawingObjectAssetKinds.Basic,
+            Detail = spatial ? "Reusable 3D symbol" : "Reusable symbol"
         };
         created.Scene.CreateEmpty(frameCount: Math.Max(1, scene.FrameCount));
         var memberLayerId = created.Scene.LayerIds[0];

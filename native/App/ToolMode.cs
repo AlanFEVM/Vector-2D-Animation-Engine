@@ -27,7 +27,8 @@ internal enum ToolMode
     Eyedropper,
     Gradient,
     SnapPoint,
-    Eraser
+    Eraser,
+    ObjectSelect
 }
 
 internal enum GradientHandleKind

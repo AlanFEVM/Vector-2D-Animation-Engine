@@ -15,12 +15,22 @@ internal sealed partial class Direct2DStageRenderer
 
     private void DrawSelection(StageControl stage)
     {
-        if (TryDrawCachedSelection(stage)) return;
+        if (TryDrawCachedSelection(stage))
+        {
+            if (stage.UsesObjectSelectionOverlay) DrawObjectArrowAdornments(stage);
+            return;
+        }
         DrawSelectionCore(stage);
     }
 
     private void DrawSelectionCore(StageControl stage)
     {
+        if (stage.SelectionFeedbackSuppressed) return;
+        if (stage.UsesObjectSelectionOverlay)
+        {
+            DrawObjectArrowSelection(stage);
+            return;
+        }
         if ((stage.SelectedObject < 0 || stage.SelectedObject >= stage.Scene.ObjectCount)
             && stage.SelectedObjects.Count == 0
             && !HasHoveredLine(stage)

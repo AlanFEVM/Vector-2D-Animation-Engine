@@ -1201,7 +1201,7 @@ internal sealed partial class VectorScene
         return true;
     }
 
-    private static bool TryGetClosestPointOnBezierSegment(
+    internal static bool TryGetClosestPointOnBezierSegment(
         PathBezierSegmentPart segment,
         PointF world,
         out float parameter,

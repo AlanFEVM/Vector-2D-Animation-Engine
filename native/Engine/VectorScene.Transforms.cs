@@ -179,6 +179,11 @@ internal sealed partial class VectorScene
         foreach (var objectIndex in targets)
         {
             var shape = ShapeKind[objectIndex];
+            if (shape == VectorAnimationEngine.ShapeKind.Bitmap
+                && TryTransformBitmapWithDistortion(objectIndex, transform))
+            {
+                continue;
+            }
             if (convertPrimitivesToPaths
                 && shape is VectorAnimationEngine.ShapeKind.Rectangle
                     or VectorAnimationEngine.ShapeKind.Ellipse
@@ -602,6 +607,42 @@ internal sealed partial class VectorScene
             if (((uint)region.Vertices[index].Argb >> 24) > 0) return region.Vertices[index].Argb;
         }
         return region.Vertices.Length > 0 ? region.Vertices[^1].Argb : Color.Transparent.ToArgb();
+    }
+
+    private bool TryTransformBitmapWithDistortion(int objectIndex, Func<PointF, PointF> transform)
+    {
+        var center = new PointF(X[objectIndex], Y[objectIndex]);
+        var transformedCenter = transform(center);
+        var transformedXAxis = transform(LocalToWorld(objectIndex, Width[objectIndex] * 0.5f, 0));
+        var transformedYAxis = transform(LocalToWorld(objectIndex, 0, Height[objectIndex] * 0.5f));
+        var axisX = new System.Numerics.Vector2(
+            transformedXAxis.X - transformedCenter.X, transformedXAxis.Y - transformedCenter.Y);
+        var axisY = new System.Numerics.Vector2(
+            transformedYAxis.X - transformedCenter.X, transformedYAxis.Y - transformedCenter.Y);
+        var axisProduct = axisX.Length() * axisY.Length();
+        if (axisX.X * axisY.Y - axisX.Y * axisY.X > 0
+            && Math.Abs(System.Numerics.Vector2.Dot(axisX, axisY)) <= 0.000001f * axisProduct)
+        {
+            return false;
+        }
+
+        TryGetObjectDistortions(objectIndex, out var distortions);
+        _objectDistortions[objectIndex] = TransformBitmapDistortions(
+            GetRawObjectWorldBounds(objectIndex), distortions, transform);
+        return true;
+    }
+
+    internal static DistortWarp[] TransformBitmapDistortions(
+        RectangleF bounds,
+        IReadOnlyList<DistortWarp> distortions,
+        Func<PointF, PointF> transform)
+    {
+        var result = distortions.Count > 0
+            ? CloneDistortions(distortions)
+            : [DistortWarp.FromBounds(bounds)];
+        var last = result[^1];
+        result[^1] = new DistortWarp(last.Source, last.Envelope.Transform(transform));
+        return result;
     }
 
     private void TransformObject(int objectIndex, Func<PointF, PointF> transform)

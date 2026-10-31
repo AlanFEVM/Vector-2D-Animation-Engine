@@ -4,6 +4,7 @@ internal static partial class Benchmark
 {
     private static void RunSpatialComponentShortcutRegression()
     {
+        RunSymbolConversionContextMenuRegression();
         const System.Reflection.BindingFlags instanceFlags =
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
         var projectField = typeof(MainForm).GetField("_project", instanceFlags)

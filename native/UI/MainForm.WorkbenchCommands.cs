@@ -25,7 +25,10 @@ internal sealed partial class MainForm : Form
         // A tool switch ends any in-flight anchor drag or box selection: their pointer-up and
         // hover state must not survive into a tool that does not understand anchors.
         AbortMotionTrackPointerSession();
+        RestoreDrawingToolPaint();
+        _inspectorToolContextActive = true;
         _tool = tool;
+        RefreshSelectionArrowPresentation();
         if (IsBasicDrawingOnlyTool(tool) || IsLassoTool(tool)) EnsureSceneDrawingSurface();
         _stage.ClearDrawingPreview();
         if (tool != ToolMode.SnapPoint) ClearSnapPointPresentation();
@@ -64,6 +67,7 @@ internal sealed partial class MainForm : Form
         _brushTipPanel.Visible = IsBrushTool(_tool) || _tool == ToolMode.Eraser;
         _mixingBrushSettingsPanel.Visible = _tool == ToolMode.MixingBrush;
         UpdateSnapPointOverlay();
+        RevealToolInspectorForActivation();
     }
 
     private void ImportBrushTip()
@@ -170,6 +174,7 @@ internal sealed partial class MainForm : Form
     {
         _textEditor.Visible = true;
         _textEditor.BringToFront();
+        RequestObjectInspectorForSelection();
         UpdateInspector();
         UpdateTextEditorPresentation();
         _textEditor.Focus();
@@ -716,6 +721,7 @@ internal sealed partial class MainForm : Form
 
     private void UpdateInteractionCursor(Point screen)
     {
+        RefreshSelectionArrowFeedback();
         if (_transientViewNavigationActive && _lastMouse is null) return;
         if (ApplyTemporaryCanvasPanCursor())
         {
@@ -733,7 +739,7 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (_tool is ToolMode.Select or ToolMode.Transform
+        if (_tool is ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform
             && _motionTrackEnabled && _stage.MotionTrackVisible
             && (_motionTrackDragSession is not null
                 || _lastMouse is null
@@ -748,7 +754,7 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (_tool == ToolMode.Select)
+        if (IsSelectionArrow(_tool))
         {
             if (_fillEdgeDetachPending.HasValue || _fillEdgeDetachMoving.HasValue)
             {
@@ -877,7 +883,7 @@ internal sealed partial class MainForm : Form
 
         _stage.ClearFillToolCursor();
 
-        if (_tool == ToolMode.Select)
+        if (UsesSelectionGeometryEditing)
         {
             if (_activeHandle is EditHandleKind.LineStart or EditHandleKind.LineEnd
                 || _stage.HitTestHoveredLineHandle(screen) is EditHandleKind.LineStart or EditHandleKind.LineEnd)
@@ -907,7 +913,7 @@ internal sealed partial class MainForm : Form
             }
         }
 
-        if (!IsScene3DView() && _tool == ToolMode.Select && ActiveEditableInstances().Count > 0)
+        if (!IsScene3DView() && IsSelectionArrow(_tool) && ActiveEditableInstances().Count > 0)
         {
             var world = _stage.ScreenToWorld(screen);
             var localHit = !IsEditableDrawingContext()
@@ -950,7 +956,7 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (_tool == ToolMode.Select)
+        if (UsesSelectionGeometryEditing)
         {
             var handle = _activeHandle != EditHandleKind.None
                 ? _activeHandle
@@ -967,7 +973,9 @@ internal sealed partial class MainForm : Form
                 && _scene.IsObjectSelectable(hit.Key.ObjectIndex, _frame)
                 && (_selectedElements.Any(selected => selected.Key == hit.Key)
                     || _selectedElements.Count == 0 && _selectedObjects.Contains(hit.Key.ObjectIndex));
-            _stage.Cursor = selectedBody ? Cursors.SizeAll : CursorForEditHandle(handle);
+            _stage.Cursor = selectedBody ? Cursors.SizeAll
+                : handle == EditHandleKind.None && !IsShiftPressed() && !IsControlPressed() && IsArrowArcDragHit(hit)
+                    ? Cursors.Cross : CursorForEditHandle(handle);
             return;
         }
 
@@ -1173,7 +1181,12 @@ internal sealed partial class MainForm : Form
             SetToolStripText(_timelineFrameStatus, _timeline.FrameStatusText);
             if (_syncingFrame) return;
             StopPlayback();
-            SetFrame(_timeline.CurrentFrame);
+            SetFrame(_timeline.CurrentFrame,
+                refreshScenePanels: !_timeline.IsScrubbingPlayhead);
+        };
+        _timeline.PlayheadScrubCompleted += (_, _) =>
+        {
+            if (!IsDisposed && !Disposing && IsSceneBuildingContext()) _hierarchyPanel.BindScene(_scene);
         };
         _timeline.ActiveLayerChanged += (_, _) =>
         {
@@ -1221,6 +1234,7 @@ internal sealed partial class MainForm : Form
             {
                 var category = target.SceneDefinition?.FindShot(target.Track.TargetId) is not null
                     ? InspectorCategory.Camera : InspectorCategory.None;
+                if (category == InspectorCategory.None) _inspectorToolContextActive = false;
                 RevealInspectorCategory(category, "timeline tween selected");
             }
             LayoutInspectorCategoryRail();
@@ -1348,12 +1362,15 @@ internal sealed partial class MainForm : Form
         _materialEditor.EditingTargetChanged += (_, _) => _materialTargetChosenByUser = true;
         _materialEditor.ContinuousEditCompleted += (_, _) => CompleteMaterialContinuousEdit();
         _materialEditor.ContinuousEditCanceled += (_, _) => CancelMaterialContinuousEdit();
-        _materialEditor.LineEndpointStyleChanged += (_, e) => ApplyLineEndpointStyle(e.EndpointStyle, e.StartEndpoint);
+        _materialEditor.LineEndpointStyleChanged += (_, e) =>
+        {
+            if (_drawingToolPaint is not null) ApplyLineEndpointStyle(e.EndpointStyle, e.StartEndpoint);
+        };
         _materialEditor.GradientChanged += (_, e) =>
         {
             // Any manual gradient edit (including disabling it) supersedes an eyedropper sample.
             _eyedropperSamplesGradient = false;
-            ApplyGradientToSelection(e);
+            if (_drawingToolPaint is not null || IsTextEditActive()) ApplyGradientToSelection(e);
         };
         _drawingObjectInstancePanel.PlaybackSettingsChanged += (_, e) =>
             ApplyDrawingObjectPlaybackSettings(e);
@@ -1379,14 +1396,18 @@ internal sealed partial class MainForm : Form
             if (!IsEditableDrawingContext()) return;
             if (e.FillChanged || e.ApplyAll) _eyedropperSamplesGradient = false;
             if (ApplyMaterialToTextDraft(e)) return;
-            if (e.StrokeWidthChanged)
+            if (_drawingToolPaint is null)
             {
-                if (_tool == ToolMode.Pencil) _pencilStrokeWidthPoints = e.StrokeWidth;
-                else if (IsBrushTool(_tool)) _brushStrokeWidthPoints = e.StrokeWidth;
-                else if (_tool == ToolMode.Eraser) _eraserStrokeWidthPoints = e.StrokeWidth;
-                else if (IsStandardStrokeTool(_tool)) _standardStrokeWidthPoints = e.StrokeWidth;
+                if (e.StrokeWidthChanged)
+                {
+                    if (_tool == ToolMode.Pencil) _pencilStrokeWidthPoints = e.StrokeWidth;
+                    else if (IsBrushTool(_tool)) _brushStrokeWidthPoints = e.StrokeWidth;
+                    else if (_tool == ToolMode.Eraser) _eraserStrokeWidthPoints = e.StrokeWidth;
+                    else if (IsStandardStrokeTool(_tool)) _standardStrokeWidthPoints = e.StrokeWidth;
+                }
+                if (IsBrushTool(_tool) || _tool == ToolMode.Eraser) SyncBrushTipSettings();
+                return;
             }
-            if (IsBrushTool(_tool) || _tool == ToolMode.Eraser) SyncBrushTipSettings();
 
             if (_selectedElements.Count > 0)
             {
@@ -2251,7 +2272,9 @@ internal sealed partial class MainForm : Form
         return 1.0 / (double)Math.Max(1m, playbackFps);
     }
 
-    private void TogglePlayback()
+    private void TogglePlayback() => TogglePlaybackCore(fromEnter: false);
+
+    private void TogglePlaybackCore(bool fromEnter)
     {
         if (_playing)
         {
@@ -2270,7 +2293,10 @@ internal sealed partial class MainForm : Form
         if (_frame < _playbackSettings.StartFrame || _frame >= _playbackSettings.EndFrame)
             SetFrame(_playbackSettings.StartFrame);
         StartPlaybackCompositionPreload();
+        if (fromEnter) BeginEnterPlaybackView();
+        else _stage.SetEnterPlaybackViewSettings(null);
         _playing = true;
+        _shotPlaybackPreviewOverridden = false;
         BeginPlaybackTimerResolution();
         _stage.SetReference3DPlaybackActive(active: true);
         if (_stage.OnionSkinScene is not null) _stage.BindOnionSkinScene(null);
@@ -2279,6 +2305,7 @@ internal sealed partial class MainForm : Form
         _playbackWarmupPending = true;
         _timer.Interval = PlaybackTimerIntervalMs;
         _clock.Restart();
+        UpdateShotFramingGizmo();
         // Establish the playback background immediately. The composition
         // preloader may need a snapshot restore before the next frame is
         // available, but the current frame is already renderable.
@@ -2306,6 +2333,7 @@ internal sealed partial class MainForm : Form
             return;
         }
         _playing = false;
+        EndEnterPlaybackView();
         StopPlaybackScheduler();
         EndPlaybackTimerResolution();
         _stage.SetReference3DPlaybackActive(active: false);
@@ -2327,6 +2355,7 @@ internal sealed partial class MainForm : Form
         }
         RebuildOnionSkinPreview();
         RefreshStageLayerContentHighlight();
+        UpdateShotFramingGizmo();
         RefreshShotPreview(force: true);
     }
 
@@ -2526,7 +2555,9 @@ internal sealed partial class MainForm : Form
             // silently disagree with the animated shot.
             if (frameChanged && _playing) UpdateShotFramingGizmo();
             if (frameChanged && (_selectedElements.Count > 0
-                || !_playing && IsSceneBuildingContext() && !_motionTrackEnabled)) ClearSelection();
+                || !_playing && IsSceneBuildingContext() && !_motionTrackEnabled
+                    && (_selectedObjects.Count > 0 || _selectedSceneInstanceIds.Count > 0
+                        || _transformFocus is not null))) ClearSelection();
             if (!_playing)
             {
                 ClearInactiveSelection();
@@ -2597,7 +2628,8 @@ internal sealed partial class MainForm : Form
                 || (keyData & (Keys.Control | Keys.Alt)) == Keys.None
                     && (keyData & Keys.KeyCode) is >= Keys.D0 and <= Keys.Z))
             return base.ProcessCmdKey(ref msg, physicalKeyData);
-        keyData = ShortcutProfiles.ResolveWorkbenchKey(profile, keyData);
+        keyData = keyData is (Keys.Control | Keys.C) or (Keys.Control | Keys.V)
+            ? keyData : ShortcutProfiles.ResolveWorkbenchKey(profile, keyData);
         if (keyData == Keys.F1)
         {
             ToggleInspectorPanel();
@@ -2691,6 +2723,27 @@ internal sealed partial class MainForm : Form
         }
         if (keyData == (Keys.Control | Keys.Z) && _libraryVaultPanel.ContainsFocus
             && !focusedEditor && _materialEditSession is null && UndoLastEdit()) return true;
+        if (!focusedEditor && _materialEditSession is null)
+        {
+            if (keyData == (Keys.Control | Keys.C))
+            {
+                if (HasActiveCanvasPointerInteraction()) return true;
+                if (_timeline.ContainsFocus)
+                {
+                    CopyTimelineFrames();
+                    return true;
+                }
+                if (CopySelectedObjects()) return true;
+            }
+            if (keyData == (Keys.Control | Keys.V))
+            {
+                if (_playing || HasActiveCanvasPointerInteraction()) return true;
+                if (TryPasteClipboardImage()) return true;
+                if (_timeline.ContainsFocus) PasteTimelineFrames();
+                else PasteCopiedObjects();
+                return true;
+            }
+        }
         var canvasShortcutsEnabled = _materialEditSession is null
             && !focusedEditor
             && !IsShotDirectorContext()
@@ -2712,17 +2765,6 @@ internal sealed partial class MainForm : Form
             if (keyData == (Keys.Control | Keys.A))
             {
                 _timeline.SelectAllVisibleLayerTracks();
-                return true;
-            }
-            if (keyData == (Keys.Control | Keys.C))
-            {
-                CopyTimelineFrames();
-                return true;
-            }
-            if (keyData == (Keys.Control | Keys.V))
-            {
-                if (!focusedEditor && _materialEditSession is null && TryPasteClipboardImage()) return true;
-                PasteTimelineFrames();
                 return true;
             }
             if (keyData == (Keys.Control | Keys.Z))
@@ -2801,7 +2843,7 @@ internal sealed partial class MainForm : Form
                 return true;
             }
             if (keyData == Keys.Escape
-                && _tool is ToolMode.Select or ToolMode.Transform or ToolMode.Distort
+                && _tool is ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform or ToolMode.Distort
                 && _undoCapturedForPointerEdit
                 && (_pointerUndoSnapshot is not null
                     || IsSceneCompositionContext() && _sceneTimelineUndoStack.Count > 0))
@@ -2847,13 +2889,8 @@ internal sealed partial class MainForm : Form
             }
 
             if (keyData == (Keys.Control | Keys.A) && SelectAllObjectsInCurrentFrame()) return true;
-            if (keyData == Keys.F8
-                && (ConvertSelectedSceneInstancesToSpatialComponent()
-                    || ConvertSelectedDrawingObjectsToSymbol())) return true;
+            if (keyData == Keys.F8 && ConvertStageSelectionToSymbol()) return true;
             if (keyData == (Keys.Control | Keys.X) && CutSelectedObjects()) return true;
-            if (keyData == (Keys.Control | Keys.C) && CopySelectedObjects()) return true;
-            if (keyData == (Keys.Control | Keys.V)
-                && (TryPasteClipboardImage() || PasteCopiedObjects())) return true;
         }
 
         if (drawingObjectStackDirection != 0

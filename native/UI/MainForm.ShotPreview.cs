@@ -11,7 +11,7 @@ internal sealed partial class MainForm
 
     private readonly record struct ShotPreviewFrameKey(
         ShotPreviewSourceState Source, SceneShotSettings Settings, SceneShotSettings ParallaxAnchor,
-        Size Size, string Caption);
+        Size Size, string Caption, double TimeSeconds, SceneShotMicroMotionSettings MicroMotion);
 
     private void UpdateShotPreviewScheduler()
     {

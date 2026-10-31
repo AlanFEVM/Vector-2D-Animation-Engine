@@ -839,6 +839,7 @@ internal static partial class Benchmark
 
     private static void RunShapeToolRegression()
     {
+        RunSelectionArrowRegression();
         var drawSettings = new DrawSettings { AngleSnapDegrees = 15 };
         var inputAngle = 22f * MathF.PI / 180f;
         var unsnappedAngle = drawSettings.SnapAngle(inputAngle);

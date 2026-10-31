@@ -230,6 +230,7 @@ internal static partial class Benchmark
 
     private static void RunSceneCanvasModelRegression()
     {
+        RunEnterPlaybackViewSettingsRegression();
         var defaults = new SceneCanvasSettings();
         var validationScene = new SceneDefinition();
         AssertTimeline(

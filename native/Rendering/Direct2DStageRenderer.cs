@@ -691,7 +691,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         LastReference3DWorkspaceStoreMilliseconds = 0;
         ResetReference3DCpuRasterMetrics();
         ApplyReference3DOpticalSurfaceBitmapCacheInvalidation();
-        if (stage.ShotWorkspacePreviewActive || RequiresSoftwareLayerCompositing(stage) || RequiresSoftwareDistortion(stage))
+        if (RequiresSoftwareLayerCompositing(stage) || RequiresSoftwareDistortion(stage))
         {
             stage.Reference3DGpuOpticsEnabled = false;
             ClearBaseFrameCache();
@@ -709,9 +709,11 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         {
             EnsureTarget(stage);
             if (_target is null) return false;
+            if (stage.ShotWorkspacePreviewActive && _target is not ID2D1DeviceContext) return false;
             try
             {
-                PrepareGpuOpticalSurfaces(stage);
+                if (stage.ShotWorkspacePreviewActive) stage.Reference3DGpuOpticsEnabled = false;
+                else PrepareGpuOpticalSurfaces(stage);
             }
             catch (Exception exception)
             {
@@ -728,7 +730,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             var fastPlayback = stage.PlaybackActive
                 && stage.RendersReferenceProjection;
             var cacheMaintenanceStarted = Stopwatch.GetTimestamp();
-            if (!fastPlayback) PrepareReference3DWorkspaceFrameCache(stage);
+            if (!fastPlayback && !stage.ShotWorkspacePreviewActive) PrepareReference3DWorkspaceFrameCache(stage);
             if (!fastPlayback)
             {
                 PrepareFreehandGeometryCache(
@@ -756,6 +758,9 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             LastCacheMaintenanceMilliseconds = fastPlayback
                 ? 0
                 : Stopwatch.GetElapsedTime(cacheMaintenanceStarted).TotalMilliseconds;
+
+            if (stage.ShotWorkspacePreviewActive)
+                return TryRenderShotWorkspacePreview(stage, out stats);
 
             // A workspace pre-render is produced on this renderer's thread and
             // is therefore safe to reuse here. It must be restored before
@@ -3490,7 +3495,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
     private void DrawFillEdgeBezierOverlay(StageControl stage)
     {
-        if (!stage.FillEdgeBezierOverlayVisible) return;
+        if (!stage.FillEdgeBezierOverlayVisible || stage.ObjectSelectionMode) return;
         var geometry = FillEdgeBezierOverlayGeometry(stage);
         if (geometry is null) return;
 

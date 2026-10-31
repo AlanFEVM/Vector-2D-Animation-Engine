@@ -13,6 +13,25 @@ internal enum ShotWorkspacePreviewMode
 internal sealed partial class StageControl
 {
     private PointF[] _shotPreviewAnchor = [];
+    private double _shotPreviewTimeSeconds;
+    private SceneShotMicroMotionSettings _shotPreviewMicroMotion = new();
+
+    internal void SetShotPreviewMicroMotion(SceneShotMicroMotionSettings settings)
+    {
+        if (_shotPreviewMicroMotion == settings) return;
+        _shotPreviewMicroMotion = settings.Normalized();
+        if (ShotWorkspacePreviewActive) Invalidate();
+    }
+
+    internal void SetShotPreviewTime(int frame, decimal fps)
+    {
+        var time = fps > 0 ? Math.Max(0, frame) / (double)fps : 0;
+        if (_shotPreviewTimeSeconds == time) return;
+        _shotPreviewTimeSeconds = time;
+        if (!ShotWorkspacePreviewActive || !_shotPreviewMicroMotion.Enabled) return;
+        ClearGdiBaseFrameCache();
+        Invalidate();
+    }
 
     internal ShotWorkspacePreviewMode ShotPreviewMode { get; private set; }
     internal bool CanPreviewPlanarShot => _shotFramingVisible
@@ -71,8 +90,10 @@ internal sealed partial class StageControl
             return true;
         }
         var margin = 24f * DeviceDpi / 96f;
-        var bounds = FitPlanarShotFrame(_shotFramingSettings, new RectangleF(
-            margin, margin, Math.Max(1, Width - margin * 2), Math.Max(1, Height - margin * 2)));
+        var bounds = _enterPlaybackViewSettings is { Mode: not EnterPlaybackFitMode.KeepCurrent }
+            ? ResolveEnterPlaybackShotBounds()
+            : FitPlanarShotFrame(_shotFramingSettings, new RectangleF(
+                margin, margin, Math.Max(1, Width - margin * 2), Math.Max(1, Height - margin * 2)));
         corners = RectangleCorners(bounds);
         return true;
     }
@@ -83,7 +104,9 @@ internal sealed partial class StageControl
         graphics.Clear(Color.FromArgb(255, 18, 20, 24));
         if (!TryGetShotWorkspaceFrame(out var corners)) return;
         var fitted = ShotPreviewMode == ShotWorkspacePreviewMode.CameraView;
-        LastStats = DrawPlanarShotScene(graphics, _shotFramingSettings, corners,
+        var settings = _shotPreviewMicroMotion.ApplyTo(_shotFramingSettings,
+            _shotPreviewTimeSeconds, CanvasWorldWidth, CanvasWorldHeight);
+        LastStats = DrawPlanarShotScene(graphics, settings, corners,
             ClientSize, clipToCamera: fitted, drawGrid: !fitted);
         using var pen = new Pen(Theme.Accent, Math.Max(1f, DeviceDpi / 96f));
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
@@ -93,6 +116,75 @@ internal sealed partial class StageControl
     private RenderStats DrawPlanarShotScene(Graphics graphics, SceneShotSettings settings,
         PointF[] destination, Size outputSize, bool clipToCamera, bool drawGrid,
         SceneShotSettings? parallaxAnchor = null)
+    {
+        var state = graphics.Save();
+        try
+        {
+            return RenderPlanarShotScene(settings, destination, outputSize, clipToCamera, drawGrid, transform =>
+            {
+                if (clipToCamera)
+                {
+                    using var clip = new GraphicsPath();
+                    clip.AddPolygon(destination);
+                    graphics.SetClip(clip, CombineMode.Intersect);
+                }
+                if (!_renderingCanvasOutput || CanvasPresentation is null)
+                    graphics.FillRectangle(BrushFor(BackColor.ToArgb()), 0, 0, outputSize.Width, outputSize.Height);
+                using var commands = new MemoryStream();
+                var device = graphics.GetHdc();
+                Metafile recording;
+                try
+                {
+                    recording = new Metafile(commands, device, ClientRectangle,
+                        MetafileFrameUnit.Pixel, EmfType.EmfPlusOnly);
+                }
+                finally
+                {
+                    graphics.ReleaseHdc(device);
+                }
+                using (recording)
+                {
+                    RenderStats stats;
+                    using (var sceneGraphics = Graphics.FromImage(recording))
+                    {
+                        sceneGraphics.SmoothingMode = SmoothingMode.AntiAlias;
+                        sceneGraphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                        BeginScenePassOrder();
+                        if (drawGrid) DrawGrid(sceneGraphics);
+                        DrawCanvasBackgroundGdi(sceneGraphics);
+                        stats = RendersReferenceProjection ? DrawReference3DScene(sceneGraphics)
+                            : DrawGdiBase2D(sceneGraphics, backgroundAlreadyDrawn: true);
+                    }
+                    graphics.Transform = transform;
+                    graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                    graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    graphics.DrawImage(recording, ClientRectangle, ClientRectangle, GraphicsUnit.Pixel);
+                    return stats;
+                }
+            }, parallaxAnchor);
+        }
+        finally { graphics.Restore(state); }
+    }
+
+    internal bool RenderingCanvasOutput => _renderingCanvasOutput;
+
+    internal RenderStats RenderShotPreviewScene(SceneShotSettings settings, Size size,
+        SceneShotSettings? parallaxAnchor, Func<Matrix, RenderStats> render) => RenderPlanarShotScene(
+            settings, RectangleCorners(new RectangleF(PointF.Empty, size)), size,
+            clipToCamera: true, drawGrid: false, render, parallaxAnchor);
+
+    internal RenderStats RenderShotWorkspaceScene(Func<Matrix, RenderStats> render)
+    {
+        if (!TryGetShotWorkspaceFrame(out var corners)) return default;
+        var fitted = ShotPreviewMode == ShotWorkspacePreviewMode.CameraView;
+        var settings = _shotPreviewMicroMotion.ApplyTo(_shotFramingSettings,
+            _shotPreviewTimeSeconds, CanvasWorldWidth, CanvasWorldHeight);
+        return RenderPlanarShotScene(settings, corners, ClientSize, fitted, !fitted, render);
+    }
+
+    private RenderStats RenderPlanarShotScene(SceneShotSettings settings,
+        PointF[] destination, Size outputSize, bool clipToCamera, bool drawGrid,
+        Func<Matrix, RenderStats> render, SceneShotSettings? parallaxAnchor = null)
     {
         var world = settings.ResolveWorldFrameCorners(CanvasWorldWidth, CanvasWorldHeight);
         var source = new[]
@@ -128,7 +220,6 @@ internal sealed partial class StageControl
             var referenceProjection = RendersReferenceProjection;
             var gpuOptics = Reference3DGpuOpticsEnabled;
             var renderingCanvasOutput = _renderingCanvasOutput;
-            var state = graphics.Save();
             using var parallax = BeginShotParallax(settings, parallaxAnchor);
             try
             {
@@ -149,45 +240,7 @@ internal sealed partial class StageControl
                 }
                 using (transform)
                 {
-                    if (clipToCamera)
-                    {
-                        using var clip = new GraphicsPath();
-                        clip.AddPolygon(destination);
-                        graphics.SetClip(clip, CombineMode.Intersect);
-                    }
-                    if (!_renderingCanvasOutput || CanvasPresentation is null)
-                        graphics.FillRectangle(BrushFor(BackColor.ToArgb()), 0, 0, outputSize.Width, outputSize.Height);
-                    using var commands = new MemoryStream();
-                    var device = graphics.GetHdc();
-                    Metafile recording;
-                    try
-                    {
-                        recording = new Metafile(commands, device, ClientRectangle,
-                            MetafileFrameUnit.Pixel, EmfType.EmfPlusOnly);
-                    }
-                    finally
-                    {
-                        graphics.ReleaseHdc(device);
-                    }
-                    using (recording)
-                    {
-                        RenderStats stats;
-                        using (var sceneGraphics = Graphics.FromImage(recording))
-                        {
-                            sceneGraphics.SmoothingMode = SmoothingMode.AntiAlias;
-                            sceneGraphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                            BeginScenePassOrder();
-                            if (drawGrid) DrawGrid(sceneGraphics);
-                            DrawCanvasBackgroundGdi(sceneGraphics);
-                            stats = referenceProjection ? DrawReference3DScene(sceneGraphics)
-                                : DrawGdiBase2D(sceneGraphics, backgroundAlreadyDrawn: true);
-                        }
-                        graphics.Transform = transform;
-                        graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                        graphics.DrawImage(recording, ClientRectangle, ClientRectangle, GraphicsUnit.Pixel);
-                        return stats;
-                    }
+                    return render(transform);
                 }
             }
             finally
@@ -202,7 +255,6 @@ internal sealed partial class StageControl
                 }
                 Reference3DGpuOpticsEnabled = gpuOptics;
                 _renderingCanvasOutput = renderingCanvasOutput;
-                graphics.Restore(state);
             }
         }
     }
@@ -238,6 +290,8 @@ internal sealed partial class StageControl
         var bounds = FitPlanarShotFrame(settings, new RectangleF(0, 0,
             Math.Clamp(targetSize.Width, 8, 4096), Math.Clamp(targetSize.Height, 8, 4096)));
         var size = new Size(Math.Max(1, (int)MathF.Round(bounds.Width)), Math.Max(1, (int)MathF.Round(bounds.Height)));
+        if (_direct2DRenderer.TryCapturePlanarShotPreview(this, settings, size, parallaxAnchor, out bitmap))
+            return true;
         var result = new Bitmap(size.Width, size.Height, PixelFormat.Format32bppPArgb);
         try
         {

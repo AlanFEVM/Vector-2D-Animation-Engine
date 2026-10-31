@@ -254,17 +254,7 @@ internal sealed partial class VectorScene
     internal PointF[][] GetVisiblePathSelectionPolylines(int objectIndex, int frame, PointF[][]? contours = null, bool closed = true)
     {
         contours ??= GetDistortedObjectBoundaryContours(objectIndex);
-        if (_visibleSelectionGeometryRevision != GeometryRevision
-            || _visibleSelectionSummaryRevision != SummaryRevision
-            || _selectionOccluderClipContentRevision != ActiveContentRevision)
-        {
-            _visibleSelectionCache.Clear();
-            _selectionOccluderClipPaths.Clear();
-            _selectionOccluderUnionCache.Clear();
-            _selectionOccluderClipContentRevision = ActiveContentRevision;
-            _visibleSelectionGeometryRevision = GeometryRevision;
-            _visibleSelectionSummaryRevision = SummaryRevision;
-        }
+        PrepareVisibleSelectionGeometry();
 
         var occluders = SelectionFillOccluders(objectIndex, frame, GetObjectWorldBounds(objectIndex), strokePass: !HasFill(objectIndex));
         var occluderFingerprint = 14695981039346656037UL;
@@ -311,6 +301,44 @@ internal sealed partial class VectorScene
         if (_visibleSelectionCache.Count >= 2048) _visibleSelectionCache.Clear();
         _visibleSelectionCache[cacheKey] = result;
         return result;
+    }
+
+    internal PointF[][] GetVisibleSelectionFillContours(int objectIndex, int frame, PointF[][] contours)
+    {
+        PrepareVisibleSelectionGeometry();
+        var occluders = SelectionFillOccluders(objectIndex, frame, GetObjectWorldBounds(objectIndex));
+        var remaining = ToClipperPaths(contours);
+        if (occluders.Length > 0)
+            remaining = Clipper.Difference(remaining, UnionOccluderClipPaths(occluders), FillRule.EvenOdd);
+        if (HasStroke(objectIndex))
+        {
+            var strokeAreas = new Paths64();
+            foreach (var part in GetBoundaryParts(objectIndex, frame))
+            {
+                var outlines = FreehandStrokeProcessor.CreateBrushOutlines(part.Points, Stroke[objectIndex]);
+                strokeAreas.AddRange(ToClipperPaths(outlines.Select(contour => contour.Select(point =>
+                    MapObjectPoint(objectIndex, point)).ToArray()).ToArray()));
+            }
+            if (strokeAreas.Count > 0)
+                remaining = Clipper.Difference(remaining, Clipper.Union(strokeAreas, FillRule.NonZero), FillRule.EvenOdd);
+        }
+        return remaining.Select(path => path.Select(point => new PointF(
+            (float)(point.X / ClipperCoordinateScale), (float)(point.Y / ClipperCoordinateScale))).ToArray()).ToArray();
+    }
+
+    private void PrepareVisibleSelectionGeometry()
+    {
+        if (_visibleSelectionGeometryRevision != GeometryRevision
+            || _visibleSelectionSummaryRevision != SummaryRevision
+            || _selectionOccluderClipContentRevision != ActiveContentRevision)
+        {
+            _visibleSelectionCache.Clear();
+            _selectionOccluderClipPaths.Clear();
+            _selectionOccluderUnionCache.Clear();
+            _selectionOccluderClipContentRevision = ActiveContentRevision;
+            _visibleSelectionGeometryRevision = GeometryRevision;
+            _visibleSelectionSummaryRevision = SummaryRevision;
+        }
     }
 
     /// <summary>

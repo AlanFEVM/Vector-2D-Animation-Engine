@@ -1436,7 +1436,7 @@ internal static partial class Benchmark
         if (selectionShortcut != ToolMode.Transform
             || fillShortcut != ToolMode.InkBottle
             || ToolShortcutMap.ResolveNumberKeyTool(Keys.D8, ToolMode.Select, ToolMode.Rectangle, ToolMode.Line, ToolMode.Brush, ToolMode.Fill) != ToolMode.Eyedropper
-            || traditionalSelection != ToolMode.Select
+            || traditionalSelection != ToolMode.ObjectSelect
             || traditionalInkBottle != ToolMode.InkBottle
             || traditionalPen != ToolMode.Pen
             || traditionalText != ToolMode.Text

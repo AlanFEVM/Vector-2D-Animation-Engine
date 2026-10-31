@@ -53,7 +53,9 @@ internal sealed partial class StageControl
         {
             composition.TryGetOwner(Root(index), out var owner);
             var rootId = string.IsNullOrEmpty(owner.RootInstanceId) ? owner.InstanceId : owner.RootInstanceId;
-            transforms[index] = instanceLayers.TryGetValue(rootId, out var layerId)
+            var layerId = owner.SceneLayerId;
+            if (!string.IsNullOrEmpty(rootId)) instanceLayers.TryGetValue(rootId, out layerId);
+            transforms[index] = !string.IsNullOrEmpty(layerId)
                 && layerTransforms.TryGetValue(layerId, out var transform) ? transform : Matrix4x4.Identity;
         }
         var maskTransforms = new Dictionary<SceneCompositionMaskClip, Matrix4x4>();

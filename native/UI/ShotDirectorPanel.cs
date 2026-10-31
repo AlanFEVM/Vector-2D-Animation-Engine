@@ -29,6 +29,7 @@ internal sealed record ShotDirectorItem
     public int ColorArgb { get; init; } = SceneShotDefinition.DefaultColorArgb;
     public bool IsActive { get; init; }
     public SceneShotSettings Framing { get; init; } = SceneShotSettings.Default;
+    public SceneShotMicroMotionSettings MicroMotion { get; init; } = new();
     public bool FramingEditable { get; init; }
     public int KeyframeCount { get; init; }
     public int TweenCount { get; init; }
@@ -284,7 +285,9 @@ internal sealed partial class ShotDirectorPanel : UserControl
     public event EventHandler<ShotDirectorPropertiesEventArgs>? ShotPropertiesCommitted;
     public event EventHandler? ShotEditStarted;
     public event EventHandler? ShotEditCompleted;
+    public event EventHandler? ShotEditCanceled;
     public event EventHandler<ShotDirectorFramingEventArgs>? ShotFramingCommitted;
+    public event EventHandler<ShotDirectorMicroMotionEventArgs>? ShotMicroMotionCommitted;
     public event EventHandler<ShotDirectorEventArgs>? ShotFramingResetRequested;
 
     internal ShotDirectorState State => _state;
@@ -376,9 +379,16 @@ internal sealed partial class ShotDirectorPanel : UserControl
     public void SetPlayhead(int frame)
     {
         if (_state.CurrentFrame == frame) return;
+        var previousFrame = _state.CurrentFrame;
         _state = _state with { CurrentFrame = frame };
         UpdateFrameInfo();
-        _cameraList.Invalidate();
+        for (var index = 0; index < _cameraList.Items.Count; index++)
+        {
+            if (_cameraList.Items[index] is not ShotDirectorItem shot) continue;
+            var wasInRange = previousFrame >= shot.StartFrame && previousFrame <= shot.EndFrame;
+            var isInRange = frame >= shot.StartFrame && frame <= shot.EndFrame;
+            if (wasInRange != isInRange) _cameraList.Invalidate(_cameraList.GetItemRectangle(index));
+        }
     }
 
     public void RefreshSummary() => _help.SetToolTip(_title, BuildSummaryText());
@@ -510,6 +520,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
         _inspector.Content.Controls.Add(_resetCameraButton);
         _inspector.Content.Controls.Add(ParallaxEditor);
         ParallaxEditor.SizeChanged += (_, _) => PerformLayout();
+        InitializeMicroMotion();
 
         _nameEditor.Enter += (_, _) => ShotEditStarted?.Invoke(this, EventArgs.Empty);
         _nameEditor.Leave += (_, _) => CompleteTextEdit();
@@ -729,6 +740,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
             _nameEditor.Text = shot?.Name ?? "";
             _detailEditor.Text = shot?.Detail ?? "";
             SetCameraEditors(shot?.Framing ?? SceneShotSettings.Default);
+            SetMicroMotionEditors(shot?.MicroMotion ?? new());
             _framingEditable = shot?.FramingEditable == true;
             var kind = shot?.Framing.Kind ?? SceneShotCameraKind.ThreeD;
             _kindEditor.SelectedIndex = kind == SceneShotCameraKind.TwoD ? 1 : 0;
@@ -792,6 +804,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
         _projectionEditor.Enabled = enabled;
         _kindEditor.Enabled = enabled && _experimental3DEnabled;
         ParallaxEditor.Enabled = enabled && ActiveShot()?.Framing.Kind == SceneShotCameraKind.TwoD;
+        ApplyMicroMotionEditorState(_state.IsAvailable && ActiveShot() is not null && ActiveCameraAllowed);
     }
 
     private void UpdateCommandStates()

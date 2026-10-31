@@ -64,7 +64,7 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         ArgumentNullException.ThrowIfNull(images);
         ArgumentNullException.ThrowIfNull(resolveImagePath);
         _resolveImagePath = resolveImagePath;
-        Settings = settings ?? new SceneCanvasSettings();
+        Settings = settings ?? new SceneCanvasSettings { BackgroundKind = SceneBackgroundKind.Solid };
         _draft = Settings;
         _color = Color.FromArgb(Settings.ColorArgb);
         MinimumSize = new Size(720, 520);
@@ -982,9 +982,7 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
     {
         var row = panel.RowCount++;
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
-        var label = ValueLabel();
-        label.Text = text;
-        label.ForeColor = Theme.Text;
+        var label = InspectorModuleStyle.CreateFieldLabel(text);
         label.Margin = new Padding(0, 0, 8, 8);
         editor.Margin = new Padding(0, 0, 0, 8);
         panel.Controls.Add(label, 0, row);

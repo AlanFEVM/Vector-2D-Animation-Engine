@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Reflection;
@@ -179,6 +180,8 @@ internal static partial class Benchmark
 
     private static void RunBitmapObjectRegression()
     {
+        RunBitmapAffineTransformRegression();
+        RunBitmapRasterSourceCacheRegression();
         var scene = new VectorScene();
         scene.CreateEmpty();
         var data = new BitmapObjectData
@@ -282,6 +285,316 @@ internal static partial class Benchmark
                     PointF.Empty);
             }),
             "The packed batch path accepted a bitmap without its image payload.");
+    }
+
+    private static void RunBitmapRasterSourceCacheRegression()
+    {
+        RunTimelineScrubRefreshRegression();
+        var root = CreateTemporaryDirectory("bitmap-source-cache");
+        var path = Path.Combine(root, "source.bmp");
+        var settings = BitmapImageImportSettings.Default;
+        try
+        {
+            using (var source = new Bitmap(1280, 720))
+            using (var graphics = Graphics.FromImage(source))
+            {
+                graphics.Clear(Color.Red);
+                source.Save(path, ImageFormat.Bmp);
+            }
+            BitmapImageRasterizer.ClearCache();
+            var raster = BitmapImageRasterizer.Decode(path, settings);
+            var sourceReads = BitmapImageRasterizer.SourceReadCount;
+            var hits = BitmapImageRasterizer.CacheHitCount;
+            for (var frame = 0; frame < 64; frame++)
+                AssertTimeline(ReferenceEquals(raster, BitmapImageRasterizer.Decode(path, settings)),
+                    "Unchanged bitmap frames did not reuse their decoded raster.");
+            AssertTimeline(BitmapImageRasterizer.SourceReadCount == sourceReads
+                && BitmapImageRasterizer.CacheHitCount == hits + 64,
+                "Warm bitmap frames reopened or decoded the source image.");
+
+            var scene = new VectorScene();
+            scene.CreateEmpty();
+            scene.AddBitmapObject(0, PointF.Empty, new BitmapObjectData
+            {
+                ImageAssetId = "cached-image", PlacedSize = new SizeF(1280, 720)
+            });
+            using (var stage = new StageControl(scene) { ClientSize = new Size(720, 480) })
+            {
+                stage.BitmapImageResolver = assetId => assetId == "cached-image"
+                    ? BitmapImageRasterizer.Decode(path, settings) : null;
+                var camera = SceneShotSettings.Default with
+                {
+                    Kind = SceneShotCameraKind.TwoD,
+                    Projection = CameraProjection.Orthographic,
+                    OrthographicSize = 1000,
+                    X = 0, Y = 0, RotationDegrees = 0,
+                    AspectRatio = SceneShotAspectRatio.Landscape16To9
+                };
+                stage.SetShotFramingGizmo(camera, "Cached bitmap");
+                var viewBefore = stage.CaptureViewState();
+                for (var frame = 0; frame < 8; frame++)
+                {
+                    var captured = stage.TryCaptureShotPreview(camera with { X = frame * 2 },
+                        new Size(256, 144), out var preview);
+                    using (preview)
+                    {
+                        AssertTimeline(captured && preview is not null,
+                            "Bitmap camera scrubbing produced no preview.");
+                        var center = preview!.GetPixel(preview.Width / 2, preview.Height / 2);
+                        AssertTimeline(center.R > 200 && center.G < 40 && center.B < 40,
+                            "Bitmap camera scrubbing lost the visible source pixels.");
+                    }
+                }
+                AssertTimeline(BitmapImageRasterizer.SourceReadCount == sourceReads
+                    && stage.CaptureViewState() == viewBefore,
+                    "Camera scrubbing reread the bitmap source or changed the editor camera.");
+            }
+
+            var previousGpu = Environment.GetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU");
+            try
+            {
+                Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", null);
+                RunShotBitmapGpuScrubRegression(path);
+            }
+            finally { Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", previousGpu); }
+            var reduced = BitmapImageRasterizer.Decode(path, settings with { MaxSize = 256 });
+            AssertTimeline(reduced.PixelWidth <= 256 && reduced.PixelHeight <= 256
+                && !ReferenceEquals(raster, reduced),
+                "Changed bitmap import settings reused an incompatible raster.");
+            var previousWrite = File.GetLastWriteTimeUtc(path);
+            using (var replacement = new Bitmap(1280, 720))
+            using (var graphics = Graphics.FromImage(replacement))
+            {
+                graphics.Clear(Color.Blue);
+                replacement.Save(path, ImageFormat.Bmp);
+            }
+            File.SetLastWriteTimeUtc(path, previousWrite.AddSeconds(2));
+            var replaced = BitmapImageRasterizer.Decode(path, settings);
+            AssertTimeline(replaced.Key != raster.Key && replaced.Pixels[0] > 200 && replaced.Pixels[2] < 40,
+                "Replacing a bitmap with a same-sized source resurrected stale pixels.");
+            BitmapImageRasterizer.ClearCache();
+            var cleared = BitmapImageRasterizer.Decode(path, settings);
+            AssertTimeline(!ReferenceEquals(replaced, cleared) && replaced.Key == cleared.Key,
+                "Clearing the bitmap cache retained a source alias or changed the content key.");
+            File.Delete(path);
+            var rejectedMissingSource = false;
+            try { BitmapImageRasterizer.Decode(path, settings); }
+            catch (InvalidDataException) { rejectedMissingSource = true; }
+            AssertTimeline(rejectedMissingSource, "A missing bitmap source was served from a stale cache.");
+            Console.WriteLine("bitmap_camera_scrub_source_reads=0");
+        }
+        finally
+        {
+            BitmapImageRasterizer.ClearCache();
+            DeleteTemporaryDirectory(root);
+        }
+    }
+
+    private static void RunTimelineScrubRefreshRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty(1, 120);
+        using var host = new Form
+        {
+            ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+            Location = new Point(-32000, -32000), ClientSize = new Size(760, 260)
+        };
+        using var strip = new TimelineStrip(scene) { Dock = DockStyle.Fill };
+        host.Controls.Add(strip);
+        host.Show();
+        Application.DoEvents();
+        strip.RefreshMotionTrackControls();
+        strip.Update();
+        var invalidations = new List<Rectangle>();
+        strip.Invalidated += (_, eventArgs) => invalidations.Add(eventArgs.InvalidRect);
+        var requestedEdits = 0;
+        strip.MotionTrackToggleRequested += (_, _) => requestedEdits++;
+        for (var sample = 0; sample < 64; sample++) strip.RefreshMotionTrackControls();
+        AssertTimeline(invalidations.Count == 0,
+            "Refreshing unchanged motion-track controls repainted the timeline.");
+        strip.MotionTrackToggleAvailable = true;
+        strip.MotionTrackEnabled = true;
+        strip.MotionTrackRangeVisible = true;
+        strip.MotionTrackRangeFirst = 3;
+        strip.MotionTrackRangeLast = 15;
+        strip.RefreshMotionTrackControls();
+        AssertTimeline(invalidations.Count > 0 && requestedEdits == 0,
+            "A motion-track presentation change was not painted or authored an edit.");
+        invalidations.Clear();
+        for (var sample = 0; sample < 64; sample++) strip.RefreshMotionTrackControls();
+        AssertTimeline(invalidations.Count == 0, "An unchanged absolute motion range repainted the timeline.");
+        strip.MotionTrackRangeLast = 18;
+        strip.RefreshMotionTrackControls();
+        var lastRange = (ModernNumericUpDown)RequireField(typeof(TimelineStrip), "_onionNextFrames").GetValue(strip)!;
+        AssertTimeline(invalidations.Count > 0 && lastRange.Value == 18 && requestedEdits == 0,
+            "Changing a motion range left its input or painted range stale.");
+        strip.MotionTrackEnabled = false;
+        strip.MotionTrackRangeVisible = false;
+        strip.RefreshMotionTrackControls();
+        var layout = RequireMethod(typeof(TimelineStrip), "CreateLayout").Invoke(strip, null)!;
+        var ruler = (Rectangle)layout.GetType().GetProperty("RulerBounds")!.GetValue(layout)!;
+        var trackLeft = (int)layout.GetType().GetProperty("TrackLeft")!.GetValue(layout)!;
+        var pointer = new Point(trackLeft + 2 * strip.FrameWidth + strip.FrameWidth / 2, ruler.Bottom - 3);
+        var mouseDown = RequireMethod(typeof(TimelineStrip), "OnMouseDown");
+        var mouseUp = RequireMethod(typeof(TimelineStrip), "OnMouseUp");
+        var completed = 0;
+        strip.PlayheadScrubCompleted += (_, _) => completed++;
+        mouseDown.Invoke(strip, [new MouseEventArgs(MouseButtons.Left, 1, pointer.X, pointer.Y, 0)]);
+        AssertTimeline(strip.IsScrubbingPlayhead, "A ruler press did not start a playhead scrub.");
+        mouseUp.Invoke(strip, [new MouseEventArgs(MouseButtons.Left, 1, pointer.X, pointer.Y, 0)]);
+        AssertTimeline(!strip.IsScrubbingPlayhead && !strip.Capture && completed == 1,
+            "Releasing the playhead did not complete exactly one scrub.");
+        mouseDown.Invoke(strip, [new MouseEventArgs(MouseButtons.Left, 1, pointer.X, pointer.Y, 0)]);
+        var frame = strip.CurrentFrame;
+        strip.Capture = false;
+        AssertTimeline(!strip.IsScrubbingPlayhead && completed == 2 && strip.CurrentFrame == frame,
+            "Losing pointer capture left scrubbing active, duplicated completion or changed the frame.");
+        Console.WriteLine("timeline_scrub_refresh=noop_ok,range_change_ok,release_ok,capture_loss_ok");
+    }
+
+    private static void RunShotBitmapGpuScrubRegression(string path)
+    {
+        var measureBudget = Environment.GetEnvironmentVariable("VECTOR_BENCH_SHOT_180") == "1";
+        using var form = new MainForm
+        {
+            ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+            Location = new Point(0, 0), Size = new Size(1920, 1080)
+        };
+        ConfigureExperimental3DForRegression(form, enabled: false);
+        form.Show();
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        var definition = project.Scenes[0];
+        AssertTimeline(project.TryAddImageAssetFromSource("Scrub image", path,
+            BitmapImageRasterizer.ComputeSha256(path), 1280, 720, 96,
+            BitmapImageImportSettings.Default, out var asset), "Could not prepare the bitmap scrub asset.");
+        definition.DrawingScene.AddBitmapObject(0, PointF.Empty, new BitmapObjectData
+        {
+            ImageAssetId = asset!.Id, PlacedSize = new SizeF(1280, 720)
+        });
+        var shot = definition.AddShot("GPU scrub", 120);
+        var camera = SceneShotSettings.Default with
+        {
+            Kind = SceneShotCameraKind.TwoD, Projection = CameraProjection.Orthographic,
+            OrthographicSize = 1000, X = 0, Y = 0, RotationDegrees = 0
+        };
+        definition.UpdateShotAtFrame(shot.Id, 0, camera);
+        definition.UpdateShotAtFrame(shot.Id, 119, camera with { X = 80, RotationDegrees = 12 });
+        definition.UpdateShotMicroMotion(shot.Id, new SceneShotMicroMotionSettings { Enabled = true }
+            .WithHandheldDefaults(camera, stage.CanvasWorldWidth, stage.CanvasWorldHeight));
+        foreach (var track in definition.Timeline.Tracks.ToArray()) definition.Timeline.SetTrackDuration(track.Id, 120);
+        tabs.SelectedView = WorkspaceView.ShotDirector;
+        RequireMethod(typeof(MainForm), "ActivateSceneShot").Invoke(form, [shot.Id]);
+        var panel = (ShotDirectorPanel)RequireField(typeof(MainForm), "_shotDirectorPanel").GetValue(form)!;
+        panel.SetPreviewMode(ShotWorkspacePreviewMode.CameraView, enabled: true);
+        stage.SetShotWorkspacePreviewMode(ShotWorkspacePreviewMode.CameraView);
+        var timeline = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        using var inputScope = new ShotScrubInputScope(timeline);
+        var layout = RequireMethod(typeof(TimelineStrip), "CreateLayout").Invoke(timeline, null)!;
+        var ruler = (Rectangle)layout.GetType().GetProperty("RulerBounds")!.GetValue(layout)!;
+        var trackLeft = (int)layout.GetType().GetProperty("TrackLeft")!.GetValue(layout)!;
+        var pointer = new Point(trackLeft + timeline.FrameWidth / 2, ruler.Top + ruler.Height / 2);
+        RequireField(typeof(TimelineStrip), "_draggingPlayhead").SetValue(timeline, true);
+        AssertTimeline(timeline.IsScrubbingPlayhead, "The bitmap scrub fixture did not enter the playhead drag event path.");
+        var samples = new double[measureBudget ? 240 : 8];
+        var setFrameSamples = new double[samples.Length];
+        var renderSamples = new double[samples.Length];
+        var commandSamples = new double[samples.Length];
+        var presentSamples = new double[samples.Length];
+        var sourceReads = 0L;
+        for (var sample = -24; sample < samples.Length; sample++)
+        {
+            var frame = (sample + 240) % 120;
+            var rendered = stage.RenderedFrameCount;
+            var started = Stopwatch.GetTimestamp();
+            timeline.CurrentFrame = frame;
+            var setFrameMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            stage.Update();
+            Application.DoEvents();
+            var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            AssertTimeline(stage.Frame == frame && stage.RenderedFrameCount > rendered
+                && stage.LastFrameUsedDirect2D && stage.GpuAccelerationActive
+                && stage.LastStats.DrawnObjects > 0 && stage.ShotWorkspacePreviewActive,
+                $"Bitmap camera scrubbing failed: sample={sample}, requested={frame}, actual={stage.Frame}, "
+                + $"painted={stage.RenderedFrameCount - rendered}, direct2d={stage.LastFrameUsedDirect2D}, "
+                + $"gpu={stage.GpuAccelerationActive}, drawn={stage.LastStats.DrawnObjects}, "
+                + $"shot={stage.ShotWorkspacePreviewActive}, mode={stage.ShotPreviewMode}.");
+            if (sample == -1) sourceReads = BitmapImageRasterizer.SourceReadCount;
+            if (sample >= 0)
+            {
+                samples[sample] = elapsed;
+                setFrameSamples[sample] = setFrameMilliseconds;
+                renderSamples[sample] = stage.LastFrameRenderMilliseconds;
+                commandSamples[sample] = stage.LastDirect2DCommandMilliseconds;
+                presentSamples[sample] = stage.LastDirect2DPresentMilliseconds;
+            }
+        }
+        AssertTimeline(BitmapImageRasterizer.SourceReadCount == sourceReads,
+            "GPU timeline scrubbing reopened the warmed bitmap source.");
+        var originalView = stage.CaptureViewState();
+        var originalGeometry = stage.Scene.GeometryRevision;
+        AssertTimeline(definition.TryEvaluateShotSettings(shot.Id, stage.Frame, out var previewSettings),
+            "The GPU scrub fixture lost its current camera settings.");
+        AssertTimeline(stage.TryCaptureShotPreview(previewSettings, new Size(320, 180), out var preview,
+                definition.ResolveShotParallaxAnchor(shot.Id), microMotion: shot.MicroMotion),
+            "The GPU scrub fixture could not capture its camera preview.");
+        using (preview)
+        {
+            AssertTimeline(preview is not null && preview.GetPixel(preview.Width / 2, preview.Height / 2) is var center
+                && center.R > 200 && center.G < 40 && center.B < 40,
+                "The accelerated camera preview omitted the bitmap pixels.");
+        }
+        var renderer = (Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!;
+        AssertTimeline(RequireField(typeof(Direct2DStageRenderer), "_shotPreviewCaptureTarget").GetValue(renderer) is not null
+            && stage.CaptureViewState() == originalView && stage.Scene.GeometryRevision == originalGeometry,
+            "The camera preview fell back to software or changed the editor view or scene geometry.");
+        RequireMethod(typeof(TimelineStrip), "OnMouseUp").Invoke(timeline,
+            [new MouseEventArgs(MouseButtons.Left, 1, pointer.X, pointer.Y, 0)]);
+        AssertTimeline(!timeline.IsScrubbingPlayhead && stage.Frame == timeline.CurrentFrame,
+            "Finishing a bitmap scrub lost the requested frame or left the drag active.");
+        stage.SetShotWorkspacePreviewMode(ShotWorkspacePreviewMode.LockCamera);
+        stage.Invalidate();
+        stage.Update();
+        AssertTimeline(stage.LastFrameUsedDirect2D && stage.LastStats.DrawnObjects > 0,
+            "Lock-camera bitmap rendering fell back to software or omitted artwork.");
+        Array.Sort(samples);
+        var average = samples.Average();
+        var percentile95 = samples[(int)Math.Ceiling(samples.Length * 0.95) - 1];
+        var maximum = samples[^1];
+        Console.WriteLine($"shot_bitmap_scrub_viewport={stage.Width}x{stage.Height}");
+        Console.WriteLine("shot_bitmap_scrub_source=1280x720");
+        Console.WriteLine($"shot_bitmap_scrub_samples={samples.Length}");
+        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_average_ms={average:0.###}"));
+        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_p95_ms={percentile95:0.###}"));
+        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_max_ms={maximum:0.###}"));
+        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_fps={1000 / average:0.###}"));
+        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_set_frame_average_ms={setFrameSamples.Average():0.###}"));
+        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_render_average_ms={renderSamples.Average():0.###}"));
+        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_gpu_commands_average_ms={commandSamples.Average():0.###}"));
+        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_gpu_present_average_ms={presentSamples.Average():0.###}"));
+        if (measureBudget)
+        {
+            var met = maximum <= 1000d / 180;
+            Console.WriteLine($"shot_bitmap_scrub_180_budget_met={met.ToString().ToLowerInvariant()}");
+            AssertTimeline(met, "The complete bitmap scrub path exceeded the 180 FPS (5.556 ms) frame budget.");
+        }
+    }
+
+    private sealed class ShotScrubInputScope : IMessageFilter, IDisposable
+    {
+        private readonly IntPtr _timelineHandle;
+
+        public ShotScrubInputScope(TimelineStrip timeline)
+        {
+            _timelineHandle = timeline.Handle;
+            Application.AddMessageFilter(this);
+        }
+
+        public bool PreFilterMessage(ref Message message) => message.HWnd == _timelineHandle
+            && message.Msg is >= 0x0200 and <= 0x020E;
+
+        public void Dispose() => Application.RemoveMessageFilter(this);
     }
 
     private static void RunImageImportDialogRegression()

@@ -22,6 +22,7 @@ internal sealed partial class MainForm
         _documentInspectorPage.Content.Controls.Add(_documentInfoPanel);
         _inspectorHost.Controls.Add(_documentInspectorPage);
         _documentInfoPanel.RenameCommitted += (_, name) => ApplyDocumentInfoRename(name);
+        InitializeEnterPlaybackView();
         _documentInfoPanel.LayerPanel.BlendModeChanged += (_, e) => ApplySelectedLayerBlendMode(e.BlendMode);
         InitializeCanvasWorkspace();
     }

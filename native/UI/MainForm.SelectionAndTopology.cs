@@ -74,7 +74,8 @@ internal sealed partial class MainForm : Form
                 _scene.NormalizeFillBoundaryOverlaps(source, _scene.GetObjectBoundaryContours(source));
             }
         }
-        var overwritten = _scene.ApplyFillOverwriteToNewObjects(selectedFills, _frame);
+        var overwritten = _scene.ApplyFillOverwriteToNewObjects(selectedFills, _frame,
+            overwriteStrokes: true, protectedObjects: _selectedObjects);
         if (_scene.GeometryRevision == geometryRevision) return false;
 
         var retainedSelection = Enumerable.Range(0, _scene.ObjectCount)
@@ -269,6 +270,8 @@ internal sealed partial class MainForm : Form
 
     private void CompleteMarqueeSelection(Point endScreen)
     {
+        _selectionArrowGeometryFeedback = false;
+        RefreshSelectionArrowFeedback();
         var sceneCompositionContext = IsSceneCompositionContext() && !IsSceneDrawingContext();
         if (sceneCompositionContext) _marqueeSelectionCancellationPending = false;
         else FinalizePendingMarqueeSelectionCancellation();
@@ -1922,6 +1925,7 @@ internal sealed partial class MainForm : Form
         bool deferPresentation = false,
         bool syncTimelineLayer = true)
     {
+        RefreshSelectionArrowFeedback();
         var selectionChanged = _stage.SetSelectionState(
             _selectedObjects,
             _selectedObject,

@@ -157,7 +157,7 @@ internal sealed partial class MainForm : Form
             _stage.SetReferenceViewDirection(e.Direction, ReferenceCameraMotion.Animated);
             RebuildSceneComposition();
             if (e.Direction != ReferenceViewDirection.Front
-                && _tool is not (ToolMode.Select or ToolMode.Hand))
+                && _tool is not (ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Hand))
             {
                 ActivateTool(ToolMode.Select);
             }
@@ -562,13 +562,13 @@ internal sealed partial class MainForm : Form
             return true;
         }
 
-        if (_tool is not (ToolMode.Select or ToolMode.Transform3D)) return true;
+        if (_tool is not (ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform3D)) return true;
         DrawingObjectInstanceDefinition? hitInstance = null;
         if (TryResolveProjectedSceneInstance(e.Location, out var instance))
         {
             hitInstance = instance;
             SetSceneInstanceSelection(instance, additive: IsShiftPressed());
-            if (IsScene3DView() && _tool == ToolMode.Select)
+            if (IsScene3DView() && IsSelectionArrow(_tool))
             {
                 ActivateTool(ToolMode.Transform3D);
             }
@@ -580,7 +580,7 @@ internal sealed partial class MainForm : Form
         }
 
         if (hitInstance is not null
-            && _tool == ToolMode.Select
+            && IsSelectionArrow(_tool)
             && TryBeginProjectedSceneMovePointer(e.Location))
         {
             UpdateInspector();
@@ -1722,7 +1722,7 @@ internal sealed partial class MainForm : Form
 
     private bool UpdateSpatialTransformCursor(Point screen)
     {
-        if (CanMoveProjectedSceneInstances() && _tool == ToolMode.Select)
+        if (CanMoveProjectedSceneInstances() && IsSelectionArrow(_tool))
         {
             _stage.SetSpatialTransformHover(SpatialTransformHandleHit.None);
             _stage.ClearBrushTipCursor();

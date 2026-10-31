@@ -180,7 +180,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private readonly ToolMode[] _shapeTools = [ToolMode.Rectangle, ToolMode.Ellipse, ToolMode.Triangle, ToolMode.Polygon, ToolMode.Star];
     private readonly ToolMode[] _lineTools = [ToolMode.Line, ToolMode.Pen, ToolMode.SimplePen, ToolMode.Pencil];
     private readonly ToolMode[] _brushTools = [ToolMode.Brush, ToolMode.PressureBrush, ToolMode.MixingBrush];
-    private readonly ToolPairGroup _selectionToolGroup = new([ToolMode.Select, ToolMode.PolygonLasso, ToolMode.FreehandLasso, ToolMode.Transform, ToolMode.Transform3D, ToolMode.Distort]);
+    private readonly ToolPairGroup _selectionToolGroup = new([ToolMode.ObjectSelect, ToolMode.Select, ToolMode.PolygonLasso, ToolMode.FreehandLasso, ToolMode.Transform, ToolMode.Transform3D, ToolMode.Distort]);
     private readonly ToolPairGroup _paintToolGroup = new([ToolMode.Fill, ToolMode.InkBottle]);
     private readonly Dictionary<ToolMode, Button> _shapeFlyoutButtons = new();
     private readonly Dictionary<ToolMode, Button> _lineFlyoutButtons = new();
@@ -283,6 +283,10 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private readonly AnimatedContextMenuStrip _mainMenu = new();
     private readonly ToolStripMenuItem _deleteNestedInstanceMenuItem = new("Delete");
     private readonly ToolStripMenuItem _breakApartMenuItem = new("Break Apart");
+    private readonly ToolStripMenuItem _convertToSymbolMenuItem = new("Convert to Symbol")
+    {
+        Tag = ShortcutCommandIds.ConvertToSymbol
+    };
     private readonly ToolStripMenuItem _lineGroupMenuItem = new("Line");
     private readonly ToolStripMenuItem _transformGroupMenuItem = new("Transform");
     private readonly ToolStripMenuItem _flipHorizontalMenuItem = new("Flip Horizontal");
@@ -318,7 +322,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private FlowLayoutPanel? _brushToolFlyout;
     private Panel? _vaultDrawer;
     private SvgIconButton? _vaultButton;
-    private ToolMode _tool = ToolMode.Select;
+    private ToolMode _tool = ToolMode.ObjectSelect;
     private ToolMode _activeShapeTool = ToolMode.Rectangle;
     private ToolMode _activeLineTool = ToolMode.Line;
     private ToolMode _activeBrushTool = ToolMode.Brush;
@@ -1015,6 +1019,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _stageContextMenu.Items.AddRange(new ToolStripItem[]
         {
             _deleteNestedInstanceMenuItem,
+            _convertToSymbolMenuItem,
             _breakApartMenuItem,
             _lineGroupMenuItem,
             _transformGroupMenuItem,
@@ -1023,6 +1028,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _deleteNestedInstanceMenuItem.Click += (_, _) =>
             DeleteNestedDrawingObjectInstance(_stageContextMenuNestedInstanceId);
         _breakApartMenuItem.Click += (_, _) => BreakApartStageSelection();
+        _convertToSymbolMenuItem.Click += (_, _) => ConvertStageSelectionToSymbol();
         _flipHorizontalMenuItem.Click += (_, _) => FlipSelectedDrawingObjects(horizontal: true);
         _flipVerticalMenuItem.Click += (_, _) => FlipSelectedDrawingObjects(horizontal: false);
         _bringForwardMenuItem.Click += (_, _) => MoveSelectedDrawingObjectsInStack(1);
@@ -1045,6 +1051,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             _stageContextMenuNestedInstanceId = "";
             _stageContextMenuBreakApartObjects = [];
             _stageContextMenuBreakApartInstances = [];
+            var hasContextSceneInstance = SelectSceneContextInstance(_stageContextMenuLocation);
             if (TryGetStageContextNestedInstance(_stageContextMenuLocation, out var nestedInstance))
             {
                 _stageContextMenuNestedInstanceId = nestedInstance.Id;
@@ -1057,6 +1064,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
             var canDeleteNestedInstance = !string.IsNullOrWhiteSpace(_stageContextMenuNestedInstanceId);
             if (!canDeleteNestedInstance
+                && !hasContextSceneInstance
                 && TryGetStageContextDrawingElement(_stageContextMenuLocation, out var contextElement)
                 && !_selectedElements.Any(hit => hit.Key == contextElement.Key)
                 && !_selectedObjects.Contains(contextElement.Key.ObjectIndex))
@@ -1095,10 +1103,12 @@ internal sealed partial class MainForm : Form, IMessageFilter
                 ? CanMoveSelectedInstancesInStack(-1)
                 : _scene.CanMoveObjectsInLayerStack(drawingTargets, -1, _frame);
             _deleteNestedInstanceMenuItem.Visible = canDeleteNestedInstance;
+            _convertToSymbolMenuItem.Enabled = CanConvertStageSelectionToSymbol();
             _breakApartMenuItem.Visible = breakApartWorkspace && hasBreakApartTarget;
             _breakApartMenuItem.Enabled = canBreakInstances || canBreakObject;
             var containsNonFlippableObject = !canDeleteNestedInstance
-                && drawingTargets.Any(IsWholeObjectOnlyObject);
+                && drawingTargets.Any(index => IsWholeObjectOnlyObject(index)
+                    && _scene.ShapeKind[index] != ShapeKind.Bitmap);
             _flipHorizontalMenuItem.Enabled = commandTargetCount > 0 && !containsNonFlippableObject;
             _flipVerticalMenuItem.Enabled = commandTargetCount > 0 && !containsNonFlippableObject;
             _bringForwardMenuItem.Enabled = canBringForward;
@@ -1875,6 +1885,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             _applicationSettings.Experimental3DEnabled,
             _applicationSettings.ToolbarPosition);
         dialog.SetCodexSettings(_applicationSettings, AppHost.Current?.CodexBridgeStatus ?? "Stopped");
+        dialog.SetSelectionSettings(_applicationSettings.SelectionArrows);
         void PreviewCorners(object? sender, EventArgs e) => ApplyWindowCornerStyle(dialog.SelectedWindowCornerStyle);
         dialog.CornerPreviewChanged += PreviewCorners;
         void PreviewTheme(object? sender, EventArgs e)
@@ -1918,6 +1929,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             AccentSaturationPercent = dialog.SelectedAccentSaturationPercent,
             AccentBrightnessPercent = dialog.SelectedAccentBrightnessPercent,
             SimpleSelectionHighlightEnabled = dialog.SimpleSelectionHighlightEnabled,
+            SelectionArrows = dialog.SelectionSettings,
             Experimental3DEnabled = dialog.Experimental3DEnabled,
             FreeTransformShiftProportionalEnabled = dialog.FreeTransformShiftProportionalEnabled,
             ToolbarPosition = dialog.SelectedToolbarPosition,
@@ -1943,6 +1955,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         if (experimental3DChanged) ApplyExperimental3DSettings();
         AppHost.Current?.ApplyCodexBridgeSettings(settings);
         _stage.SimpleSelectionHighlightEnabled = settings.SimpleSelectionHighlightEnabled;
+        RefreshSelectionArrowPresentation();
         ApplyWindowCornerStyle(settings.WindowCornerStyle);
         Theme.ConfigureColorAdjustments(
             settings.ColorTheme,

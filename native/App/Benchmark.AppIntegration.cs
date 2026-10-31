@@ -422,6 +422,10 @@ internal static partial class Benchmark
             var select = RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]);
             var shortcut = RequireMethod(typeof(MainForm), "HandleInspectorCategoryShortcut", [typeof(Keys)]);
             var undo = RequireMethod(typeof(MainForm), "UndoLastEdit");
+            var propertyNavigation = (Panel)RequireField(typeof(MainForm), "_inspectorPropertyNavigation").GetValue(form)!;
+            var objectButton = propertyNavigation.Controls.OfType<SvgIconButton>()
+                .Single(button => button.Icon == SvgIconKind.InspectorObject);
+            var activate = RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]);
             void Refresh() => update.Invoke(form, [true]);
             void Reveal(int number) => shortcut.Invoke(form, [Keys.Control | Keys.Alt | (Keys)((int)Keys.D1 + number - 1)]);
             void AssertCategory(string expected) => AssertTimeline(category.GetValue(form)?.ToString() == expected,
@@ -434,6 +438,14 @@ internal static partial class Benchmark
                 select.Invoke(form, [index, false]);
                 Refresh();
             }
+            Refresh();
+            AssertTimeline(!objectButton.Enabled, "Object navigation must be disabled without an inspection target.");
+            Reveal(7);
+            Reveal(1);
+            AssertCategory("Document");
+            activate.Invoke(form, [ToolMode.Rectangle]);
+            AssertCategory("Tools");
+            AssertTimeline(!objectButton.Enabled, "Choosing a tool enabled Object without an inspection target.");
             int UndoCount()
             {
                 var stack = RequireField(typeof(MainForm), "_undoStack").GetValue(form)!;
@@ -459,6 +471,7 @@ internal static partial class Benchmark
                 AssertCategory("Document");
                 Select(index);
                 AssertCategory("None");
+                AssertTimeline(objectButton.Enabled, "A selected object did not enable Object navigation.");
                 AssertOrder();
                 foreach (var manual in new[] { (6, "Tools"), (7, "Document"), (2, "Color") })
                 {
@@ -518,6 +531,14 @@ internal static partial class Benchmark
             AssertTimeline(drawing.ShapeKind[text] == ShapeKind.Text, "Local resizing converted native text to a path.");
             Near(drawing.Width[text], 300, "Text local width");
             RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.Text]);
+            AssertCategory("Tools");
+            AssertTimeline(!objectButton.Enabled, "Tool activation retained a stale editable Object entry.");
+            Reveal(1);
+            AssertCategory("Tools");
+            RequireMethod(typeof(MainForm), "RequestObjectInspectorForSelection").Invoke(form, null);
+            Refresh();
+            AssertCategory("None");
+            AssertTimeline(objectButton.Enabled, "An explicit object action did not restore Object navigation.");
             var defaultsSize = textDefaults.FontSizePoints;
             textProperties.SetSettings(textProperties.FontFamilyName, 36, TextFontStyle.Bold, TextHorizontalAlignment.Center);
             RequireMethod(typeof(MainForm), "ApplyTextSettingsChange").Invoke(form, null);
@@ -526,6 +547,7 @@ internal static partial class Benchmark
             Reveal(6);
             var beforeDefaults = UndoCount();
             textDefaults.SetSettings(textDefaults.FontFamilyName, 18, TextFontStyle.Italic, TextHorizontalAlignment.Right);
+            ((ModernNumericUpDown)RequireField(typeof(TextSettingsPanel), "_fontSize").GetValue(textDefaults)!).Value = 20;
             Refresh();
             AssertTimeline(UndoCount() == beforeDefaults && drawing.TryGetTextObjectData(text, out editedText)
                 && editedText.FontSizePoints == 36, "Text tool defaults mutated selected text or undo history.");
@@ -579,6 +601,8 @@ internal static partial class Benchmark
                 "Image display mode did not retain shared-asset undo.");
             CheckSelection(bitmap);
             Select(-1);
+            AssertCategory("Tools");
+            AssertTimeline(!objectButton.Enabled, "Deselecting left Object navigation enabled.");
             Reveal(7);
             AssertCategory("Document");
             select.Invoke(form, [bitmap, true]);

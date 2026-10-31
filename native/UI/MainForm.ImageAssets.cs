@@ -11,15 +11,24 @@ internal sealed partial class MainForm
 
     private bool TryPasteClipboardImage()
     {
-        // Preserve application object/Cel copies until the system clipboard changes.
-        if (_internalClipboardSequence == GetClipboardSequenceNumber()) return false;
+        if (ContainsFocusedEditor(this)) return false;
+        var sequence = GetClipboardSequenceNumber();
+        if (sequence != 0 && _internalClipboardSequence == sequence) return false;
+        _internalClipboardSequence = null;
+        _clipboardObjects.Clear();
+        _clipboardDrawingObjectInstances.Clear();
+        _timelineClipboard = null;
+        if (_playing || HasActiveCanvasPointerInteraction() || _materialEditSession is not null) return true;
         try
         {
-            return PasteClipboardImage(Clipboard.GetDataObject());
+            var clipboard = Clipboard.GetDataObject();
+            return TryPasteClipboardFiles(clipboard) || PasteClipboardImage(clipboard);
         }
         catch (Exception exception) when (exception is System.Runtime.InteropServices.ExternalException
-            or ArgumentException or System.IO.IOException or InvalidDataException or OutOfMemoryException)
+            or ArgumentException or IOException or InvalidDataException or OutOfMemoryException
+            or NotSupportedException or UnauthorizedAccessException or InvalidOperationException)
         {
+            AppLog.Error("Unable to paste clipboard resource.", exception);
             ShowImageAssetError("The image could not be pasted.", exception.Message);
             return true;
         }
@@ -27,6 +36,7 @@ internal sealed partial class MainForm
 
     private bool PasteClipboardImage(IDataObject? clipboard)
     {
+        if (_playing || HasActiveCanvasPointerInteraction() || _materialEditSession is not null) return true;
         using var image = ReadClipboardImage(clipboard);
         if (image is null) return false;
         if (!EnsureImagePlacementAllowed()) return true;
@@ -94,9 +104,18 @@ internal sealed partial class MainForm
         }
         finally
         {
-            if (!placed && asset is not null) _project.TryRemoveImageAsset(asset.Id, out _);
-            ProjectTemporaryResources.RejectReparsePath(sourcePath);
-            File.Delete(sourcePath);
+            try
+            {
+                if (!placed && asset is not null)
+                {
+                    _project.TryRemoveImageAsset(asset.Id, out _);
+                    _libraryVaultPanel.RefreshProjectObjects();
+                }
+            }
+            finally
+            {
+                DeleteClipboardStagingFile(sourcePath);
+            }
         }
     }
 
@@ -119,34 +138,6 @@ internal sealed partial class MainForm
             return Convert.ToHexString(hash.GetHashAndReset());
         }
         finally { image.UnlockBits(pixels); }
-    }
-
-    internal static Bitmap? ReadClipboardImage(IDataObject? clipboard)
-    {
-        if (clipboard is null) return null;
-        // PNG carries alpha that the Windows Bitmap conversion can discard.
-        if (clipboard.GetDataPresent("PNG", autoConvert: false))
-        {
-            var payload = clipboard.GetData("PNG", autoConvert: false);
-            if (payload is byte[] bytes)
-            {
-                using var stream = new MemoryStream(bytes, writable: false);
-                using var decoded = Image.FromStream(stream);
-                return CloneClipboardImage(decoded);
-            }
-            if (payload is Stream source)
-            {
-                var position = source.CanSeek ? source.Position : 0;
-                try
-                {
-                    if (source.CanSeek) source.Position = 0;
-                    using var decoded = Image.FromStream(source);
-                    return CloneClipboardImage(decoded);
-                }
-                finally { if (source.CanSeek) source.Position = position; }
-            }
-        }
-        return clipboard.GetData(DataFormats.Bitmap) is Image bitmap ? CloneClipboardImage(bitmap) : null;
     }
 
     private static Bitmap CloneClipboardImage(Image image)

@@ -15,8 +15,8 @@ internal sealed partial class Direct2DStageRenderer
         _target.PushAxisAlignedClip(CanvasRect(visible), AntialiasMode.Aliased);
         try
         {
-            if (canvas.Settings.BackgroundKind == SceneBackgroundKind.None
-                || GdiColor.FromArgb(canvas.Settings.ColorArgb).A < 255)
+            if (!stage.RenderingCanvasOutput && (canvas.Settings.BackgroundKind == SceneBackgroundKind.None
+                || GdiColor.FromArgb(canvas.Settings.ColorArgb).A < 255))
             {
                 using var checker = _target.CreateBitmapBrush(BitmapObjectBitmap(SceneCanvasCheckerboard.Raster));
                 checker.ExtendModeX = ExtendMode.Wrap;

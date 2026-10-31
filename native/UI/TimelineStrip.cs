@@ -388,8 +388,11 @@ internal sealed partial class TimelineStrip : Control
     private bool _frameWidthCommitPending;
     private decimal _playbackFps = 30m;
     private HeaderLayoutKey? _headerLayoutKey;
+    private (bool Enabled, bool Available, bool RangeVisible, int First, int Last)? _motionTrackPresentation;
 
     public event EventHandler? CurrentFrameChanged;
+    internal event EventHandler? PlayheadScrubCompleted;
+    internal bool IsScrubbingPlayhead => _draggingPlayhead;
     public event EventHandler? ActiveLayerChanged;
     public event EventHandler? LayerVisibilityChanged;
     public event EventHandler? AddLayerRequested;
@@ -1159,11 +1162,17 @@ internal sealed partial class TimelineStrip : Control
     /// </summary>
     public void RefreshMotionTrackControls()
     {
+        var presentation = (MotionTrackEnabled, MotionTrackToggleAvailable, MotionTrackRangeVisible,
+            MotionTrackRangeVisible ? MotionTrackRangeFirst : 0,
+            MotionTrackRangeVisible ? MotionTrackRangeLast : 0);
         var motionHint = UiLocalization.T(MotionTrackToggleAvailable
             ? "Show the selected symbol's motion track on the Stage"
             : "Place a symbol instance from the Vault in the current workspace to enable motion track.");
-        _motionTrackToggle.AccessibleDescription = motionHint;
-        _layerControlToolTip.SetToolTip(_motionTrackToggle, motionHint);
+        if (_motionTrackToggle.AccessibleDescription != motionHint)
+        {
+            _motionTrackToggle.AccessibleDescription = motionHint;
+            _layerControlToolTip.SetToolTip(_motionTrackToggle, motionHint);
+        }
         _updatingMotionTrackControls = true;
         try
         {
@@ -1184,7 +1193,11 @@ internal sealed partial class TimelineStrip : Control
         if (MotionTrackRangeVisible || _onionSkinRangeAbsoluteApplied) RefreshOnionSkinControls();
 
         LayoutHeaderControls(CreateLayout(), IsOnionSkinControlsAvailable());
-        Invalidate();
+        if (_motionTrackPresentation != presentation)
+        {
+            _motionTrackPresentation = presentation;
+            Invalidate();
+        }
     }
 
     private void ResetOnionSkinRangeHandleInteraction()
@@ -2577,6 +2590,7 @@ internal sealed partial class TimelineStrip : Control
 
         var selectionNotificationPending = _frameSelectionNotificationPending;
         var selectionFramePending = _frameSelectionFramePending;
+        var playheadScrubWasActive = _draggingPlayhead;
         _frameSelectionNotificationPending = false;
         _frameSelectionFramePending = false;
         _frameSelectionDragEnd = null;
@@ -2621,6 +2635,7 @@ internal sealed partial class TimelineStrip : Control
             UpdateSelectedTweenFromFrameSelection();
             FrameSelectionChanged?.Invoke(this, EventArgs.Empty);
         }
+        if (playheadScrubWasActive) PlayheadScrubCompleted?.Invoke(this, EventArgs.Empty);
     }
 
     private bool TryBeginFrameTransform(Point location, TimelineLayout layout)
@@ -4812,8 +4827,10 @@ internal sealed partial class TimelineStrip : Control
     private void InvalidateFrameTransition(int previousFrame, int nextFrame)
     {
         var layout = CreateLayout();
-        var headerBounds = new Rectangle(0, 0, Width, ToolbarHeaderHeight);
-        if (headerBounds.Width > 0 && headerBounds.Height > 0) Invalidate(headerBounds);
+        var previousTimeBounds = CursorTimeBounds(layout, previousFrame);
+        var nextTimeBounds = CursorTimeBounds(layout, nextFrame);
+        if (!previousTimeBounds.IsEmpty) Invalidate(previousTimeBounds);
+        if (!nextTimeBounds.IsEmpty) Invalidate(nextTimeBounds);
         InvalidateRulerFrameColumn(layout, previousFrame);
         InvalidateRulerFrameColumn(layout, nextFrame);
         InvalidateOnionSkinRangeTransition(layout, previousFrame, nextFrame);
@@ -5092,6 +5109,7 @@ internal sealed partial class TimelineStrip : Control
             TickFrequency = 4,
             Value = FrameCellWidth,
             Height = Theme.ControlHeightCompact,
+            BackColor = Theme.Panel,
             AccessibleName = "Timeline frame width"
         };
     }

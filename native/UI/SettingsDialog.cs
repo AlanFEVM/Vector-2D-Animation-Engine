@@ -12,6 +12,8 @@ internal sealed class SettingsDialog : ModernDialogForm
     private string _selectedShortcutProfileId;
     private ShortcutProfileRecord[] _customShortcutProfiles;
     private bool _freeTransformShiftProportionalEnabled;
+    public SelectionArrowSettings SelectionSettings { get; private set; } = new();
+    internal void SetSelectionSettings(SelectionArrowSettings settings) => SelectionSettings = settings.Normalized();
     public ToolbarPosition SelectedToolbarPosition { get; private set; }
     private readonly ModernToggleSwitch _simpleSelectionHighlight = new() { Text = "Simple selection highlight", Dock = DockStyle.Fill, AutoSize = true, ForeColor = Theme.Text };
     private readonly Button _squareCorners = new SegmentedButton { Text = "Square corners" };
@@ -244,6 +246,19 @@ internal sealed class SettingsDialog : ModernDialogForm
         cornerSelector.Controls.Add(_subtleRoundedCorners, 1, 0);
         content.Controls.Add(CreateOptionRow("Personalization", cornerSelector), 0, 9);
 
+        var selectionPreferences = CreatePanelButton("Selection and editing", "Configure black and white selection arrows");
+        selectionPreferences.Click += (_, _) =>
+        {
+            using var dialog = new SelectionPreferencesDialog(SelectionSettings);
+            if (dialog.ShowDialog(this) == DialogResult.OK) SelectionSettings = dialog.SelectedSettings;
+        };
+        selectionPreferences.Margin = new Padding(4, 0, 4, 0);
+        settingsPanels.ColumnCount = 3;
+        settingsPanels.ColumnStyles.Clear();
+        for (var column = 0; column < 3; column++)
+            settingsPanels.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+        settingsPanels.SetColumn(shortcutProfiles, 2);
+        settingsPanels.Controls.Add(selectionPreferences, 1, 0);
         KeepSettingsEditorsVisible(content, generalScroll);
         var save = AddDialogAction("Save", DialogResult.OK, DialogActionStyle.Primary);
         var cancel = AddDialogAction("Cancel", DialogResult.Cancel);

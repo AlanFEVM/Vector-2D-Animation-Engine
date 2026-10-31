@@ -95,7 +95,6 @@ internal sealed partial class TimelineStrip : Control
         using var gutterBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(28, 31, 34), Theme.PanelStrong));
         using var borderPen = new Pen(ThemeNeutral(Color.FromArgb(82, 91, 96), Theme.BorderHover));
         using var softPen = new Pen(ThemeNeutral(Color.FromArgb(48, 54, 58), Theme.Border));
-        using var titleFont = Theme.UiFont(10, FontStyle.Bold);
 
         var headerPaintBounds = Rectangle.Intersect(layout.HeaderBounds, clipBounds);
         var gutterPaintBounds = Rectangle.Intersect(layout.GutterBounds, clipBounds);
@@ -114,6 +113,14 @@ internal sealed partial class TimelineStrip : Control
         DrawHeightResizeHandle(graphics);
         DrawGutterSplitterHandle(graphics, layout);
 
+        if (graphics.IsVisible(new Rectangle(0, 0, Width, ToolbarHeaderHeight)))
+            DrawToolbarHeader(graphics, layout);
+        DrawTabGroupBar(graphics, layout, clipBounds);
+    }
+
+    private void DrawToolbarHeader(Graphics graphics, TimelineLayout layout)
+    {
+        using var titleFont = Theme.UiFont(10, FontStyle.Bold);
         var allBounds = AllButtonBounds(layout);
         var soloBounds = SoloButtonBounds(layout);
         var addLayerBounds = AddLayerButtonBounds(layout);
@@ -121,11 +128,12 @@ internal sealed partial class TimelineStrip : Control
         if (_shotFilterActive)
         {
             var titleRight = Math.Max(42, addFolderLayerBounds.Left - 6);
-            TextRenderer.DrawText(
-                graphics, UiLocalization.T("Cameras"), titleFont,
-                Rectangle.FromLTRB(10, 1, titleRight, ToolbarHeaderHeight - 1),
-                Theme.ReadableText(Theme.Panel, Theme.Text),
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
+            var titleBounds = Rectangle.FromLTRB(10, 1, titleRight, ToolbarHeaderHeight - 1);
+            if (graphics.IsVisible(titleBounds))
+                TextRenderer.DrawText(
+                    graphics, UiLocalization.T("Cameras"), titleFont,
+                    titleBounds, Theme.ReadableText(Theme.Panel, Theme.Text),
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         }
         else
         {
@@ -160,6 +168,22 @@ internal sealed partial class TimelineStrip : Control
 
         DrawToolbarGroupSeparators(graphics, layout);
         var timeText = FormatCursorTimeSeconds(CurrentFrame, PlaybackFps);
+        var timeBounds = CursorTimeBounds(layout, CurrentFrame);
+        if (!timeBounds.IsEmpty && graphics.IsVisible(timeBounds))
+        {
+            TextRenderer.DrawText(
+                graphics,
+                timeText,
+                Font,
+                timeBounds,
+                Theme.ReadableText(Theme.Panel, Theme.AccentLabel),
+                TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
+        }
+    }
+
+    private Rectangle CursorTimeBounds(TimelineLayout layout, int frame)
+    {
+        var timeText = FormatCursorTimeSeconds(frame, PlaybackFps);
         var timeWidth = TextRenderer.MeasureText(
                 timeText,
                 Font,
@@ -174,20 +198,9 @@ internal sealed partial class TimelineStrip : Control
                 || ReferenceEquals(control, _motionTrackToggle) || ReferenceEquals(control, _onionSkinToggle)
                 || ReferenceEquals(control, _onionNextFrames)))
             .Select(control => control.Right).DefaultIfEmpty(HeaderControlsLeft()).Max();
-        var showTime = timeRight - animationRight >= timeWidth + ScaleTimelineMetric(24);
-        var timeLeft = timeRight - timeWidth;
-        if (showTime)
-        {
-            TextRenderer.DrawText(
-                graphics,
-                timeText,
-                Font,
-                Rectangle.FromLTRB(timeLeft, 1, timeRight, ToolbarHeaderHeight - 1),
-                Theme.ReadableText(Theme.Panel, Theme.AccentLabel),
-                TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
-        }
-
-        DrawTabGroupBar(graphics, layout, clipBounds);
+        return timeRight - animationRight >= timeWidth + ScaleTimelineMetric(24)
+            ? Rectangle.FromLTRB(timeRight - timeWidth, 1, timeRight, ToolbarHeaderHeight - 1)
+            : Rectangle.Empty;
     }
 
     private void DrawToolbarGroupSeparators(Graphics graphics, TimelineLayout layout)
@@ -281,6 +294,7 @@ internal sealed partial class TimelineStrip : Control
 
     private void DrawRuler(Graphics graphics, TimelineLayout layout, Rectangle clipBounds)
     {
+        if (!graphics.IsVisible(new Rectangle(0, HeaderHeight, Width, layout.RowTop - HeaderHeight))) return;
         using var rulerBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(23, 26, 29), Theme.Top));
         using var majorBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(32, 37, 40), Theme.PanelStrong));
         using var selectedBrush = new SolidBrush(Color.FromArgb(90, EditingHighlightColor));
@@ -665,6 +679,7 @@ internal sealed partial class TimelineStrip : Control
 
     private void DrawTrackRows(Graphics graphics, TimelineLayout layout, Rectangle clipBounds)
     {
+        if (!graphics.IsVisible(new Rectangle(0, layout.RowTop, layout.TrackRight, layout.RowBottom - layout.RowTop))) return;
         using var rowBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(29, 32, 35), Theme.Panel));
         using var alternateRowBrush = new SolidBrush(ThemeNeutral(
             Color.FromArgb(32, 35, 38),
@@ -2052,7 +2067,7 @@ internal sealed partial class TimelineStrip : Control
     {
         using var font = Theme.UiFont(7.5f, FontStyle.Bold);
         var bounds = PlayheadFrameLabelBounds(layout, CurrentFrame, font);
-        if (bounds.IsEmpty) return;
+        if (bounds.IsEmpty || !graphics.IsVisible(bounds)) return;
         var label = CurrentFrame.ToString(CultureInfo.CurrentCulture);
         var bullet = ScaleTimelineMetric(4);
         var gap = ScaleTimelineMetric(4);

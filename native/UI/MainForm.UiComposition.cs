@@ -17,11 +17,12 @@ internal sealed partial class MainForm
             new(_textSettingsPanel, _textSettingsPanel.PreferredHeight),
             new(_tweenCurveEditorPanel, _tweenCurveEditorPanel.PreferredPanelHeight),
             new(_imageInspector, _imageInspector.PreferredHeight),
+            new(_objectAppearancePanel, _objectAppearancePanel.PreferredHeight),
             new(_objectGeometryPanel, _objectGeometryPanel.PreferredHeight)
         ]);
         foreach (var control in new Control[]
         {
-            _objectInspector, _objectGeometryPanel, _brushTipPanel, _drawingObjectInstancePanel, _textSettingsPanel,
+            _objectInspector, _objectGeometryPanel, _objectAppearancePanel, _brushTipPanel, _drawingObjectInstancePanel, _textSettingsPanel,
             _mixingBrushSettingsPanel, _drawSettingsPanel, _shapeSettingsPanel,
             _tweenCurveEditorPanel, _imageInspector
         }) control.Visible = false;
@@ -85,7 +86,7 @@ internal sealed partial class MainForm
         _basicInspectorPage.Content,
         [
             _objectInspector, _tweenCurveEditorPanel, _drawingObjectInstancePanel,
-            _spatialMaterialPanel, _textSettingsPanel, _imageInspector, _objectGeometryPanel
+            _spatialMaterialPanel, _textSettingsPanel, _imageInspector, _objectAppearancePanel, _objectGeometryPanel
         ]);
 
     private void ArrangeSceneMaskInspectorPanels() => UiComposition.OrderVertical(

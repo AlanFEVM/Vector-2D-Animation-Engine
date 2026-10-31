@@ -130,6 +130,7 @@ internal static class HotReloadModuleResolver
         nameof(SceneLayerKind),
         nameof(SceneShotDefinition),
         nameof(SceneShotParallaxSettings),
+        nameof(SceneShotMicroMotionSettings),
         nameof(SceneShotAspectRatio),
         nameof(SceneShotRange),
         nameof(SceneShotSnapshot),
@@ -252,6 +253,7 @@ internal static class HotReloadModuleResolver
             or nameof(CameraParallaxLayerEventArgs)
             or nameof(ShotDirectorState)
             or nameof(ShotDirectorItem)
+            or nameof(ShotDirectorMicroMotionEventArgs)
             or nameof(ShotDirectorLayer)
             or nameof(ShotDirectorExposure)
             or nameof(ShotDirectorEventArgs)
@@ -284,6 +286,7 @@ internal static class HotReloadModuleResolver
             or nameof(ToolContextPanel)
             or nameof(ToolOptionKind)
             or nameof(ObjectGeometryPanel)
+            or nameof(ObjectAppearancePanel)
             or nameof(ObjectTransformField)
             or nameof(ImageInspectorPanel)
             or nameof(ImageInspectorState)
@@ -309,6 +312,8 @@ internal static class HotReloadModuleResolver
             or nameof(LayerBlendModePanel)
             or nameof(DocumentInfoPanel)
             or nameof(DocumentInfo)
+            or nameof(EnterPlaybackViewSettings)
+            or nameof(EnterPlaybackFitMode)
             or nameof(DrawingObjectInstancePanel)
             or nameof(SymbolFiltersPanel)
             or nameof(SymbolFiltersChangedEventArgs)
@@ -345,6 +350,9 @@ internal static class HotReloadModuleResolver
             or nameof(AcknowledgementsDialog)
             or nameof(SettingsDialog)
             or nameof(OperationPreferencesDialog)
+            or nameof(SelectionPreferencesDialog)
+            or nameof(SelectionArrowSettings)
+            or nameof(SelectionArrowBehavior)
             or nameof(ShortcutProfilesDialog)
             or nameof(CodexIntegrationPanel)
             or nameof(CodexBridgeServer)
@@ -431,6 +439,7 @@ internal static class HotReloadModuleResolver
             or nameof(SceneShotDefinition)
             or nameof(SceneShotAspectRatio)
             or nameof(SceneShotParallaxSettings)
+            or nameof(SceneShotMicroMotionSettings)
             or nameof(SceneShotRange)
             or nameof(SceneShotSnapshot)
             or nameof(SceneObjectInstanceDefinition)

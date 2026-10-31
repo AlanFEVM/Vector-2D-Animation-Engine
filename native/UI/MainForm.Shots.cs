@@ -47,6 +47,9 @@ internal sealed partial class MainForm
                 return;
             }
             CompleteSceneShotEdit();
+            _shotPlaybackPreviewRestoreMode = null;
+            _shotPlaybackPreviewOverridden = _playing;
+            if (!_enterPlaybackViewActive) _stage.SetEnterPlaybackViewSettings(null);
             _stage.SetShotWorkspacePreviewMode(_shotDirectorPanel.PreviewMode);
             _shotDirectorPanel.SetPreviewMode(_stage.ShotPreviewMode, _stage.CanPreviewPlanarShot);
             ClearSelection();
@@ -71,6 +74,8 @@ internal sealed partial class MainForm
         _shotDirectorPanel.ShotPropertiesCommitted += (_, e) => ApplySceneShotProperties(e);
         _shotDirectorPanel.ShotEditStarted += (_, _) => BeginSceneShotEdit(ActiveScene());
         _shotDirectorPanel.ShotEditCompleted += (_, _) => CompleteSceneShotEdit();
+        _shotDirectorPanel.ShotEditCanceled += (_, _) => CancelSceneShotEdit();
+        _shotDirectorPanel.ShotMicroMotionCommitted += (_, e) => ApplySceneShotMicroMotion(e);
         _shotDirectorPanel.ShotFramingCommitted += (_, e) => ApplySceneShotFraming(e);
         _shotDirectorPanel.ShotFramingResetRequested += (_, e) => ResetSceneShotFraming(e.ShotId);
         InitializeCameraParallax();
@@ -210,7 +215,7 @@ internal sealed partial class MainForm
         if (keyData != Keys.Enter || !_shotDirectorVisible
             || ContainsFocusedButton(this) || HasActiveCanvasPointerInteraction()) return false;
         CompleteSceneShotEdit();
-        TogglePlayback();
+        TogglePlaybackCore(fromEnter: true);
         return true;
     }
 
@@ -250,7 +255,7 @@ internal sealed partial class MainForm
         if (!IsSceneWorkspaceSelected) return;
         FinishPointerInteractionForContextChange();
         RefreshShotDirector(force: true);
-        if (IsShotDirectorContext() && _tool is not (ToolMode.Select or ToolMode.Transform or ToolMode.Hand))
+        if (IsShotDirectorContext() && _tool is not (ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform or ToolMode.Hand))
             _tool = ToolMode.Select;
         RefreshToolButtons();
         ApplyToolCursor();
@@ -470,6 +475,7 @@ internal sealed partial class MainForm
             hash.Add(shot.Name, StringComparer.Ordinal);
             hash.Add(shot.Detail, StringComparer.Ordinal);
             hash.Add(shot.Settings);
+            hash.Add(shot.MicroMotion);
             foreach (var keyframe in shot.StateKeyframes)
             {
                 hash.Add(keyframe.Frame);
@@ -533,6 +539,7 @@ internal sealed partial class MainForm
                 ColorArgb = shot?.ColorArgb ?? SceneShotDefinition.DefaultColorArgb,
                 IsActive = string.Equals(range.ShotId, _activeShotId, StringComparison.Ordinal),
                 Framing = framing,
+                MicroMotion = shot?.MicroMotion ?? new(),
                 FramingEditable = shot is not null && IsShotFramingEditable(scene, range.ShotId),
                 KeyframeCount = track?.Keyframes.Count(keyframe => keyframe.Kind == TimelineKeyframeKind.Populated) ?? 0,
                 TweenCount = track?.Tweens.Count(tween => tween.Kind == TimelineTweenKind.Classic) ?? 0
@@ -758,6 +765,7 @@ internal sealed partial class MainForm
                 || !string.Equals(left.Detail, right.Detail, StringComparison.Ordinal)
                 || left.DurationFrames != right.DurationFrames
                 || left.Settings != right.Settings
+                || left.MicroMotion != right.MicroMotion
                 || !left.StateKeyframes.SequenceEqual(right.StateKeyframes))
             {
                 return false;

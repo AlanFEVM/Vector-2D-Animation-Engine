@@ -35,6 +35,7 @@ internal static partial class Benchmark
             || !MainForm.AllowsPressureBrushPointerInput(WorkspaceView.SceneEditor, sceneMaskEditing: false, sceneDrawingEditing: true)
             || !sceneVisibleTools.SetEquals(
                 [
+                    ToolMode.ObjectSelect,
                     ToolMode.Select,
                     ToolMode.PolygonLasso,
                     ToolMode.FreehandLasso,
@@ -229,7 +230,7 @@ internal static partial class Benchmark
                 .Select(control => (ToolMode)control.Tag!)
                 .ToArray();
             static bool IsSelectionTool(ToolMode tool) =>
-                tool is ToolMode.Select
+                tool is ToolMode.ObjectSelect or ToolMode.Select
                     or ToolMode.PolygonLasso
                     or ToolMode.FreehandLasso
                     or ToolMode.Transform
@@ -357,6 +358,8 @@ internal static partial class Benchmark
                 || !TryShortcut(Keys.Q)
                 || toolField.GetValue(form) is not ToolMode.Transform
                 || !TryShortcut(Keys.V)
+                || toolField.GetValue(form) is not ToolMode.ObjectSelect
+                || !TryShortcut(Keys.A)
                 || toolField.GetValue(form) is not ToolMode.Select)
             {
                 throw new InvalidOperationException(
@@ -385,6 +388,7 @@ internal static partial class Benchmark
             if (!selectionFlyout.Visible
                 || !VisibleFlyoutTools(selectionFlyout).ToHashSet().SetEquals(
                     [
+                        ToolMode.ObjectSelect,
                         ToolMode.Select,
                         ToolMode.PolygonLasso,
                         ToolMode.FreehandLasso,
@@ -411,7 +415,7 @@ internal static partial class Benchmark
             if (dimensionButton.Text != "3D"
                 || !HasScenePalette(VisiblePaletteTools())
                 || !VisibleFlyoutTools(selectionFlyout).ToHashSet().SetEquals(
-                    [ToolMode.Select, ToolMode.Transform3D])
+                    [ToolMode.ObjectSelect, ToolMode.Select, ToolMode.Transform3D])
                 || spatialTransformPanel.Visible
                 || spatialTransformPanel.FloatingVisibilityRequested
                 || spatialTransformPanel.FloatingMotionActive
@@ -526,6 +530,7 @@ internal static partial class Benchmark
                 || !referenceViewPad.Visible
                 || !VisibleFlyoutTools(selectionFlyout).ToHashSet().SetEquals(
                     [
+                        ToolMode.ObjectSelect,
                         ToolMode.Select,
                         ToolMode.PolygonLasso,
                         ToolMode.FreehandLasso,
@@ -536,7 +541,14 @@ internal static partial class Benchmark
                 || transform2DButton.Tag is ToolMode.Transform3D)
             {
                 throw new InvalidOperationException(
-                    "Returning from 3D did not restore the 2D Transform tool, view pad, and hidden-tool state.");
+                    "Returning from 3D did not restore the 2D Transform tool, view pad, and hidden-tool state: "
+                    + $"dimension={dimensionButton.Text}, projectionVisible={projectionButton.Visible}, "
+                    + $"projectionEnabled={projectionButton.Enabled}, camera={projectionScene.Camera.Projection}, "
+                    + $"referenceDimension={stage.ReferenceDimension}, front={stage.UsesSpatialFrontProjection}, "
+                    + $"reference={stage.UsesReferenceProjection}, effective={stage.EffectiveReferenceProjection}, "
+                    + $"tool={toolField.GetValue(form)}, spatialPanel={spatialTransformPanel.Visible}, "
+                    + $"viewPad={referenceViewPad.Visible}, flyout={string.Join(',', VisibleFlyoutTools(selectionFlyout))}, "
+                    + $"parent={selectionGroup.GetType().GetProperty("ParentButton")?.GetValue(selectionGroup)}.");
             }
 
             stage.SetReferenceViewDirection(ReferenceViewDirection.Right);
@@ -549,7 +561,7 @@ internal static partial class Benchmark
             var sideViewPolygonLassoActivated = toolField.GetValue(form) is ToolMode.PolygonLasso;
             activateTool.Invoke(form, [ToolMode.FreehandLasso]);
             var sideViewFreehandLassoActivated = toolField.GetValue(form) is ToolMode.FreehandLasso;
-            if (!sideViewTools.SequenceEqual([ToolMode.Select])
+            if (!sideViewTools.SequenceEqual([ToolMode.ObjectSelect, ToolMode.Select])
                 || sideViewTransformShortcutActivated
                 || sideViewPolygonLassoActivated
                 || sideViewFreehandLassoActivated
@@ -570,7 +582,7 @@ internal static partial class Benchmark
             Application.DoEvents();
             var topViewTools = VisibleFlyoutTools(selectionFlyout);
             activateTool.Invoke(form, [ToolMode.PolygonLasso]);
-            if (!topViewTools.SequenceEqual([ToolMode.Select])
+            if (!topViewTools.SequenceEqual([ToolMode.ObjectSelect, ToolMode.Select])
                 || toolField.GetValue(form) is ToolMode.PolygonLasso)
             {
                 throw new InvalidOperationException(
@@ -584,6 +596,7 @@ internal static partial class Benchmark
             Application.DoEvents();
             if (!VisibleFlyoutTools(selectionFlyout).ToHashSet().SetEquals(
                     [
+                        ToolMode.ObjectSelect,
                         ToolMode.Select,
                         ToolMode.PolygonLasso,
                         ToolMode.FreehandLasso,
@@ -655,6 +668,7 @@ internal static partial class Benchmark
             if (!stage.UsesReferenceProjection
                 || !VisibleFlyoutTools(selectionFlyout).ToHashSet().SetEquals(
                     [
+                        ToolMode.ObjectSelect,
                         ToolMode.Select,
                         ToolMode.PolygonLasso,
                         ToolMode.FreehandLasso,
@@ -906,6 +920,7 @@ internal static partial class Benchmark
                 || spatialTransformPanel.Visible
                 || !maskSelectionTools.ToHashSet().SetEquals(
                     [
+                        ToolMode.ObjectSelect,
                         ToolMode.Select,
                         ToolMode.PolygonLasso,
                         ToolMode.FreehandLasso,
@@ -3606,7 +3621,7 @@ internal static partial class Benchmark
             .Where(MainForm.SupportsMarqueeSelection)
             .ToHashSet();
         AssertTimeline(
-            supportedTools.SetEquals([ToolMode.Select, ToolMode.Transform, ToolMode.Distort])
+            supportedTools.SetEquals([ToolMode.ObjectSelect, ToolMode.Select, ToolMode.Transform, ToolMode.Distort])
             && MainForm.ShouldShowFillEdgeBezierOverlay(ToolMode.Select, 1, hasEditableFillBoundarySelection: true)
             && !MainForm.ShouldShowFillEdgeBezierOverlay(ToolMode.Select, 2, hasEditableFillBoundarySelection: true)
             && !MainForm.ShouldShowFillEdgeBezierOverlay(ToolMode.Select, 1, hasEditableFillBoundarySelection: false)
@@ -9288,9 +9303,12 @@ internal static partial class Benchmark
         stage.SetVisibleWorldWidth(1_600);
         stage.Update();
         Application.DoEvents();
+        stage.Refresh();
+        Application.DoEvents();
         if (!stage.LastFrameUsedDirect2D || stage.LastStats.TileLod)
         {
-            throw new InvalidOperationException("Marquee preview setup did not begin on the detailed Direct2D object path.");
+            throw new InvalidOperationException("Marquee preview setup did not begin on the detailed Direct2D object path: "
+                + $"direct2D={stage.LastFrameUsedDirect2D}, tileLod={stage.LastStats.TileLod}.");
         }
 
         var renderedFrames = 0;

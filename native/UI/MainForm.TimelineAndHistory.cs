@@ -377,7 +377,7 @@ internal sealed partial class MainForm : Form
         switch (keyData)
         {
             case Keys.Enter:
-                TogglePlayback();
+                TogglePlaybackCore(fromEnter: true);
                 return true;
             case Keys.Oemcomma:
                 StopPlayback();
@@ -3733,7 +3733,8 @@ internal sealed partial class MainForm : Form
 
     private void BeginMaterialContinuousEdit()
     {
-        if (_materialEditSession is not null || !IsEditableDrawingContext() || IsTextEditActive()) return;
+        if (_materialEditSession is not null || _drawingToolPaint is null
+            || !IsEditableDrawingContext() || IsTextEditActive()) return;
         _fillMergePendingAfterMaterialEdit = false;
         _lineMergePendingAfterMaterialEdit = false;
         _materialEditSession = new MaterialEditSession
@@ -4682,7 +4683,8 @@ internal sealed partial class MainForm : Form
         }
         var snapshot = CreateCanvasMutationSnapshot();
         if (!TryPrepareSelectedDrawingObjectsForCommand(snapshot, out var targets)
-            || targets.Any(IsWholeObjectOnlyObject)
+            || targets.Any(index => IsWholeObjectOnlyObject(index)
+                && _scene.ShapeKind[index] != ShapeKind.Bitmap)
             || !_scene.FlipObjects(targets, horizontal))
         {
             RestoreCanvasMutationSnapshot(snapshot);

@@ -7,6 +7,7 @@ internal sealed partial class MainForm
     private const int InspectorRailButtonInset = 3;
     private const int InspectorRailButtonGap = 2;
     private const int InspectorRailMinHostWidth = 324;
+    private const int InspectorPropertyButtonHeight = 30;
 
     private enum InspectorCategory
     {
@@ -31,6 +32,7 @@ internal sealed partial class MainForm
     private InspectorCategory _inspectorPropertyCategory = InspectorCategory.None;
     private readonly HashSet<string> _inspectorSelectedInstanceIds = new(StringComparer.Ordinal);
     private bool _objectInspectorSelectionPending;
+    private bool _inspectorToolContextActive;
     private readonly ThemedScrollPanel _colorInspectorPage = new();
     private readonly ThemedScrollPanel _toolInspectorPage = new();
     private readonly TextSettingsPanel _textToolSettingsPanel = new();
@@ -78,6 +80,7 @@ internal sealed partial class MainForm
         }
         _inspectorPropertyNavigation.AccessibleRole = AccessibleRole.PageTabList;
         _inspectorPropertyNavigation.AccessibleName = "Properties pages";
+        _inspectorPropertyNavigation.Paint += PaintInspectorPropertyNavigation;
         _inspectorRail.Controls.Add(_inspectorPropertyNavigation);
         foreach (var category in InspectorPropertyOrder)
         {
@@ -87,6 +90,7 @@ internal sealed partial class MainForm
                 AutoEllipsis = true,
                 TextAlign = ContentAlignment.MiddleCenter,
                 Cursor = Cursors.Hand,
+                IsInspectorSubpage = true,
                 UseMnemonic = false
             };
             Theme.StyleToolbarButton(button);
@@ -109,7 +113,7 @@ internal sealed partial class MainForm
         {
             if (_layingOutInspectorRail || _inspectorCategorySelector.SelectedIndex < 0) return;
             var category = InspectorCategoryOrder[_inspectorCategorySelector.SelectedIndex];
-            RevealInspectorCategory(category == InspectorCategory.None ? _inspectorPropertyCategory : category,
+            RevealInspectorCategory(category == InspectorCategory.None ? AvailableInspectorPropertyCategory() : category,
                 "category selector");
             LayoutInspectorCategoryRail();
         };
@@ -187,7 +191,8 @@ internal sealed partial class MainForm
                 ToolMode.SnapPoint => "Snap Point Tool",
                 _ => ToolPairName(_tool)
             };
-        _toolContextPanel.SetContext(_tool, UiLocalization.T(toolName), ToolIconKind(_tool), CanActivateTool(_tool), _drawSettings);
+        _toolContextPanel.SetContext(_tool, UiLocalization.T(toolName), ToolIconKind(_tool), CanActivateTool(_tool), _drawSettings,
+            _applicationSettings.SelectionArrows.BehaviorFor(_tool));
     }
 
     private void LayoutInspectorCategoryRail()
@@ -204,7 +209,7 @@ internal sealed partial class MainForm
             var width = available ? ScaleResponsive(InspectorRailWidth, scale) : 0;
             var compact = _inspectorPanelOpen && !available;
             var properties = IsInspectorPropertyCategory(_inspectorCategory);
-            var propertyHeight = ScaleResponsive(InspectorRailButtonHeight, scale);
+            var propertyHeight = ScaleResponsive(InspectorPropertyButtonHeight, scale);
             var gap = ScaleResponsive(InspectorRailButtonGap, scale);
             var selectorHeight = compact ? ScaleResponsive(Theme.ControlHeight + 8, scale)
                 + (properties ? propertyHeight + gap : 0) : 0;
@@ -231,7 +236,7 @@ internal sealed partial class MainForm
             if (!ReferenceEquals(_inspectorPropertyNavigation.Parent, propertyParent))
                 propertyParent.Controls.Add(_inspectorPropertyNavigation);
             _inspectorPropertyNavigation.BackColor = SystemInformation.HighContrast
-                ? SystemColors.Control : Theme.PanelStrong;
+                ? SystemColors.Control : Theme.Mix(Theme.PanelStrong, Theme.Accent, 0.06f);
             _inspectorPropertyNavigation.Visible = _inspectorPanelOpen && properties;
             _inspectorPropertyNavigation.AccessibleName = UiLocalization.T("Properties");
             if (compact && properties)
@@ -250,7 +255,7 @@ internal sealed partial class MainForm
                 {
                     var groupHeight = propertyHeight * InspectorPropertyOrder.Length + gap * 2 + inset * 2;
                     _inspectorPropertyNavigation.SetBounds(0, top, Math.Max(1, width), groupHeight);
-                    top += groupHeight + gap;
+                    top += groupHeight + ScaleResponsive(8, scale);
                 }
             }
             for (var index = 0; index < InspectorPropertyOrder.Length; index++)
@@ -259,7 +264,9 @@ internal sealed partial class MainForm
                 var button = _inspectorPropertyButtons[category];
                 var label = InspectorPropertyLabel(category);
                 button.AccessibleName = UiLocalization.T(label);
-                var buttonWidth = ScaleResponsive(InspectorRailWidth - InspectorRailButtonInset * 2, scale);
+                button.Enabled = category != InspectorCategory.None || HasInspectorObjectTarget();
+                button.Cursor = button.Enabled ? Cursors.Hand : Cursors.Default;
+                var buttonWidth = ScaleResponsive(InspectorRailWidth - InspectorRailButtonInset * 2 - 4, scale);
                 if (compact)
                 {
                     var left = _inspectorPropertyNavigation.Width * index / InspectorPropertyOrder.Length;
@@ -268,9 +275,14 @@ internal sealed partial class MainForm
                 }
                 else
                 {
-                    button.SetBounds(inset, inset + index * (propertyHeight + gap), buttonWidth, propertyHeight);
+                    button.SetBounds(inset + ScaleResponsive(4, scale), inset + index * (propertyHeight + gap), buttonWidth, propertyHeight);
                 }
+                Theme.StyleToolbarButton(button, category == _inspectorCategory);
+                button.AccessibleDescription = UiLocalization.T(!button.Enabled
+                    ? "Select an object on the stage to inspect its properties."
+                    : category == _inspectorCategory ? "Visible" : "Hidden");
             }
+            _inspectorPropertyNavigation.Invalidate();
             ApplyInspectorPageVisibility();
             var presentedCategory = _inspectorCategory;
             if (_presentedInspectorCategory != presentedCategory)
@@ -283,12 +295,6 @@ internal sealed partial class MainForm
                         ? UiLocalization.T("Physics is not available.")
                         : $"{UiLocalization.T(InspectorCategoryLabel(id))} {UiLocalization.T(active ? "Visible" : "Hidden")}";
                 }
-                foreach (var (id, button) in _inspectorPropertyButtons)
-                {
-                    var active = id == presentedCategory;
-                    Theme.StyleToolbarButton(button, active);
-                    button.AccessibleDescription = UiLocalization.T(active ? "Visible" : "Hidden");
-                }
                 _presentedInspectorCategory = presentedCategory;
             }
             if (available) _inspectorRail.BringToFront();
@@ -300,6 +306,18 @@ internal sealed partial class MainForm
             host.ResumeLayout(true);
             _layingOutInspectorRail = false;
         }
+    }
+
+    private void PaintInspectorPropertyNavigation(object? sender, PaintEventArgs args)
+    {
+        var group = _inspectorPropertyNavigation;
+        var inset = ScaleResponsive(3, group.DeviceDpi / 96d);
+        using var guide = new Pen(SystemInformation.HighContrast ? SystemColors.ControlText
+            : Theme.Mix(group.BackColor, Theme.Accent, 0.38f), Math.Max(1, group.DeviceDpi / 96f));
+        if (ReferenceEquals(group.Parent, _inspectorRail))
+            args.Graphics.DrawLine(guide, inset, inset, inset, Math.Max(inset, group.Height - inset));
+        else
+            args.Graphics.DrawLine(guide, inset, group.Height - 1, Math.Max(inset, group.Width - inset), group.Height - 1);
     }
 
     private void ApplyInspectorPageVisibility()
@@ -355,7 +373,9 @@ internal sealed partial class MainForm
         if (!_inspectorPanelOpen || !_inspectorRail.Visible
             || !_inspectorCategoryButtons.TryGetValue(category, out var button) || !button.Enabled) return;
         if (category == InspectorCategory.None)
-            category = IsInspectorPropertyCategory(_inspectorCategory) ? InspectorCategory.None : _inspectorPropertyCategory;
+            category = IsInspectorPropertyCategory(_inspectorCategory)
+                ? HasInspectorObjectTarget() ? InspectorCategory.None : InspectorCategory.Tools
+                : AvailableInspectorPropertyCategory();
         RevealInspectorCategory(category, "category button");
     }
 
@@ -367,6 +387,7 @@ internal sealed partial class MainForm
     /// </summary>
     private void RevealInspectorCategory(InspectorCategory category, string reason)
     {
+        if (!CanPresentInspectorCategory(category)) return;
         _objectInspectorSelectionPending = false;
         if (!_inspectorPanelOpen) return;
         if (category == _inspectorCategory)
@@ -374,7 +395,6 @@ internal sealed partial class MainForm
             if (category == InspectorCategory.None) _basicInspectorPage.RestoreScrollPosition(0);
             return;
         }
-        if (!CanPresentInspectorCategory(category)) return;
         if (!CommitTextEdit()) return;
         _inspectorCategory = category;
         if (IsInspectorPropertyCategory(category)) _inspectorPropertyCategory = category;
@@ -385,7 +405,7 @@ internal sealed partial class MainForm
 
     private bool CanPresentInspectorCategory(InspectorCategory category) => category switch
     {
-        InspectorCategory.None => true,
+        InspectorCategory.None => HasInspectorObjectTarget(),
         InspectorCategory.Color => true,
         InspectorCategory.Tools => true,
         InspectorCategory.Document => true,
@@ -428,16 +448,42 @@ internal sealed partial class MainForm
 
     private void RequestObjectInspectorForSelection()
     {
+        if (!_playing && !_syncingFrame
+            && (_selectedObjects.Count > 0 || _selectedSceneInstanceIds.Count > 0 || IsTextEditActive()))
+            _inspectorToolContextActive = false;
         _objectInspectorSelectionPending = _inspectorPanelOpen && !_playing && !_syncingFrame
-            && (_selectedObjects.Count > 0 || _selectedSceneInstanceIds.Count > 0);
+            && HasInspectorObjectTarget();
+    }
+
+    private bool HasInspectorObjectTarget() => !_inspectorToolContextActive
+        && (IsTextEditActive() || _selectedSceneInstanceIds.Count > 0
+            || _selectedObjects.Any(index => (uint)index < _scene.ObjectCount)
+            || TryResolveSelectedTimelineTween(out var tween)
+                && tween.SceneDefinition?.FindShot(tween.Track.TargetId) is null);
+
+    private InspectorCategory AvailableInspectorPropertyCategory() =>
+        _inspectorPropertyCategory == InspectorCategory.None && !HasInspectorObjectTarget()
+            ? InspectorCategory.Tools : _inspectorPropertyCategory;
+
+    private void RevealToolInspectorForActivation()
+    {
+        if (_playing || _syncingFrame || !CommitTextEdit()) return;
+        _inspectorToolContextActive = true;
+        _objectInspectorSelectionPending = false;
+        RevealInspectorCategory(InspectorCategory.Tools, "tool activation");
     }
 
     private void ApplyPendingObjectInspectorSelection()
     {
+        if (_inspectorCategory == InspectorCategory.None && !HasInspectorObjectTarget())
+        {
+            _inspectorCategory = InspectorCategory.Tools;
+            _inspectorPropertyCategory = InspectorCategory.Tools;
+        }
         if (!_objectInspectorSelectionPending) return;
         _objectInspectorSelectionPending = false;
         if (!_inspectorPanelOpen || _playing || _syncingFrame
-            || _selectedObjects.Count == 0 && _selectedSceneInstanceIds.Count == 0) return;
+            || !HasInspectorObjectTarget()) return;
         _inspectorTransition?.Cancel();
         _inspectorCategory = InspectorCategory.None;
         _inspectorPropertyCategory = InspectorCategory.None;
@@ -447,8 +493,8 @@ internal sealed partial class MainForm
     private void CloseInspectorCategory()
     {
         _objectInspectorSelectionPending = false;
-        _inspectorCategory = InspectorCategory.None;
-        _inspectorPropertyCategory = InspectorCategory.None;
+        _inspectorCategory = HasInspectorObjectTarget() ? InspectorCategory.None : InspectorCategory.Tools;
+        _inspectorPropertyCategory = _inspectorCategory;
         ApplyInspectorCategoryPresentation();
         _inspectorCategoryButtons[InspectorCategory.None].Focus();
     }

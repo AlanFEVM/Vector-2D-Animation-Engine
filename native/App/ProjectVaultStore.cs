@@ -1585,6 +1585,7 @@ internal static class ProjectVaultStore
                 || (shot.Detail?.Length ?? 0) > SceneShotDefinition.MaximumDetailLength
                 || shot.StateKeyframes is null
                 || !shot.Settings.IsValid
+                || !shot.MicroMotion.IsValid
                 || shot.DurationFrames < SceneShotDefinition.MinimumDurationFrames
                 || shot.DurationFrames > SceneShotDefinition.MaximumDurationFrames)
             {

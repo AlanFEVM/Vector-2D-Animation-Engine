@@ -715,7 +715,8 @@ internal sealed partial class VectorScene
         PointF[][] cutterContours,
         bool eraseLines,
         bool eraseFills,
-        out BrushEraserPlan plan)
+        out BrushEraserPlan plan,
+        bool expandStrokeCutter = true)
     {
         plan = null!;
         if (ShapeKind[source] == VectorAnimationEngine.ShapeKind.MixingStroke)
@@ -808,7 +809,7 @@ internal sealed partial class VectorScene
             {
                 if (editableStrokeReplacement)
                 {
-                    if (!TryAddErasedEditableStrokeMaterializations(source, cutter, additions)) return false;
+                    if (!TryAddErasedEditableStrokeMaterializations(source, cutter, additions, expandStrokeCutter)) return false;
                 }
                 else
                 {
@@ -1116,12 +1117,13 @@ internal sealed partial class VectorScene
     private bool TryAddErasedEditableStrokeMaterializations(
         int source,
         Paths64 cutter,
-        List<MaterializedPartAddition> additions)
+        List<MaterializedPartAddition> additions,
+        bool expandStrokeCutter = true)
     {
         PointF[][] expandedContours;
         try
         {
-            var expandedCutter = OffsetClosedPaths(cutter, Stroke[source] * 0.5d);
+            var expandedCutter = expandStrokeCutter ? OffsetClosedPaths(cutter, Stroke[source] * 0.5d) : cutter;
             if (expandedCutter.Count == 0) return false;
             expandedContours = FromClipperPaths(expandedCutter);
             if (expandedContours.Length == 0) return false;
@@ -1134,15 +1136,19 @@ internal sealed partial class VectorScene
         var shape = ShapeKind[source];
         if (IsFillShape(shape))
         {
-            return TryAddErasedFillBoundaryStrokeMaterializations(source, expandedContours, additions);
+            return TryAddErasedFillBoundaryStrokeMaterializations(source, expandedContours, additions,
+                includeCutterBoundary: expandStrokeCutter);
         }
+        if (!expandStrokeCutter && shape == VectorAnimationEngine.ShapeKind.Freeform
+            && _freehandBezierLocalNodes.ContainsKey(source))
+            return TryAddClippedFreehandBezierMaterializations(source, expandedContours, additions);
 
         var samples = StrokeSamples(source);
         if (samples.Length == 0) return false;
         if (samples.Length == 1)
         {
             if (shape == VectorAnimationEngine.ShapeKind.Freeform
-                && !PointInCompoundPolygonOrOnBoundary(samples[0].Point, expandedContours)
+                && !StrokeCutterContainsPoint(samples[0].Point, expandedContours, expandStrokeCutter)
                 && TryGetFreehandWorldPoints(source, out var singlePointStroke))
             {
                 additions.Add(FreehandMaterialization(
@@ -1191,6 +1197,10 @@ internal sealed partial class VectorScene
             return false;
         }
 
+        PointF StrokePointAt(float parameter) => shape == VectorAnimationEngine.ShapeKind.Line
+            ? CubicPoint(curve.Start, curve.Control1, curve.Control2, curve.End, parameter)
+            : PolylinePointAt(freehandPoints, parameter);
+
         for (var index = 0; index < normalizedSplits.Count - 1; index++)
         {
             var startT = normalizedSplits[index].T;
@@ -1198,10 +1208,15 @@ internal sealed partial class VectorScene
             if (endT - startT <= 0.0001f) continue;
 
             var middleT = (startT + endT) * 0.5f;
-            var middle = shape == VectorAnimationEngine.ShapeKind.Line
-                ? CubicPoint(curve.Start, curve.Control1, curve.Control2, curve.End, middleT)
-                : PolylinePointAt(freehandPoints, middleT);
-            if (PointInCompoundPolygonOrOnBoundary(middle, expandedContours)) continue;
+            var middle = StrokePointAt(middleT);
+            if (StrokeCutterContainsPoint(middle, expandedContours, expandStrokeCutter)) continue;
+            while (!expandStrokeCutter && index + 2 < normalizedSplits.Count
+                && !StrokeCutterContainsPoint(StrokePointAt((endT + normalizedSplits[index + 2].T) * 0.5f),
+                    expandedContours, includeBoundary: false))
+            {
+                index++;
+                endT = normalizedSplits[index + 1].T;
+            }
 
             if (shape == VectorAnimationEngine.ShapeKind.Line)
             {
@@ -1257,7 +1272,8 @@ internal sealed partial class VectorScene
     private bool TryAddErasedFillBoundaryStrokeMaterializations(
         int source,
         PointF[][] expandedContours,
-        List<MaterializedPartAddition> additions)
+        List<MaterializedPartAddition> additions,
+        bool includeCutterBoundary = true)
     {
         var parts = GetEditableFillBezierSegmentParts(source);
         if (parts.Length == 0) return false;
@@ -1302,7 +1318,15 @@ internal sealed partial class VectorScene
                     curve.Control2,
                     curve.End,
                     (startT + endT) * 0.5f);
-                if (PointInCompoundPolygonOrOnBoundary(middle, expandedContours)) continue;
+                if (StrokeCutterContainsPoint(middle, expandedContours, includeCutterBoundary)) continue;
+                while (!includeCutterBoundary && splitIndex + 2 < normalizedSplits.Count
+                    && !StrokeCutterContainsPoint(CubicPoint(curve.Start, curve.Control1, curve.Control2,
+                        curve.End, (endT + normalizedSplits[splitIndex + 2].T) * 0.5f),
+                        expandedContours, includeBoundary: false))
+                {
+                    splitIndex++;
+                    endT = normalizedSplits[splitIndex + 1].T;
+                }
 
                 var segment = CubicSubcurve(
                     curve.Start,

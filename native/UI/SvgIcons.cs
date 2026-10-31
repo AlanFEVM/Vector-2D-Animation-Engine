@@ -6,6 +6,7 @@ internal enum SvgIconKind
 {
     Menu,
     Select,
+    DirectSelect,
     PolygonLasso,
     FreehandLasso,
     Transform,
@@ -365,8 +366,16 @@ internal static partial class SvgIcons
             case SvgIconKind.Select:
             {
                 var pointer = new[] { P(r, 4, 2), P(r, 13, 21), P(r, 15, 13), P(r, 22, 12) };
-                g.FillPolygon(fill, pointer);
+                g.FillPolygon(Brushes.Black, pointer);
                 DrawPolygon(g, pen, pointer);
+                break;
+            }
+            case SvgIconKind.DirectSelect:
+            {
+                var pointer = new[] { P(r, 4, 2), P(r, 13, 21), P(r, 15, 13), P(r, 22, 12) };
+                g.FillPolygon(Brushes.White, pointer);
+                using var outline = new Pen(Color.FromArgb(35, 39, 45), pen.Width);
+                DrawPolygon(g, outline, pointer);
                 break;
             }
             case SvgIconKind.PolygonLasso:
@@ -1090,6 +1099,7 @@ internal static partial class SvgIcons
     private static bool IsPrimaryToolIcon(SvgIconKind kind)
     {
         return kind is SvgIconKind.Select
+            or SvgIconKind.DirectSelect
             or SvgIconKind.PolygonLasso
             or SvgIconKind.FreehandLasso
             or SvgIconKind.Transform

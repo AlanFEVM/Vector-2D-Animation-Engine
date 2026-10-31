@@ -1737,7 +1737,7 @@ internal static class SceneCompositionBuilder
             var bitmapAngle = source.Angle[sourceObject];
             if (!identityTransform)
             {
-                if (!TryPrepareImportedSvgTransform(
+                if (determinant > 0 && TryPrepareImportedSvgTransform(
                         bitmapCenter,
                         bitmapSize,
                         bitmapAngle,
@@ -1746,17 +1746,22 @@ internal static class SceneCompositionBuilder
                         out var transformedSize,
                         out var transformedAngle))
                 {
-                    // Unlike imported SVG, a bitmap cannot absorb a shear by re-encoding its
-                    // payload, so a non-conformal parent transform cannot be represented as a
-                    // placed quad. Failing loudly keeps the mismatch visible instead of
-                    // silently emitting an un-sheared image.
-                    throw new InvalidOperationException(
-                        "Bitmap objects cannot be composed through a sheared or non-conformal transform.");
+                    bitmapCenter = transformedCenter;
+                    bitmapSize = transformedSize;
+                    bitmapAngle = transformedAngle;
                 }
-
-                bitmapCenter = transformedCenter;
-                bitmapSize = transformedSize;
-                bitmapAngle = transformedAngle;
+                else
+                {
+                    source.TryGetObjectDistortions(sourceObject, out var sourceDistortions);
+                    distortions = VectorScene.TransformBitmapDistortions(
+                        source.GetRawObjectWorldBounds(sourceObject),
+                        sourceDistortions,
+                        point => TransformPoint(point, transform, identityTransform: false));
+                    if (workItem.Distortions is { Length: > 0 } inheritedDistortions)
+                    {
+                        distortions = distortions.Concat(inheritedDistortions).ToArray();
+                    }
+                }
             }
 
             return new PreparedCompositionObject(

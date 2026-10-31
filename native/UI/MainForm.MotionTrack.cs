@@ -426,7 +426,7 @@ internal sealed partial class MainForm
         if (e.Button != MouseButtons.Left) return false;
         // Only the selection and Free Transform tools interact with anchors; drawing tools must keep
         // receiving every press that lands on the Stage.
-        if (_tool is not (ToolMode.Select or ToolMode.Transform)) return false;
+        if (_tool is not (ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform)) return false;
         // Free Transform owns its handles: a press on one must start a transform gesture, not a
         // frame drag, even when the handle sits within the anchor hit radius.
         if (_tool == ToolMode.Transform
@@ -520,7 +520,7 @@ internal sealed partial class MainForm
     {
         if (!_motionTrackEnabled || !_stage.MotionTrackVisible) return false;
         // The two tools that edit anchors get the box; drawing tools keep their own marquee rules.
-        if (_tool is not (ToolMode.Select or ToolMode.Transform)) return false;
+        if (_tool is not (ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform)) return false;
         _motionTrackMarqueeActive = true;
         _motionTrackMarqueeStart = location;
         _stage.Capture = true;
@@ -780,7 +780,7 @@ internal sealed partial class MainForm
     {
         if (!_motionTrackEnabled
             || _stage.MotionTrack is null
-            || _tool is not (ToolMode.Select or ToolMode.Transform))
+            || _tool is not (ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform))
         {
             if (_stage.MotionTrackHoverFrame != -1) _stage.SetMotionTrackHover(-1);
             ClearMotionTrackHoverHint();

@@ -76,12 +76,15 @@ internal sealed partial class MainForm
     /// </summary>
     private void UpdateShotFramingGizmo()
     {
+        _stage.SetShotPreviewTime(Math.Max(0, _frame), _playbackSettings.Fps);
         _stage.SetShotFramingPresentation(_applicationSettings.SimpleCameraStyleEnabled, _tool == ToolMode.Transform);
         ClearShotFramingFeedback();
         if (!IsShotDirectorContext()
             || !IsSceneCompositionContext() || ActiveScene() is not { } scene)
         {
             _stage.ClearShotFramingGizmo();
+            UpdateShotMicroMotionPlaybackPreview();
+            _stage.SetShotPreviewMicroMotion(new());
             _stage.SetShotWorkspacePreviewMode(ShotWorkspacePreviewMode.ObserveCamera);
             _shotDirectorPanel.SetPreviewMode(ShotWorkspacePreviewMode.ObserveCamera, enabled: false);
             _shotPreviewModeCameraId = "";
@@ -98,6 +101,8 @@ internal sealed partial class MainForm
             && frames.FirstOrDefault(frame => frame.Selected) is { Selected: true } activeFrame)
         {
             _stage.SetShotFramingGizmo(activeFrame.Settings, activeShot.Name);
+            _stage.SetShotPreviewMicroMotion(activeShot.MicroMotion);
+            UpdateShotMicroMotionPlaybackPreview(activeShot);
             var mode = _stage.CanPreviewPlanarShot ? _shotDirectorPanel.PreviewMode : ShotWorkspacePreviewMode.ObserveCamera;
             _stage.SetShotWorkspacePreviewMode(mode, reanchor: _shotPreviewModeCameraId != activeShot.Id);
             _shotDirectorPanel.SetPreviewMode(_stage.ShotPreviewMode, _stage.CanPreviewPlanarShot);
@@ -105,6 +110,8 @@ internal sealed partial class MainForm
         }
         else
         {
+            UpdateShotMicroMotionPlaybackPreview();
+            _stage.SetShotPreviewMicroMotion(new());
             _stage.SetShotWorkspacePreviewMode(ShotWorkspacePreviewMode.ObserveCamera);
             _shotDirectorPanel.SetPreviewMode(ShotWorkspacePreviewMode.ObserveCamera, enabled: false);
             _shotPreviewModeCameraId = "";
@@ -791,9 +798,10 @@ internal sealed partial class MainForm
             frame);
         var size = _shotPreviewOverlay.PreviewPixelSize;
         var key = new ShotPreviewFrameKey(_stage.CreateShotPreviewSourceState(), settings,
-            scene.ResolveShotParallaxAnchor(shot.Id), size, caption);
+            scene.ResolveShotParallaxAnchor(shot.Id), size, caption,
+            frame / (double)_playbackSettings.Fps, shot.MicroMotion);
         if (_shotPreviewFrameKey == key && _shotPreviewOverlay.HasPreview) return;
-        if (_stage.TryCaptureShotPreview(settings, size, out var bitmap, key.ParallaxAnchor))
+        if (_stage.TryCaptureShotPreview(settings, size, out var bitmap, key.ParallaxAnchor, key.TimeSeconds, key.MicroMotion))
         {
             _shotPreviewOverlay.SetPreview(bitmap, caption);
             _shotPreviewFrameKey = key;

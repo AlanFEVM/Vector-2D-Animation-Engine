@@ -14,6 +14,8 @@ internal sealed class ToolContextPanel : UserControl
     private readonly Button _related = new();
     private readonly Button _zoomIn = new() { Text = "+", AccessibleName = "Zoom In" };
     private readonly Button _zoomOut = new() { Text = "−", AccessibleName = "Zoom Out" };
+    private readonly Button _blackArrow = new SegmentedButton { Text = "Black Arrow", AccessibleName = "Black Arrow" };
+    private readonly Button _whiteArrow = new SegmentedButton { Text = "White Arrow", AccessibleName = "White Arrow" };
     private readonly ToolTip _toolTip = new();
     private ToolMode _tool;
     private SvgIconKind _icon;
@@ -36,6 +38,9 @@ internal sealed class ToolContextPanel : UserControl
         _description.ForeColor = _unavailable.ForeColor = Theme.PanelSecondaryText;
         _unavailable.Text = "This tool is not available in the current editing context.";
         Controls.AddRange([_title, _description, _unavailable, _related, _zoomIn, _zoomOut]);
+        Controls.AddRange([_blackArrow, _whiteArrow]);
+        _blackArrow.Click += (_, _) => SelectionArrowRequested?.Invoke(ToolMode.ObjectSelect);
+        _whiteArrow.Click += (_, _) => SelectionArrowRequested?.Invoke(ToolMode.Select);
         foreach (var (kind, caption) in new[]
         {
             (ToolOptionKind.KeepRatio, "Keep aspect ratio"),
@@ -92,20 +97,28 @@ internal sealed class ToolContextPanel : UserControl
     public event Action<ToolOptionKind, decimal>? OptionChanged;
     public event EventHandler? RelatedPageRequested;
     public event Action<float>? ZoomRequested;
+    public event Action<ToolMode>? SelectionArrowRequested;
 
     internal static bool UsesDrawingOptions(ToolMode tool) => tool is ToolMode.Rectangle or ToolMode.Ellipse
         or ToolMode.Triangle or ToolMode.Polygon or ToolMode.Star or ToolMode.Line or ToolMode.Pen or ToolMode.SimplePen;
 
-    internal static bool UsesObjectPage(ToolMode tool) => tool is ToolMode.Select or ToolMode.PolygonLasso
+    internal static bool UsesObjectPage(ToolMode tool) => tool is ToolMode.ObjectSelect or ToolMode.Select or ToolMode.PolygonLasso
         or ToolMode.FreehandLasso or ToolMode.Transform or ToolMode.Transform3D or ToolMode.Distort;
 
-    public void SetContext(ToolMode tool, string title, SvgIconKind icon, bool available, DrawSettings settings)
+    public void SetContext(ToolMode tool, string title, SvgIconKind icon, bool available, DrawSettings settings,
+        SelectionArrowBehavior? arrowBehavior = null)
     {
         var layoutChanged = _tool != tool || _available != available || Height == 0;
         _tool = tool;
         _icon = icon;
         _available = available;
-        var description = UiLocalization.T(Description(tool));
+        Theme.StyleSegmentedButton(_blackArrow, tool == ToolMode.ObjectSelect);
+        Theme.StyleSegmentedButton(_whiteArrow, tool == ToolMode.Select);
+        var description = UiLocalization.T(MainForm.IsSelectionArrow(tool) && arrowBehavior is { } behavior
+            ? behavior == SelectionArrowBehavior.Object
+                ? "Select fills or strokes independently; groups stay whole. Preferences: Settings > Selection and editing."
+                : "Edit paths and geometry. Preferences: Settings > Selection and editing."
+            : Description(tool));
         if (_title.Text != title) _title.Text = title;
         if (_description.Text != description) _description.Text = description;
         _toolTip.SetToolTip(_description, description);
@@ -168,10 +181,23 @@ internal sealed class ToolContextPanel : UserControl
         _title.SetBounds(inset + ScaleMetric(24), ScaleMetric(16), Math.Max(1, width - ScaleMetric(24)), ScaleMetric(28));
         _description.SetBounds(inset, ScaleMetric(66), width, ScaleMetric(64));
         var top = 142;
+        _blackArrow.Visible = _whiteArrow.Visible = MainForm.IsSelectionArrow(_tool);
+        _blackArrow.Enabled = _whiteArrow.Enabled = _available;
+        if (MainForm.IsSelectionArrow(_tool))
+        {
+            _blackArrow.SetBounds(inset, ScaleMetric(top), Math.Max(1, (width - ScaleMetric(6)) / 2), ScaleMetric(32));
+            _whiteArrow.SetBounds(inset + (width + ScaleMetric(6)) / 2, ScaleMetric(top), Math.Max(1, (width - ScaleMetric(6)) / 2), ScaleMetric(32));
+            top += 42;
+        }
         _unavailable.Visible = !_available;
         _unavailable.SetBounds(inset, ScaleMetric(top), width, ScaleMetric(52));
         if (!_available) top += 60;
         var tabIndex = 0;
+        if (MainForm.IsSelectionArrow(_tool))
+        {
+            _blackArrow.TabIndex = tabIndex++;
+            _whiteArrow.TabIndex = tabIndex++;
+        }
         foreach (var (kind, row) in _options)
         {
             row.Caption.Dock = DockStyle.None;
@@ -220,7 +246,8 @@ internal sealed class ToolContextPanel : UserControl
 
     private static string Description(ToolMode tool) => tool switch
     {
-        ToolMode.Select => "Select objects or geometry on the stage. Inspect the selection on the Object page.",
+        ToolMode.ObjectSelect => "Black arrow: select fills or strokes independently. Configure arrow behavior in Settings > Selection and editing.",
+        ToolMode.Select => "White arrow: edit paths and geometry. Configure arrow behavior in Settings > Selection and editing.",
         ToolMode.PolygonLasso or ToolMode.FreehandLasso => "Enclose geometry to select it. Selection properties belong to the Object page.",
         ToolMode.Transform => "Drag selection handles to move, scale or rotate. This tool has no separate numeric defaults.",
         ToolMode.Transform3D => "Use the stage gizmo and spatial transform controls to edit selected scene instances.",

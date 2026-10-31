@@ -16,6 +16,7 @@ internal sealed partial class MainForm
 
     private readonly AnimatedContextMenuStrip _scene3DContextMenu = new();
     private readonly ToolStripMenuItem _addSceneLightContextMenuItem = new("Add light");
+    private readonly ToolStripMenuItem _scene3DConvertToSymbolMenuItem = new("Convert to Symbol");
     private readonly Dictionary<SceneLightKind, Bitmap> _scene3DLightMenuIcons = [];
     private Bitmap? _scene3DAddLightMenuIcon;
     private Vector3? _scene3DContextLightPosition;
@@ -46,6 +47,8 @@ internal sealed partial class MainForm
             _addSceneLightContextMenuItem.DropDownItems.Add(item);
         }
 
+        _scene3DConvertToSymbolMenuItem.Click += (_, _) => ConvertStageSelectionToSymbol();
+        _scene3DContextMenu.Items.Add(_scene3DConvertToSymbolMenuItem);
         _scene3DContextMenu.Items.Add(_addSceneLightContextMenuItem);
         _scene3DContextMenu.Opening += (_, e) =>
         {
@@ -56,12 +59,14 @@ internal sealed partial class MainForm
                 && !IsSceneMaskEditing()
                 && scene is { Lights.Count: < SceneDefinition.MaximumLights };
             _addSceneLightContextMenuItem.Enabled = available;
+            _scene3DConvertToSymbolMenuItem.Enabled = CanConvertStageSelectionToSymbol();
             e.Cancel = !IsScene3DView() || !IsSceneCompositionContext() || IsSceneMaskEditing();
         };
     }
 
     private void PrepareScene3DContextMenu(Point screen)
     {
+        SelectSceneContextInstance(screen);
         _scene3DContextLightPosition = TryGetSceneBasePlanePoint(screen, out var world)
             ? new Vector3(world.X, world.Y, 0f)
             : Vector3.Zero;

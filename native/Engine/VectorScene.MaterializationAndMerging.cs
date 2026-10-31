@@ -1747,9 +1747,139 @@ internal sealed partial class VectorScene
             .ToArray();
     }
 
-    public int[] ApplyFillOverwriteToNewObjects(IReadOnlyList<int> objectIndices, int frame = 0)
+    public int[] ApplyFillOverwriteToNewObjects(IReadOnlyList<int> objectIndices, int frame = 0,
+        bool overwriteStrokes = false, IReadOnlyCollection<int>? protectedObjects = null)
     {
-        return ApplyFillOverwriteToNewObjectsCore(objectIndices, frame, mergeMatchingShapeGradients: true);
+        var retained = overwriteStrokes
+            ? ApplyMovedFillStrokeOverwrite(objectIndices, frame, protectedObjects)
+            : objectIndices;
+        return ApplyFillOverwriteToNewObjectsCore(retained, frame, mergeMatchingShapeGradients: true);
+    }
+
+    private static bool StrokeCutterContainsPoint(PointF point, PointF[][] contours, bool includeBoundary) =>
+        includeBoundary
+            ? PointInCompoundPolygonOrOnBoundary(point, contours)
+            : PointInCompoundPolygon(point, contours)
+                && DistanceToCompoundPolygonBoundary(point, contours) > 0.75f;
+
+    private bool TryAddClippedFreehandBezierMaterializations(int source, PointF[][] cutterContours,
+        List<MaterializedPartAddition> additions)
+    {
+        if (!TryGetFreehandBezierWorldNodes(source, out var nodes) || nodes.Length < 2) return false;
+        var intervals = new List<MarqueeOpenBezierInterval>();
+        for (var segmentIndex = 0; segmentIndex < nodes.Length - 1; segmentIndex++)
+        {
+            var curve = new CubicBoundarySegment(nodes[segmentIndex].Anchor, nodes[segmentIndex].OutgoingControl,
+                nodes[segmentIndex + 1].IncomingControl, nodes[segmentIndex + 1].Anchor);
+            var samples = SampleCubicSegmentWithParameters(curve);
+            var splits = new List<DrawingTopologySplit> { new(0, curve.Start), new(1, curve.End) };
+            foreach (var contour in cutterContours)
+            {
+                if (contour.Length < 3) continue;
+                var closed = contour.Append(contour[0]).ToArray();
+                AddCurvePolylineIntersections(splits, samples, closed, includeSourceEndpoints: false);
+            }
+            var normalized = NormalizeStrokeSplits(splits);
+            for (var splitIndex = 0; splitIndex < normalized.Count - 1; splitIndex++)
+            {
+                var startParameter = normalized[splitIndex].T;
+                var endParameter = normalized[splitIndex + 1].T;
+                if (endParameter - startParameter <= 0.0001f) continue;
+                var midpoint = CubicPoint(curve.Start, curve.Control1, curve.Control2, curve.End,
+                    (startParameter + endParameter) * 0.5f);
+                if (StrokeCutterContainsPoint(midpoint, cutterContours, includeBoundary: false)) continue;
+                var start = new OpenBezierCut(segmentIndex, startParameter,
+                    CubicPoint(curve.Start, curve.Control1, curve.Control2, curve.End, startParameter));
+                var end = new OpenBezierCut(segmentIndex, endParameter,
+                    CubicPoint(curve.Start, curve.Control1, curve.Control2, curve.End, endParameter));
+                if (intervals.Count > 0 && Math.Abs(intervals[^1].End.PathT - start.PathT) <= 0.0001f)
+                    intervals[^1] = intervals[^1] with { End = end };
+                else intervals.Add(new MarqueeOpenBezierInterval(start, end, false));
+            }
+        }
+        foreach (var interval in intervals)
+        {
+            if (!TryCreateOpenBezierRunNodes(nodes, interval.Start, interval.End, out var runNodes)) return false;
+            additions.Add(FreehandBezierMaterialization(DrawingElementKey.None, ObjectLayer[source],
+                ObjectOrder[source], 0, Stroke[source], Color.FromArgb(Argb[source]),
+                Color.FromArgb(StrokeArgb[source]), 0, runNodes));
+        }
+        return true;
+    }
+
+    private int[] ApplyMovedFillStrokeOverwrite(IReadOnlyList<int> objectIndices, int frame,
+        IReadOnlyCollection<int>? protectedObjects)
+    {
+        ArgumentNullException.ThrowIfNull(objectIndices);
+        var selected = objectIndices.Where(index => (uint)index < ObjectCount).Distinct().ToArray();
+        var protectedSet = selected.Concat(protectedObjects ?? Array.Empty<int>()).ToHashSet();
+        var plans = new List<BrushEraserPlan>();
+        foreach (var group in selected.Where(index => IsObjectSelectable(index, frame)
+                && IsFillShape(ShapeKind[index]) && IsOpaqueSelectionFill(index)
+                && !IsCollisionTerrainLayer(ObjectLayer[index]))
+            .GroupBy(index => (Layer: ObjectLayer[index], Keyframe: ObjectKeyframeFrame[index])))
+        {
+            var cutter = new Paths64();
+            var bounds = RectangleF.Empty;
+            foreach (var index in group)
+            {
+                var paths = ToClipperPaths(FillWorldContours(index));
+                cutter = cutter.Count == 0 ? paths : Clipper.Union(cutter, paths, FillRule.EvenOdd);
+                bounds = bounds.IsEmpty ? GetObjectWorldBounds(index)
+                    : RectangleF.Union(bounds, GetObjectWorldBounds(index));
+            }
+            if (cutter.Count == 0) continue;
+            var contours = FromClipperPaths(cutter);
+            foreach (var source in QueryObjects(bounds, frame))
+            {
+                if (protectedSet.Contains(source) || ObjectLayer[source] != group.Key.Layer
+                    || ObjectKeyframeFrame[source] != group.Key.Keyframe
+                    || !IsObjectSelectable(source, frame) || !HasStroke(source)
+                    || IsWholeObjectShape(ShapeKind[source])
+                    || IsCollisionTerrainLayer(ObjectLayer[source])) continue;
+                if (TryBuildBrushEraserPlan(source, cutter, contours,
+                    eraseLines: true, eraseFills: false, out var plan, expandStrokeCutter: false))
+                    plans.Add(plan with
+                    {
+                        Replacements = plan.Replacements.Select(replacement => replacement with
+                        {
+                            SvgStrokeStyle = replacement.Stroke > 0 ? GetSvgStrokeStyle(source) : null,
+                            QuadraticEditing = replacement.Geometry == MaterializedPartGeometry.Curve && IsQuadraticLine(source),
+                            FillBoundaryLinkDetached = FillBoundaryLinkDetached[source]
+                        }).ToArray()
+                    });
+            }
+        }
+        if (plans.Count == 0) return selected;
+        var snapshot = CreateSnapshot();
+        var previousEditFrame = EditFrame;
+        try
+        {
+            var remove = new bool[ObjectCount];
+            foreach (var plan in plans) remove[plan.Source] = true;
+            var oldToNew = CompactObjectsForMaterialization(remove);
+            var retained = selected.Select(index => oldToNew[index]).Where(index => index >= 0).ToArray();
+            foreach (var plan in plans)
+            {
+                EditFrame = plan.KeyframeFrame;
+                foreach (var replacement in plan.Replacements)
+                {
+                    var index = AppendMaterializedPart(replacement);
+                    if (index < 0) throw new InvalidOperationException("Fill overwrite could not preserve a stroke fragment.");
+                    ObjectKeyframeFrame[index] = plan.KeyframeFrame;
+                }
+            }
+            SynchronizeAllKeyframeContentKinds();
+            RebuildGeometryIndex();
+            RebuildSummaries();
+            return retained;
+        }
+        catch
+        {
+            RestoreSnapshot(snapshot);
+            throw;
+        }
+        finally { EditFrame = previousEditFrame; }
     }
 
     private int[] ApplyFillOverwriteToNewObjectsCore(

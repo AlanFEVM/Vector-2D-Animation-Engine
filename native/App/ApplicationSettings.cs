@@ -70,8 +70,10 @@ internal sealed record ApplicationSettings
     /// </summary>
     public bool FreeTransformShiftProportionalEnabled { get; init; } = true;
     public bool SimpleSelectionHighlightEnabled { get; init; } = false;
+    public SelectionArrowSettings SelectionArrows { get; init; } = new();
     public bool Experimental3DEnabled { get; init; } = false;
     public bool SimpleCameraStyleEnabled { get; init; } = true;
+    public EnterPlaybackViewSettings EnterPlaybackView { get; init; } = new();
     public WindowCornerStyle WindowCornerStyle { get; init; } = WindowCornerStyle.Square;
     public int WorkspaceColorArgb { get; init; } = DefaultWorkspaceColorArgb;
     /// <summary>Enables the loopback JSON-RPC bridge used by Codex and MCP clients.</summary>
@@ -187,6 +189,7 @@ internal static class ApplicationSettingsStore
         return settings with
         {
             ToolShortcutPreset = preset,
+            SelectionArrows = (settings.SelectionArrows ?? new()).Normalized(),
             ActiveShortcutProfileId = shortcutProfiles.ActiveProfileId,
             CustomShortcutProfiles = shortcutProfiles.CustomProfiles,
             Language = language,
@@ -201,6 +204,7 @@ internal static class ApplicationSettingsStore
             TimelineFrameWidth = Math.Clamp(settings.TimelineFrameWidth, 8, 32),
             WindowCornerStyle = cornerStyle,
             TimelineFrameHeight = frameHeight,
+            EnterPlaybackView = (settings.EnterPlaybackView ?? new()).Normalized(),
             WorkspaceColorArgb = OpaqueArgb(settings.WorkspaceColorArgb),
             CodexIntegrationPort = Math.Clamp(settings.CodexIntegrationPort, 1024, 65535),
             CodexIntegrationAuthToken = NormalizeAuthToken(settings.CodexIntegrationAuthToken)

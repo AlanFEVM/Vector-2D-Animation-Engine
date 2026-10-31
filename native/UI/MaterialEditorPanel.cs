@@ -326,6 +326,52 @@ internal sealed class MaterialEditorPanel : UserControl
         return (paint.Kind, paint.Stops.ToArray());
     }
 
+    internal sealed record PaintState(Color Fill, Color Stroke, float Width, float Opacity,
+        GradientKind FillKind, GradientStop[] FillStops, GradientKind StrokeKind, GradientStop[] StrokeStops,
+        bool EditingStroke);
+
+    internal PaintState CapturePaintState()
+    {
+        var fill = GetGradientPaintForTarget(false);
+        var stroke = GetGradientPaintForTarget(true);
+        return new(Fill, Stroke, StrokeWidth, Opacity, fill.Kind, fill.Stops, stroke.Kind, stroke.Stops, EditingStroke);
+    }
+
+    internal void RestorePaintState(PaintState state)
+    {
+        SetMaterial(state.Fill, state.Stroke, state.Width, state.Opacity);
+        SetGradientPreviewTarget(false);
+        SetGradient(state.FillKind, state.FillStops);
+        SetGradientPreviewTarget(true);
+        SetGradient(state.StrokeKind, state.StrokeStops);
+        SetGradientPreviewTarget(state.EditingStroke);
+    }
+
+    internal void OpenSelectionPalette(Control anchor, bool strokeTarget)
+    {
+        SelectTarget(fill: !strokeTarget);
+        TogglePalettePopup(anchor);
+    }
+
+    internal void SetSelectionStrokeWidth(float width)
+    {
+        _strokeWidth.Value = (decimal)Math.Clamp(width, (float)_strokeWidth.Minimum, (float)_strokeWidth.Maximum);
+    }
+
+    internal void SetSelectionOpacity(float opacity) => SetUniformAlpha(opacity);
+
+    internal void SetObjectGradient(bool strokeTarget, GradientKind kind, GradientStop[] stops)
+    {
+        if (strokeTarget == EditingStroke) SetGradient(kind, stops);
+        else
+        {
+            var state = new GradientPaintState(kind, stops.ToArray());
+            if (strokeTarget) _strokeGradient = state;
+            else _fillGradient = state;
+            UpdateTargetPresentation();
+        }
+    }
+
     public void SetGradientPreviewTarget(bool strokeTarget)
     {
         var editingFill = !strokeTarget;

@@ -251,21 +251,33 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (_tool == ToolMode.Select
+        if (UsesObjectSelection && IsControlPressed() && _selectedObject >= 0
+            && _scene.HasFill(_selectedObject) && !IsWholeObjectOnlyObject(_selectedObject))
+        {
+            var hit = _scene.HitTestElement(_stage.ScreenToWorld(e.Location), _frame, SelectionToleranceWorld());
+            if (hit.IsValid && hit.Key.ObjectIndex == _selectedObject
+                && hit.Key.Kind == DrawingElementKind.BoundaryStroke)
+            {
+                BeginSelectionArrowGeometryFeedback();
+                UpdateFillEdgeBezierOverlay();
+            }
+        }
+
+        if (UsesSelectionGeometryEditing
             && IsControlPressed()
             && TryApplyFillEdgeBezierAnchorGesture(e))
         {
             return;
         }
 
-        if (_tool == ToolMode.Select
+        if (UsesSelectionGeometryEditing
             && IsControlPressed()
             && TryBeginCornerDrag(e))
         {
             return;
         }
 
-        if (_tool == ToolMode.Select
+        if (UsesSelectionGeometryEditing
             && IsAltPressed()
             && TryBeginLineBranchDrag(e))
         {
@@ -338,12 +350,13 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (_tool == ToolMode.Select
+        if (UsesSelectionGeometryEditing
             && e.Button == MouseButtons.Left
             && !_forceMarqueeOnPointerDown
             && !_additiveSelection
             && TryFindLineEndpointHit(e.Location, out var endpointLine, out var endpointHandle))
         {
+            BeginSelectionArrowGeometryFeedback();
             _stage.ClearHoveredLineElement();
             if (endpointLine.Key.Kind == DrawingElementKind.BoundaryStroke)
             {
@@ -362,7 +375,7 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (_tool == ToolMode.Select
+        if (UsesSelectionGeometryEditing
             && e.Button == MouseButtons.Left
             && !_forceMarqueeOnPointerDown
             && !_additiveSelection
@@ -375,7 +388,7 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (_tool == ToolMode.Select)
+        if (UsesSelectionGeometryEditing)
         {
             var fillEdgeOverlayHit = _forceMarqueeOnPointerDown || _additiveSelection
                 ? FillEdgeBezierOverlayHit.None
@@ -450,6 +463,12 @@ internal sealed partial class MainForm : Form
                 _pendingClickSelection = DrawingElementHit.None;
                 _stage.ClearHoveredLineElement();
                 UpdateInteractionCursor(e.Location);
+                return;
+            }
+
+            if (UsesObjectSelection)
+            {
+                BeginObjectArrowPointer(e);
                 return;
             }
 
@@ -1357,6 +1376,8 @@ internal sealed partial class MainForm : Form
         else
         {
             RestoreCanvasMutationSnapshot(session.Snapshot);
+            _selectionArrowGeometryFeedback = false;
+            RefreshSelectionArrowFeedback();
         }
 
         _geometryDirty = true;
@@ -1918,7 +1939,7 @@ internal sealed partial class MainForm : Form
         armed.PreparationPosted = false;
         if (!ReferenceEquals(armed.Scene, _scene)
             || armed.GeometryRevision != _scene.GeometryRevision
-            || _tool != ToolMode.Select
+            || !UsesSelectionGeometryEditing
             || _selectedObject != armed.TargetObject
             || (uint)armed.TargetObject >= _scene.ObjectCount)
         {
@@ -2808,7 +2829,7 @@ internal sealed partial class MainForm : Form
     {
         objectIndex = -1;
         partIndex = -1;
-        if (_tool != ToolMode.Select || _stage is null) return false;
+        if (!UsesSelectionGeometryEditing || _stage is null) return false;
         var world = _stage.ScreenToWorld(screen);
         var hit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
         if (!hit.IsValid) return false;
@@ -2821,44 +2842,20 @@ internal sealed partial class MainForm : Form
         if (!_scene.HasFill(obj)
             || !IsFillShape(_scene.ShapeKind[obj])
             || IsWholeObjectOnlyObject(obj)) return false;
-        if (!_scene.TryConvertFillToBezierPath(obj, rebuildGeometryIndex: false)) return false;
-        if (!_scene.TryGetPathBezierWorldContours(obj, out var contours)) return false;
+        var parts = _scene.GetEditableFillBezierSegmentParts(obj);
+        if (parts.Length == 0) return false;
 
         var tolerance = SelectionToleranceWorld() * 2f;
         var best = float.MaxValue;
         var bestPart = -1;
-        var currentPart = 0;
-        for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
+        foreach (var part in parts)
         {
-            var contour = contours[contourIndex];
-            if (contour.Length < 2) continue;
-            for (var segmentIndex = 0; segmentIndex < contour.Length; segmentIndex++)
+            if (_scene.IsBoundaryStrokePartHidden(obj, part.PartIndex)) continue;
+            if (VectorScene.TryGetClosestPointOnBezierSegment(part, world, out _, out _, out var distance)
+                && distance < best)
             {
-                // Detached (stroke-hidden) segments are no longer bend candidates: the
-                // fill cools its previous outline and the floating line owns the edge.
-                if (_scene.IsBoundaryStrokePartHidden(obj, currentPart))
-                {
-                    currentPart++;
-                    continue;
-                }
-
-                // Bezier closest-point matching keeps curved segments reachable: the
-                // anchor-to-anchor chord distance would miss presses on the arc body.
-                var distance = _scene.TryGetClosestPointOnPathBezierSegment(
-                    obj,
-                    currentPart,
-                    world,
-                    out _,
-                    out _,
-                    out var curveDistance)
-                    ? curveDistance
-                    : DistanceToSegment(world, contour[segmentIndex].Anchor, contour[(segmentIndex + 1) % contour.Length].Anchor);
-                if (distance < best)
-                {
-                    best = distance;
-                    bestPart = currentPart;
-                }
-                currentPart++;
+                best = distance;
+                bestPart = part.PartIndex;
             }
         }
 
@@ -2934,6 +2931,7 @@ internal sealed partial class MainForm : Form
         _stage.ClearFillEdgeBezierOverlay();
         _fillEdgeNoUiArcParameter = Math.Clamp(parameter, 0.05f, 0.95f);
         _fillEdgeNoUiArc = (obj, part, start.Value, control1!.Value, control2!.Value, end!.Value, pointerStart, snapshot);
+        BeginSelectionArrowGeometryFeedback();
         UpdateFillEdgeNoUiArc(world);
     }
 
@@ -3122,7 +3120,7 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (_tool != ToolMode.Select
+        if (!ShowsSelectionGeometry
             || _selectedObjects.Count != 1
             || !IsEditableDrawingContext()
             || IsScene3DView()

@@ -10,6 +10,12 @@ internal sealed partial class StageControl : Control
 {
     private void DrawSelection(Graphics g)
     {
+        if (SelectionFeedbackSuppressed) return;
+        if (UsesObjectSelectionOverlay)
+        {
+            DrawObjectArrowSelection(g);
+            return;
+        }
         if ((SelectedObject < 0 || SelectedObject >= Scene.ObjectCount)
             && SelectedObjects.Count == 0
             && !IsValidEditableBezierHit(_hoveredLineElement)
@@ -394,7 +400,7 @@ internal sealed partial class StageControl : Control
 
     private void DrawFillEdgeBezierOverlay(Graphics graphics)
     {
-        if (!FillEdgeBezierOverlayVisible) return;
+        if (!FillEdgeBezierOverlayVisible || ObjectSelectionMode) return;
 
         var oldMode = graphics.SmoothingMode;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;

@@ -31,6 +31,36 @@ internal static partial class Benchmark
         using (var decoded = MainForm.ReadClipboardImage(new DataObject(DataFormats.Text, "plain text")))
             AssertTimeline(decoded is null, "Text clipboard content was treated as an image.");
 
+        foreach (var format in new[]
+        {
+            ("image/jpeg", System.Drawing.Imaging.ImageFormat.Jpeg),
+            ("GIF", System.Drawing.Imaging.ImageFormat.Gif),
+            ("TIFF", System.Drawing.Imaging.ImageFormat.Tiff),
+            ("image/bmp", System.Drawing.Imaging.ImageFormat.Bmp)
+        })
+        {
+            using var encoded = new MemoryStream();
+            source.Save(encoded, format.Item2);
+            var encodedData = new DataObject();
+            encodedData.SetData(format.Item1, false, encoded.ToArray());
+            using var decoded = MainForm.ReadClipboardImage(encodedData);
+            AssertTimeline(decoded is { Width: 40, Height: 24 }, $"Clipboard format {format.Item1} could not be decoded.");
+        }
+        var fallback = new DataObject();
+        fallback.SetData("PNG", false, new byte[] { 0, 1, 2, 3 });
+        fallback.SetData(DataFormats.Bitmap, source);
+        using (var decoded = MainForm.ReadClipboardImage(fallback))
+            AssertTimeline(decoded is { Width: 40, Height: 24 }, "A damaged preferred clipboard format suppressed a valid fallback.");
+        var rejected = false;
+        try
+        {
+            var invalid = new DataObject();
+            invalid.SetData("image/png", false, new byte[] { 0, 1, 2, 3 });
+            using var decoded = MainForm.ReadClipboardImage(invalid);
+        }
+        catch (InvalidDataException) { rejected = true; }
+        AssertTimeline(rejected, "Invalid image clipboard content was accepted without an error.");
+
         var temporaryRoot = CreateTemporaryDirectory("clipboard-image-paste");
         using var form = new MainForm();
         var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;

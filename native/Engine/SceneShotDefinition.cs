@@ -428,6 +428,7 @@ internal sealed class SceneShotDefinition
     public List<string> LayerIds { get; } = [];
 
     public SceneShotSettings Settings { get; private set; } = SceneShotSettings.Default;
+    public SceneShotMicroMotionSettings MicroMotion { get; internal set; } = new();
 
     public IReadOnlyList<SceneShotStateKeyframe> StateKeyframes => _stateKeyframeView;
 
@@ -527,6 +528,7 @@ internal sealed class SceneShotDefinition
         DurationFrames = source.DurationFrames;
         ColorArgb = source.ColorArgb;
         Settings = source.Settings;
+        MicroMotion = source.MicroMotion;
         LayerIds.Clear();
         RestoreStateKeyframes(source.StateKeyframes);
     }
@@ -540,7 +542,8 @@ internal sealed class SceneShotDefinition
             Detail = Detail,
             DurationFrames = DurationFrames,
             ColorArgb = ColorArgb,
-            Settings = Settings
+            Settings = Settings,
+            MicroMotion = MicroMotion
         };
         clone.RestoreStateKeyframes(StateKeyframes);
         return clone;
@@ -581,5 +584,6 @@ internal sealed class SceneShotSnapshot
     // Read-compatible with the former shot-layer model. New snapshots always write an empty array.
     public string[] LayerIds { get; init; } = [];
     public SceneShotSettings Settings { get; init; } = SceneShotSettings.Default;
+    public SceneShotMicroMotionSettings MicroMotion { get; init; } = new();
     public SceneShotStateKeyframe[] StateKeyframes { get; init; } = [];
 }

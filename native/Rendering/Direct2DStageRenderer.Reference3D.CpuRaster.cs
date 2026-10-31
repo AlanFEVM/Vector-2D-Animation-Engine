@@ -459,6 +459,11 @@ internal sealed partial class Direct2DStageRenderer
         out int drawnObjects)
     {
         drawnObjects = 0;
+        if (stage.ShotWorkspacePreviewActive || _capturingShotPreview)
+        {
+            LastReference3DCpuRasterFallbackReason = "shot_gpu_commands";
+            return false;
+        }
         if (stage.Reference3DPlaybackActive
             && Environment.GetEnvironmentVariable("VECTOR_DISABLE_PLAYBACK_CPU_RASTER") == "1")
         {
@@ -574,7 +579,7 @@ internal sealed partial class Direct2DStageRenderer
         out RenderStats stats)
     {
         stats = default;
-        if (stage.ShotWorkspacePreviewActive)
+        if (stage.ShotWorkspacePreviewActive || _capturingShotPreview)
         {
             LastReference3DPlaybackGdiStatus = "shot_workspace_preview";
             return false;

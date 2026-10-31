@@ -165,6 +165,8 @@ internal sealed partial class ShotDirectorPanel
         LayoutDesignedField(_designStyleEditor, y, right, _styleCaption);
         y += ScaleMetric(RowStep);
         Field(_previewModeEditor);
+        y += ScaleMetric(12);
+        y = LayoutMicroMotion(y, right, ref tabIndex);
         var showParallax = ActiveShot()?.Framing.Kind == SceneShotCameraKind.TwoD;
         ParallaxEditor.Visible = showParallax;
         if (showParallax)

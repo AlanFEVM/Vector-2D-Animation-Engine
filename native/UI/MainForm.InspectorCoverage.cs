@@ -3,9 +3,24 @@ namespace VectorAnimationEngine;
 internal sealed partial class MainForm
 {
     private readonly ObjectGeometryPanel _objectGeometryPanel = new();
+    private readonly ObjectAppearancePanel _objectAppearancePanel = new();
+    private MaterialEditorPanel.PaintState? _drawingToolPaint;
 
     private void BindInspectorCoverageEvents()
     {
+        _objectAppearancePanel.ColorRequested += (strokeTarget, anchor) =>
+        {
+            _materialTargetChosenByUser = true;
+            _materialEditor.OpenSelectionPalette(anchor, strokeTarget);
+            UpdateInspector();
+        };
+        _objectAppearancePanel.StrokeWidthChanged += _materialEditor.SetSelectionStrokeWidth;
+        _objectAppearancePanel.OpacityChanged += _materialEditor.SetSelectionOpacity;
+        _objectAppearancePanel.InteractionStarted += (_, _) => BeginMaterialContinuousEdit();
+        _objectAppearancePanel.InteractionCompleted += (_, _) => CompleteMaterialContinuousEdit();
+        _objectAppearancePanel.InteractionCanceled += (_, _) => CancelMaterialContinuousEdit();
+        _objectAppearancePanel.MoreRequested += (_, _) =>
+            RevealInspectorCategory(InspectorCategory.Color, "explicit object appearance navigation");
         _toolContextPanel.OptionChanged += (kind, value) =>
         {
             if (!CanActivateTool(_tool)) return;
@@ -27,6 +42,7 @@ internal sealed partial class MainForm
             ToolContextPanel.UsesObjectPage(_tool) ? InspectorCategory.None : InspectorCategory.Color,
             "explicit tool panel navigation");
         _toolContextPanel.ZoomRequested += ZoomActiveView;
+        _toolContextPanel.SelectionArrowRequested += ActivateTool;
         _objectGeometryPanel.AppearanceRequested += (_, _) =>
             RevealInspectorCategory(InspectorCategory.Color, "explicit geometry panel navigation");
         _objectGeometryPanel.ValueCommitted += ApplyInspectorObjectTransform;
@@ -40,7 +56,6 @@ internal sealed partial class MainForm
             && hasGeometry;
         _objectGeometryPanel.Visible = show;
         if (!show) return;
-        var imported = selection.Any(index => _scene.ShapeKind[index] is ShapeKind.ImportedSvg or ShapeKind.Bitmap);
         var source = instances.Count > 0 ? string.Join(" / ", instances.Select(instance => instance.Name))
             : selection.Length == 1 && _scene.TryGetImportedSvgName(selection[0], out var svgName)
             ? svgName
@@ -48,7 +63,7 @@ internal sealed partial class MainForm
                 .Select(kind => UiLocalization.T(kind.ToString())));
         var token = $"{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(_scene)}:{_frame}:"
             + (instances.Count > 0 ? string.Join(",", instances.Select(instance => instance.Id)) : string.Join(",", selection));
-        _objectGeometryPanel.SetGeometry(geometry, source, appearanceAvailable: !imported && instances.Count == 0,
+        _objectGeometryPanel.SetGeometry(geometry, source, appearanceAvailable: false,
             rotationDegrees: rotation, editable: CanEditInspectorObjectTransform(selection),
             group: instances.Count > 0 ? instances.Count > 1 : selection.Length > 1, bindingToken: token,
             relativeRotation: instances.Count == 0 && selection.Length == 1 && InspectorUsesBakedGeometry(selection[0]),

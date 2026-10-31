@@ -27,6 +27,8 @@ internal sealed partial class MainForm : Form
         var materialEditorParent = _materialEditor.Parent;
         var textSettingsWasVisible = _textSettingsPanel.Visible;
         var objectGeometryWasVisible = _objectGeometryPanel.Visible;
+        var objectAppearanceWasVisible = _objectAppearancePanel.Visible;
+        var objectAppearanceHeight = _objectAppearancePanel.Height;
         var textSettingsParent = _textSettingsPanel.Parent;
         var imageInspectorWasVisible = _imageInspector.Visible;
         var imageInspectorParent = _imageInspector.Parent;
@@ -45,17 +47,17 @@ internal sealed partial class MainForm : Form
             .ToArray();
         UpdateObjectGeometryPanel(validSelection);
         UpdateImageInspector(validSelection);
-        if (_selectedElement.IsValid && (uint)_selectedElement.Key.ObjectIndex < _scene.ObjectCount)
-        {
-            // A suggestion only: it must never undo a target the user picked by hand.
-            ApplyMaterialTargetPreference(_selectedElement.Key.Kind);
-        }
+        var bindObjectMaterial = !_inspectorToolContextActive && IsDrawingInspectorContext()
+            && _selectedSceneInstanceIds.Count == 0 && validSelection.Length > 0
+            && validSelection.All(index => _scene.ShapeKind[index] is not
+                (ShapeKind.ImportedSvg or ShapeKind.Bitmap or ShapeKind.MixingStroke));
+        PrepareObjectMaterialBinding(bindObjectMaterial);
         _materialEditor.SetTextObjectMode(
             IsDrawingInspectorContext()
-            && (_tool == ToolMode.Text
-                || IsTextEditActive()
-                || (validSelection.Length == 1
-                    && _scene.ShapeKind[validSelection[0]] == ShapeKind.Text)));
+            && (IsTextEditActive() || (bindObjectMaterial
+                ? validSelection.All(index => _scene.ShapeKind[index] == ShapeKind.Text)
+                : _tool == ToolMode.Text)));
+        UpdateObjectAppearancePanel(validSelection, bindObjectMaterial);
         var selectedSceneInstances = SelectedSceneInstances();
         var sceneInstance = SelectedSceneInstance();
         RefreshSceneOpticsInspector();
@@ -146,63 +148,6 @@ internal sealed partial class MainForm : Form
             : _scene.AtomCount[_selectedObject];
         _objectInspector.SetSummary(selectionSummary, _scene.LayerNames[layer],
             "Geometry atoms", CompactFormat.Number(selectedAtoms), _scene.ObjectCount);
-        var fill = Color.FromArgb(_scene.Argb[_selectedObject]);
-        var stroke = _scene.StrokeArgb.Length > _selectedObject ? Color.FromArgb(_scene.StrokeArgb[_selectedObject]) : ActiveStrokeColor();
-        var strokePoints = VectorUnits.UnitsToStrokePoints(_scene.Stroke[_selectedObject]);
-        var shape = _scene.ShapeKind[_selectedObject];
-        var selectedKind = _selectedElement.IsValid && _selectedElement.Key.ObjectIndex == _selectedObject
-            ? _selectedElement.Key.Kind
-            : DrawingElementKind.None;
-        var strokeMaterialTarget = ShouldPreferStrokeMaterial(selectedKind, shape);
-        var gradientAppliesToTarget = CanEditGradientForMaterialTarget(shape, strokeMaterialTarget);
-        var brushFill = IsBrushTool(_tool) && IsFillShape(shape);
-        var inspectorStrokePoints = brushFill ? _brushStrokeWidthPoints : strokePoints;
-        var gradientStops = gradientAppliesToTarget && _scene.HasGradient(_selectedObject)
-            ? _scene.GetGradientStops(_selectedObject)
-            : [];
-        var materialOpacity = gradientStops.Length > 0
-            ? Color.FromArgb(gradientStops[0].Argb).A / 255f
-            : selectedKind != DrawingElementKind.None
-                ? (strokeMaterialTarget ? stroke : fill).A / 255f
-                : shape is ShapeKind.Freeform or ShapeKind.Line
-                    ? stroke.A / 255f
-                    : fill.A / 255f;
-        if (shape is ShapeKind.Freeform or ShapeKind.Line)
-        {
-            _materialEditor.SetMaterial(_materialEditor.Fill, stroke, inspectorStrokePoints, materialOpacity);
-        }
-        else if (shape == ShapeKind.BrushStroke)
-        {
-            _materialEditor.SetMaterial(Color.FromArgb(fill.A, fill), _materialEditor.Stroke, inspectorStrokePoints, materialOpacity);
-        }
-        else if (brushFill)
-        {
-            _materialEditor.SetMaterial(Color.FromArgb(fill.A, fill), _materialEditor.Stroke, inspectorStrokePoints, materialOpacity);
-        }
-        else
-        {
-            _materialEditor.SetMaterial(Color.FromArgb(fill.A, fill), stroke, inspectorStrokePoints, materialOpacity);
-        }
-
-        ApplyMaterialTargetPreference(selectedKind);
-
-        if (gradientAppliesToTarget)
-        {
-            _materialEditor.SetGradient(
-                _scene.GetGradientKind(_selectedObject),
-                _scene.HasGradient(_selectedObject)
-                    ? _scene.GetGradientStops(_selectedObject)
-                    : shape == ShapeKind.Line
-                        ? [new GradientStop(0, stroke), new GradientStop(1, stroke)]
-                        : [new GradientStop(0, fill), new GradientStop(1, stroke)]);
-        }
-        else
-        {
-            var targetColor = strokeMaterialTarget ? stroke : fill;
-            _materialEditor.SetGradient(
-                GradientKind.Solid,
-                [new GradientStop(0, targetColor), new GradientStop(1, targetColor)]);
-        }
         }
         finally
         {
@@ -213,6 +158,8 @@ internal sealed partial class MainForm : Form
             var imageLayoutChanged = imageInspectorWasVisible != _imageInspector.Visible
                 || !ReferenceEquals(imageInspectorParent, _imageInspector.Parent);
             var basicLayoutChanged = drawingParameterPanelsMoved || imageLayoutChanged
+                || objectAppearanceWasVisible != _objectAppearancePanel.Visible
+                || objectAppearanceHeight != _objectAppearancePanel.Height
                 || objectGeometryWasVisible != _objectGeometryPanel.Visible
                 || spatialMaterialWasVisible != _spatialMaterialPanel.Visible
                 || (drawingObjectLayoutChanged
@@ -1034,16 +981,16 @@ internal sealed partial class MainForm : Form
 
             if (!basicDrawing && !IsEditableDrawingContext() && !IsSceneDrawingAvailable() && IsBasicDrawingOnlyTool(_tool))
             {
-                _tool = ToolMode.Select;
+                _tool = ToolMode.ObjectSelect;
                 CancelTraditionalPenPath();
                 CancelPenCurve();
                 CancelFreehandStroke();
                 _stage.ClearDrawingPreview();
             }
 
-            if (IsShotDirectorContext() && _tool is not (ToolMode.Select or ToolMode.Transform or ToolMode.Hand))
+            if (IsShotDirectorContext() && _tool is not (ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform or ToolMode.Hand))
             {
-                _tool = ToolMode.Select;
+                _tool = ToolMode.ObjectSelect;
                 CancelTraditionalPenPath();
                 CancelPenCurve();
                 CancelFreehandStroke();
@@ -1117,7 +1064,7 @@ internal sealed partial class MainForm : Form
         // from the normal scene selection/transform tools, so only navigation tools remain visible.
         if (view == WorkspaceView.ShotDirector)
         {
-            return tool is ToolMode.Select or ToolMode.Transform or ToolMode.Hand;
+            return tool is ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform or ToolMode.Hand;
         }
         if (tool == ToolMode.Transform3D) return view == WorkspaceView.SceneEditor;
         return view == WorkspaceView.BasicDrawing
@@ -1130,7 +1077,7 @@ internal sealed partial class MainForm : Form
         if (!_applicationSettings.Experimental3DEnabled && tool == ToolMode.Transform3D) return false;
         var workspace = _workspaceTabs.SelectedView;
         if (IsSymbolEditing) return tool != ToolMode.Transform3D;
-        if (IsShotDirectorContext()) return tool is ToolMode.Select or ToolMode.Transform or ToolMode.Hand;
+        if (IsShotDirectorContext()) return tool is ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform or ToolMode.Hand;
         if (workspace == WorkspaceView.SceneEditor && IsSceneMaskEditing())
         {
             return tool != ToolMode.Transform3D;
@@ -1140,10 +1087,10 @@ internal sealed partial class MainForm : Form
         if (workspace != WorkspaceView.SceneEditor) return true;
         return IsSceneReferenceView()
                 ? IsScene3DView()
-                ? tool is ToolMode.Select or ToolMode.Transform3D or ToolMode.Hand
+                ? tool is ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform3D or ToolMode.Hand
                 : IsScene2DFrontView()
                     ? tool != ToolMode.Transform3D
-                    : tool is ToolMode.Select or ToolMode.Hand
+                    : tool is ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Hand
             : tool != ToolMode.Transform3D;
     }
 
@@ -1175,7 +1122,7 @@ internal sealed partial class MainForm : Form
 
     internal static bool SupportsMarqueeSelection(ToolMode tool)
     {
-        return tool is ToolMode.Select or ToolMode.Transform or ToolMode.Distort;
+        return tool is ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform or ToolMode.Distort;
     }
 
     internal static bool ShouldShowFillEdgeBezierOverlay(
@@ -1274,7 +1221,7 @@ internal sealed partial class MainForm : Form
         {
             DrawingElementKind.Fill => false,
             DrawingElementKind.Stroke or DrawingElementKind.BoundaryStroke => true,
-            _ => shape == ShapeKind.Line
+            _ => shape is ShapeKind.Line or ShapeKind.Freeform
         };
     }
 
@@ -1395,7 +1342,8 @@ internal sealed partial class MainForm : Form
             ToolMode.Transform => SvgIconKind.Transform,
             ToolMode.Distort => SvgIconKind.Distort,
             ToolMode.Hand => SvgIconKind.Pan,
-            ToolMode.Select => SvgIconKind.Select,
+            ToolMode.ObjectSelect => SvgIconKind.Select,
+            ToolMode.Select => SvgIconKind.DirectSelect,
             ToolMode.PolygonLasso => SvgIconKind.PolygonLasso,
             ToolMode.FreehandLasso => SvgIconKind.FreehandLasso,
             _ => SvgIconKind.Rectangle
@@ -1429,6 +1377,8 @@ internal sealed partial class MainForm : Form
     {
         return tool switch
         {
+            ToolMode.ObjectSelect => "Black Arrow Tool",
+            ToolMode.Select => "White Arrow Tool",
             ToolMode.Transform => "Free Transform Tool",
             ToolMode.Transform3D => "3D Transform Tool",
             ToolMode.Distort => "Distort Tool",
@@ -1480,6 +1430,7 @@ internal sealed partial class MainForm : Form
     private void RefreshToolButtons()
     {
         EnsureToolValidForSceneContext();
+        RefreshSelectionArrowPresentation();
         _stage.SetShotFramingPresentation(_applicationSettings.SimpleCameraStyleEnabled, _tool == ToolMode.Transform);
         var workspace = _workspaceTabs.SelectedView;
         var drawingToolsBlocked = DrawingToolsBlocked();

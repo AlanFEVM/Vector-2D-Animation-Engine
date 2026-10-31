@@ -72,6 +72,7 @@ internal static class ShortcutCommandIds
     public const string ToolGradient = "tool.gradient";
     public const string ToolEraser = "tool.eraser";
     public const string SelectionGroup = "tool-group.selection";
+    public const string ToolObjectSelect = "tool.object-select";
     public const string ShapeGroup = "tool-group.shape";
     public const string LineGroup = "tool-group.line";
     public const string BrushGroup = "tool-group.brush";
@@ -120,7 +121,8 @@ internal static class ShortcutProfiles
 
     private static readonly ShortcutCommandDefinition[] CommandCatalog =
     [
-        Tool(ShortcutCommandIds.ToolSelect, "Select", ToolMode.Select),
+        Tool(ShortcutCommandIds.ToolObjectSelect, "Black Arrow", ToolMode.ObjectSelect),
+        Tool(ShortcutCommandIds.ToolSelect, "White Arrow", ToolMode.Select),
         Tool(ShortcutCommandIds.ToolTransform, "Free Transform", ToolMode.Transform),
         Tool(ShortcutCommandIds.ToolDistort, "Distort", ToolMode.Distort),
         Tool(ShortcutCommandIds.ToolHand, "Hand", ToolMode.Hand),
@@ -186,7 +188,8 @@ internal static class ShortcutProfiles
         Name = "Traditional Flash",
         Bindings =
         [
-            Bind(ShortcutCommandIds.ToolSelect, Keys.V),
+            Bind(ShortcutCommandIds.ToolObjectSelect, Keys.V),
+            Bind(ShortcutCommandIds.ToolSelect, Keys.A),
             Bind(ShortcutCommandIds.ToolTransform, Keys.Q),
             Bind(ShortcutCommandIds.ToolHand, Keys.H),
             Bind(ShortcutCommandIds.ToolRectangle, Keys.R),

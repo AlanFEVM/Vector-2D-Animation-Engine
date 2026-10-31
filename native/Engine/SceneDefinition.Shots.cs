@@ -120,6 +120,14 @@ internal sealed partial class SceneDefinition
         return true;
     }
 
+    internal bool UpdateShotMicroMotion(string shotId, SceneShotMicroMotionSettings settings)
+    {
+        if (!settings.IsValid || FindShot(shotId) is not { } shot || shot.MicroMotion == settings) return false;
+        shot.MicroMotion = settings;
+        MarkShotsChanged();
+        return true;
+    }
+
     // Legacy sequence metadata is kept readable, but it no longer controls the camera timeline.
     public bool TrySetShotDuration(string? shotId, int durationFrames)
     {
@@ -180,6 +188,7 @@ internal sealed partial class SceneDefinition
                 ColorArgb = shot.ColorArgb,
                 LayerIds = [],
                 Settings = shot.Settings,
+                MicroMotion = shot.MicroMotion,
                 StateKeyframes = shot.StateKeyframes.ToArray()
             })
             .ToArray();
@@ -199,7 +208,8 @@ internal sealed partial class SceneDefinition
                     Name = item.Name,
                     Detail = item.Detail,
                     DurationFrames = item.DurationFrames,
-                    ColorArgb = item.ColorArgb
+                    ColorArgb = item.ColorArgb,
+                    MicroMotion = item.MicroMotion.Normalized()
                 };
                 // Legacy LayerIds are intentionally not restored.
                 if (item.Settings.IsValid) shot.SetSettingsAtFrame(0, item.Settings);
@@ -558,6 +568,7 @@ internal sealed partial class SceneDefinition
                 SceneShotDefinition.MinimumDurationFrames,
                 SceneShotDefinition.MaximumDurationFrames);
             if (!shot.Settings.IsValid) shot.SetSettingsAtFrame(0, SceneShotSettings.Default);
+            shot.MicroMotion = shot.MicroMotion.Normalized();
             shot.LayerIds.Clear();
             var color = Color.FromArgb(shot.ColorArgb);
             shot.ColorArgb = color.A == 0
