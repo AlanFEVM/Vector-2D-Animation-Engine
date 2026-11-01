@@ -816,13 +816,17 @@ internal sealed partial class TimelineStrip : Control
             var next = Math.Clamp(value, StartFrame, EndFrame);
             if (_currentFrame == next)
             {
-                if (EnsureCurrentFrameVisibleCore()) Invalidate();
+                if (EnsureCurrentFrameVisibleCore()) InvalidateFrameViewport();
                 return;
             }
 
             var previousFrame = _currentFrame;
             _currentFrame = next;
-            if (EnsureCurrentFrameVisibleCore()) Invalidate();
+            if (EnsureCurrentFrameVisibleCore())
+            {
+                InvalidateFrameViewport();
+                InvalidateCursorTimeTransition(previousFrame, next);
+            }
             else InvalidateFrameTransition(previousFrame, next);
             if (_draggingFrameSelection) _frameSelectionFramePending = true;
             else CurrentFrameChanged?.Invoke(this, EventArgs.Empty);
@@ -831,12 +835,17 @@ internal sealed partial class TimelineStrip : Control
 
     public string FrameStatusText
     {
-        get
-        {
-            var contextName = _sceneDefinition?.Name ?? _drawingObjectDefinition?.Name ?? "Drawing Timeline";
-            var name = ResolveTimelineHeaderLabel(contextName);
-            return $"{UiLocalization.T(name)}    {UiLocalization.T("Frame")} {CurrentFrame} / {Math.Max(0, FrameCount - 1)}";
-        }
+        get => FormatFrameStatus(CurrentFrame.ToString());
+    }
+
+    internal string FrameStatusSizingText => FormatFrameStatus(
+        new string('8', Math.Max(0, FrameCount - 1).ToString().Length));
+
+    private string FormatFrameStatus(string frame)
+    {
+        var contextName = _sceneDefinition?.Name ?? _drawingObjectDefinition?.Name ?? "Drawing Timeline";
+        var name = ResolveTimelineHeaderLabel(contextName);
+        return $"{UiLocalization.T(name)}    {UiLocalization.T("Frame")} {frame} / {Math.Max(0, FrameCount - 1)}";
     }
 
     public bool IsPlaying
@@ -1219,7 +1228,7 @@ internal sealed partial class TimelineStrip : Control
 
     public void EnsureCurrentFrameVisible()
     {
-        if (EnsureCurrentFrameVisibleCore()) Invalidate();
+        if (EnsureCurrentFrameVisibleCore()) InvalidateFrameViewport();
     }
 
     private bool EnsureCurrentFrameVisibleCore()
@@ -4762,7 +4771,7 @@ internal sealed partial class TimelineStrip : Control
         var next = Math.Clamp(frame, StartFrame, maxFirst);
         if (_firstVisibleFrame == next) return;
         _firstVisibleFrame = next;
-        if (invalidate) Invalidate();
+        if (invalidate) InvalidateFrameViewport();
     }
 
     private void SetFirstVisibleTrack(int track, bool invalidate = true)
@@ -4827,15 +4836,29 @@ internal sealed partial class TimelineStrip : Control
     private void InvalidateFrameTransition(int previousFrame, int nextFrame)
     {
         var layout = CreateLayout();
-        var previousTimeBounds = CursorTimeBounds(layout, previousFrame);
-        var nextTimeBounds = CursorTimeBounds(layout, nextFrame);
-        if (!previousTimeBounds.IsEmpty) Invalidate(previousTimeBounds);
-        if (!nextTimeBounds.IsEmpty) Invalidate(nextTimeBounds);
+        InvalidateCursorTimeTransition(previousFrame, nextFrame);
         InvalidateRulerFrameColumn(layout, previousFrame);
         InvalidateRulerFrameColumn(layout, nextFrame);
         InvalidateOnionSkinRangeTransition(layout, previousFrame, nextFrame);
         InvalidateFrameColumn(layout, previousFrame);
         InvalidateFrameColumn(layout, nextFrame);
+    }
+
+    private void InvalidateFrameViewport()
+    {
+        var layout = CreateLayout();
+        var bounds = new Rectangle(layout.TrackLeft, HeaderHeight,
+            Math.Max(0, Width - layout.TrackLeft), Math.Max(0, Height - HeaderHeight));
+        if (bounds.Width > 0 && bounds.Height > 0) Invalidate(bounds);
+    }
+
+    private void InvalidateCursorTimeTransition(int previousFrame, int nextFrame)
+    {
+        var layout = CreateLayout();
+        var previousTimeBounds = CursorTimeBounds(layout, previousFrame);
+        var nextTimeBounds = CursorTimeBounds(layout, nextFrame);
+        if (!previousTimeBounds.IsEmpty) Invalidate(previousTimeBounds);
+        if (!nextTimeBounds.IsEmpty) Invalidate(nextTimeBounds);
     }
 
     private void InvalidateRulerFrameColumn(TimelineLayout layout, int frame)
@@ -5568,6 +5591,7 @@ internal sealed partial class TimelineStrip : Control
         SvgIconKind icon,
         bool hovered)
     {
+        if (!graphics.IsVisible(bounds)) return;
         var highContrast = SystemInformation.HighContrast;
         var allVisible = AreAllLayersVisible();
         var soloSelected = IsOnlyActiveTrackVisible() && (!allVisible || _soloVisibilityRequested);

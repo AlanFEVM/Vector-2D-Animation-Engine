@@ -368,9 +368,7 @@ internal sealed partial class VectorScene
         }
         if (IsWholeObjectShape(shape))
         {
-            // Imported SVG and bitmap shapes are queried through the world contours
-            // FillWorldContours builds from MapObjectPoint, i.e. already deformed.
-            var wholeObjectPoint = shape is VectorAnimationEngine.ShapeKind.ImportedSvg or VectorAnimationEngine.ShapeKind.Bitmap
+            var wholeObjectPoint = shape == VectorAnimationEngine.ShapeKind.ImportedSvg
                 ? world
                 : sourceWorld;
             return HitObject(wholeObjectPoint, i, toleranceWorld)

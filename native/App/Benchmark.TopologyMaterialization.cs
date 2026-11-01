@@ -94,12 +94,20 @@ internal static partial class Benchmark
 
             void CancelMaterialChange()
             {
+                var presentationGeneration = RequireField(typeof(MainForm), "_presentationRefreshGeneration").GetValue(form)!;
+                Call("ApplyDeferredPresentationRefresh", presentationGeneration);
                 var selected = Selected();
+                var materialSnapshot = scene.CreateSnapshot();
                 Call("BeginMaterialContinuousEdit");
-                Call("PushMaterialUndoSnapshot", scene.CreateSnapshot());
+                AssertTimeline(RequireField(typeof(MainForm), "_materialEditSession").GetValue(form) is not null,
+                    $"Marquee {(line ? "line" : "fill")} material rollback fixture did not start a bound edit session.");
+                Call("PushMaterialUndoSnapshot", materialSnapshot);
                 if (line) scene.StrokeArgb[selected] = Color.Coral.ToArgb();
                 else scene.Argb[selected] = Color.Coral.ToArgb();
                 Call("CancelMaterialContinuousEdit");
+                AssertRestored(materialSnapshot, "material edit rollback must retain temporary topology");
+                AssertTimeline(RequireField(typeof(MainForm), "_marqueeMaterializationSession").GetValue(form) is not null,
+                    $"Marquee {(line ? "line" : "fill")} material rollback lost its temporary topology transaction.");
             }
 
             void AssertRestored(VectorSceneSnapshot expected, string label)

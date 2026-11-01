@@ -14,7 +14,8 @@ internal sealed partial class MainForm
         var firstMoveStartedAt = firstMove ? Stopwatch.GetTimestamp() : 0;
         var firstMovePreviewAttempted = false;
         var firstMovePreviewPresented = false;
-        if (ShouldPresentSelectionDragPreview(firstMove, _activeHandle, _selectedElements.Count))
+        if (ShouldPresentSelectionDragPreview(
+                firstMove, _activeHandle, _selectedElements.Count, UsesObjectSelection))
         {
             firstMovePreviewAttempted = true;
             _stage.BeginDragFirstMoveTelemetry(firstMoveStartedAt);
@@ -69,6 +70,13 @@ internal sealed partial class MainForm
                 if (!EnsureSelectedElementDetachedForMove(out materializeMilliseconds))
                 {
                     return;
+                }
+                if (firstMove)
+                {
+                    if (UsesObjectSelection) _stage.BeginSelectionMoveFeedback(_selectedMoveStarts.Keys);
+                    else _stage.SetSelectionFillDragFrontObjects(
+                            _selectedObjects.Where(index => !_scene.HasStroke(index)),
+                            invalidate: false);
                 }
                 // Whole-stroke and whole-vertex moves never reshape a coincident fill; only a
                 // selection that mixes in other shapes keeps the existing boundary support.
@@ -173,6 +181,7 @@ internal sealed partial class MainForm
         }
         finally
         {
+            if (firstMove && !modelFrameReady) _stage.ClearSelectionFillDragFront();
             if (firstMovePreviewAttempted && !modelFrameReady)
             {
                 if (firstMovePreviewPresented)
@@ -196,11 +205,13 @@ internal sealed partial class MainForm
     internal static bool ShouldPresentSelectionDragPreview(
         bool firstMove,
         EditHandleKind handle,
-        int selectedElementCount)
+        int selectedElementCount,
+        bool objectSelection = false)
     {
         return firstMove
             && handle == EditHandleKind.None
-            && selectedElementCount > 0;
+            && selectedElementCount > 0
+            && !objectSelection;
     }
 
     private bool UpdateFillEdgeBezierOverlayTranslationForMove()
@@ -298,14 +309,6 @@ internal sealed partial class MainForm
             .ToArray();
         if (materializeEndpointNeighbors) SetSelection(primaryObject, deferPresentation: true);
         else SetSelection(selectedObjects, deferPresentation: true);
-        if (_activeHandle == EditHandleKind.None)
-        {
-            _stage.SetSelectionFillDragFrontObjects(
-                materialized.Parts
-                    .Where(part => part.Source.Kind == DrawingElementKind.Fill)
-                    .Select(part => part.Result.ObjectIndex),
-                invalidate: false);
-        }
         CaptureEditStart(_selectedObject);
         _geometryDirty |= materialized.Changed;
         if (materialized.Changed) QueueDeferredPresentationRefresh(DeferredPresentationRefresh.Hierarchy);
@@ -478,7 +481,8 @@ internal sealed partial class MainForm
         if (ShouldPresentSelectionDragPreview(
                 !_undoCapturedForPointerEdit,
                 _activeHandle,
-                _selectedElements.Count))
+                _selectedElements.Count,
+                UsesObjectSelection))
         {
             MoveSelectedFromPointer(world);
             return;

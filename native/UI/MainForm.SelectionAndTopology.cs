@@ -376,7 +376,7 @@ internal sealed partial class MainForm : Form
         _marqueeSelecting = false;
         _marqueeStart = null;
         _stage.ClearMarquee();
-        UpdateInspector();
+        QueueDeferredPresentationRefresh(DeferredPresentationRefresh.Inspector);
         _stage.Invalidate();
     }
 
@@ -2039,8 +2039,9 @@ internal sealed partial class MainForm : Form
         {
             // Whole raster objects use the same envelope and persistent warp as vectors;
             // the renderer maps their pixels without materializing editable vertices.
-            if (_selectedObjects.Count == 0
-                || !_selectedObjects.All(i => _scene.SupportsDistortion(i)))
+            if (SelectedSceneInstance() is null
+                && (_selectedObjects.Count == 0
+                    || !_selectedObjects.All(i => _scene.SupportsDistortion(i))))
             {
                 _stage.SetDistortOverlay(false, default);
                 _stage.SetTransformOverlay(false, RectangleF.Empty);

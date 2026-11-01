@@ -365,14 +365,14 @@ internal static partial class SvgIcons
                 break;
             case SvgIconKind.Select:
             {
-                var pointer = new[] { P(r, 4, 2), P(r, 13, 21), P(r, 15, 13), P(r, 22, 12) };
+                var pointer = SelectionArrowPointer(r);
                 g.FillPolygon(Brushes.Black, pointer);
                 DrawPolygon(g, pen, pointer);
                 break;
             }
             case SvgIconKind.DirectSelect:
             {
-                var pointer = new[] { P(r, 4, 2), P(r, 13, 21), P(r, 15, 13), P(r, 22, 12) };
+                var pointer = SelectionArrowPointer(r);
                 g.FillPolygon(Brushes.White, pointer);
                 using var outline = new Pen(Color.FromArgb(35, 39, 45), pen.Width);
                 DrawPolygon(g, outline, pointer);
@@ -1203,6 +1203,9 @@ internal static partial class SvgIcons
                 P(bounds, centerX + MathF.Cos(angle) * radius, centerY + MathF.Sin(angle) * radius));
         }
     }
+
+    internal static PointF[] SelectionArrowPointer(RectangleF bounds)
+        => [P(bounds, 4, 2), P(bounds, 13, 21), P(bounds, 15, 13), P(bounds, 22, 12)];
 
     private static PointF P(RectangleF r, float x, float y) => new(r.Left + r.Width * x / 24f, r.Top + r.Height * y / 24f);
 

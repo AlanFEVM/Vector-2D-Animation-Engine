@@ -3591,6 +3591,8 @@ internal sealed partial class MainForm : Form
     private bool CycleActiveToolGroup(bool reverse)
     {
         if (_selectionToolGroup.Contains(_tool)) return CycleToolPairGroup(_selectionToolGroup, reverse);
+        if (_lassoToolGroup?.Contains(_tool) == true) return CycleToolPairGroup(_lassoToolGroup, reverse);
+        if (_transformToolGroup?.Contains(_tool) == true) return CycleToolPairGroup(_transformToolGroup, reverse);
         if (_paintToolGroup.Contains(_tool)) return CycleToolPairGroup(_paintToolGroup, reverse);
         if (!IsEditableDrawingContext()) return false;
 
@@ -4196,6 +4198,11 @@ internal sealed partial class MainForm : Form
 
     private bool UndoLastEdit()
     {
+        if (_objectDrawingPenCommit is not null)
+        {
+            CancelTraditionalPenPath();
+            CancelPenCurve();
+        }
         // Undo is a hard boundary for a held-key gesture: settle its deferred refresh first, then the
         // single gesture-wide undo entry restores the state from before the whole hold.
         FinishTimelineRepeatGesture();

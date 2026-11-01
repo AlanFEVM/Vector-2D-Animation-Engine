@@ -59,7 +59,7 @@ internal static partial class Benchmark
                 var actual = BitmapTransformProbe(scene, index, probes[probeIndex]);
                 AssertBitmapTransformPoint(actual, TransformBitmapProbe(previous[probeIndex], transform),
                     "Sequential bitmap transforms lost an existing distortion.");
-                AssertTimeline(scene.HitTest(actual, 0, 1) == index,
+                AssertTimeline(scene.HitTest(actual, 0, 1) == index && scene.HasSelectableObjectAt(actual, 0, 1),
                     "Transformed bitmap hit testing disagreed with its image mapping.");
             }
         }
@@ -107,9 +107,14 @@ internal static partial class Benchmark
             new BitmapObjectData { ImageAssetId = "pointer-bitmap", PlacedSize = new SizeF(3000, 2000) });
         RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]).Invoke(form, [index, false]);
         RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.Transform]);
+        RequireMethod(typeof(MainForm), "FlushDeferredPresentationOverlaysForPointerHitTest").Invoke(form, null);
+        AssertTimeline(stage.TransformBoundsVisible,
+            "Bitmap skew regression did not publish its transform overlay.");
         var handle = stage.GetTransformOverlayScreenGeometry().SkewHandles
             .Single(item => item.Kind == TransformHandleKind.SkewTop);
         var start = Point.Round(handle.Point);
+        AssertTimeline(stage.HitTestTransformHandle(start) == TransformHandleKind.SkewTop,
+            "Bitmap skew regression did not target the actual skew handle.");
         var end = new Point(start.X + 30, start.Y);
         var startWorld = stage.ScreenToWorld(start);
         var endWorld = stage.ScreenToWorld(end);

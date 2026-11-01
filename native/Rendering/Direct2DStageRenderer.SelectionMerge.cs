@@ -186,10 +186,10 @@ internal sealed partial class Direct2DStageRenderer
         var tolerance = MergedSelectionPointTolerancePixels
             / MathF.Max(0.0001f, VectorUnits.PixelsPerUnit * stage.Zoom);
         var points = SimplifyMergedContour(world, closed, tolerance);
-        sink.BeginFigure(WorldToVector(stage, points[0]), FigureBegin.Hollow);
+        sink.BeginFigure(ToVector(points[0]), FigureBegin.Hollow);
         for (var index = 1; index < points.Length; index++)
         {
-            sink.AddLine(WorldToVector(stage, points[index]));
+            sink.AddLine(ToVector(points[index]));
         }
 
         sink.EndFigure(closed && points[0] != points[^1] ? FigureEnd.Closed : FigureEnd.Open);
@@ -300,11 +300,11 @@ internal sealed partial class Direct2DStageRenderer
     {
         var builder = MergedSelectionBuilderFor(kind);
         var sink = builder.Sink;
-        sink.BeginFigure(WorldToVector(stage, segment.Start), FigureBegin.Hollow);
+        sink.BeginFigure(ToVector(segment.Start), FigureBegin.Hollow);
         sink.AddBezier(new BezierSegment(
-            WorldToVector(stage, segment.Control1),
-            WorldToVector(stage, segment.Control2),
-            WorldToVector(stage, segment.End)));
+            ToVector(segment.Control1),
+            ToVector(segment.Control2),
+            ToVector(segment.End)));
         sink.EndFigure(FigureEnd.Open);
         builder.Figures++;
     }
@@ -313,10 +313,10 @@ internal sealed partial class Direct2DStageRenderer
     {
         var builder = MergedSelectionBuilderFor(kind);
         var sink = builder.Sink;
-        var topLeft = WorldToVector(stage, new GdiPointF(bounds.Left, bounds.Top));
-        var topRight = WorldToVector(stage, new GdiPointF(bounds.Right, bounds.Top));
-        var bottomRight = WorldToVector(stage, new GdiPointF(bounds.Right, bounds.Bottom));
-        var bottomLeft = WorldToVector(stage, new GdiPointF(bounds.Left, bounds.Bottom));
+        var topLeft = new Vector2(bounds.Left, bounds.Top);
+        var topRight = new Vector2(bounds.Right, bounds.Top);
+        var bottomRight = new Vector2(bounds.Right, bounds.Bottom);
+        var bottomLeft = new Vector2(bounds.Left, bounds.Bottom);
         sink.BeginFigure(topLeft, FigureBegin.Hollow);
         sink.AddLine(topRight);
         sink.AddLine(bottomRight);
@@ -338,18 +338,25 @@ internal sealed partial class Direct2DStageRenderer
         return true;
     }
 
-    private void DrawMergedSelectionGeometry()
+    private void DrawMergedSelectionGeometry(StageControl stage)
     {
         foreach (var builder in _mergedSelectionBuilders.Values)
         {
             builder.Sink.Close();
         }
 
-        foreach (var (kind, builder) in _mergedSelectionBuilders)
+        var transform = _target!.Transform;
+        try
         {
-            if (builder.Figures == 0) continue;
-            DrawSelectionGeometry(builder.Path, primary: false, highlightKind: kind);
+            _target.Transform = WorldToScreenTransform(stage) * transform;
+            foreach (var (kind, builder) in _mergedSelectionBuilders)
+            {
+                if (builder.Figures == 0) continue;
+                DrawSelectionGeometry(builder.Path, primary: false, highlightKind: kind,
+                    strokeWidthScale: stage.ScreenLengthToWorld(1));
+            }
         }
+        finally { _target.Transform = transform; }
 
         foreach (var (point, kind) in _mergedSelectionDots)
         {

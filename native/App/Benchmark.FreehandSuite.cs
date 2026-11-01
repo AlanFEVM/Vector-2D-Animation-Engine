@@ -6,8 +6,13 @@ internal static partial class Benchmark
 {
     public static void RunFreehandStress()
     {
+        RunSelectionPickingRegression();
+        RunBrushStrokeGeometryRegression();
+        RunPressurePreviewStabilityRegression();
+        RunObjectDrawingRegression();
         RunShortcutProfileExpansionRegression();
         RunMarqueeUndoTopologyRegression();
+        RunMarqueeCurvePerformanceRegression();
         RunLinkedFillBoundaryRegression();
         RunFillBoundaryCubicDistortionFollowRegression();
         RunShapeToolRegression();
@@ -193,6 +198,7 @@ internal static partial class Benchmark
         Console.WriteLine($"crossing_overpaint_objects={crossingScene.ObjectCount}");
         Console.WriteLine($"build_ms={build.Elapsed.TotalMilliseconds:0.0}");
         Console.WriteLine($"avg_commit_ms={build.Elapsed.TotalMilliseconds / strokeCount:0.000}");
+        RunBrushToolCommitPerformanceRegression();
     }
 
     private static void RunRenderOrderRegression()

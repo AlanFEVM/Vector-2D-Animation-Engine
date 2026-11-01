@@ -59,14 +59,19 @@ internal sealed partial class StageControl
             graphics.DrawEllipse(dropOutline, 19, 15, 6, 8);
         }
 
+        return CreateSystemCursor(bitmap, new Point(size / 2, size / 2), out cursorHandle);
+    }
+
+    private static Cursor CreateSystemCursor(Bitmap bitmap, Point hotspot, out FillCursorHandle cursorHandle)
+    {
         var icon = bitmap.GetHicon();
         FillCursorIconInfo info = default;
         try
         {
             if (!GetFillCursorIconInfo(icon, out info)) throw new Win32Exception(Marshal.GetLastWin32Error());
             info.IsIcon = false;
-            info.HotspotX = (uint)(size / 2);
-            info.HotspotY = (uint)(size / 2);
+            info.HotspotX = (uint)hotspot.X;
+            info.HotspotY = (uint)hotspot.Y;
             var handle = CreateFillCursorIndirect(ref info);
             if (handle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
             cursorHandle = new FillCursorHandle(handle);

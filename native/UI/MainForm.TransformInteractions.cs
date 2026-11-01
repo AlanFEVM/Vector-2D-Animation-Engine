@@ -282,7 +282,7 @@ internal sealed partial class MainForm : Form
                     e.Location,
                     PointerMovedFromStart(e.Location));
             }
-            _stage.Cursor = Cursors.SizeAll;
+            UpdateInteractionCursor(e.Location);
             return;
         }
 
@@ -295,9 +295,7 @@ internal sealed partial class MainForm : Form
             {
                 QueueFillEdgeBezierPointer(_stage.ScreenToWorld(e.Location));
             }
-            _stage.Cursor = fillEdgeSession.Handle == EditHandleKind.None
-                ? Cursors.Cross
-                : Cursors.SizeAll;
+            UpdateInteractionCursor(e.Location);
             return;
         }
 
@@ -446,6 +444,11 @@ internal sealed partial class MainForm : Form
 
     private void UpdateHoveredLineControls(Point screen)
     {
+        if (TryGetObjectArrowMoveTarget(screen, out _))
+        {
+            _stage.ClearHoveredLineElement();
+            return;
+        }
         if (!UsesSelectionGeometryEditing || !IsEditableDrawingContext() || IsScene3DView())
         {
             _stage.ClearHoveredLineElement();
@@ -2195,7 +2198,12 @@ internal sealed partial class MainForm : Form
         line = DrawingElementHit.None;
         handle = EditHandleKind.None;
         var hit = _scene.HitTestElement(_stage.ScreenToWorld(screen), _frame, SelectionToleranceWorld());
-        var candidates = new[] { hit, _selectedElement, _stage.HoveredLineElement }
+        var wholeLine = hit.IsValid && hit.Key.Kind == DrawingElementKind.Stroke
+            && _scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
+                ? new DrawingElementHit(new DrawingElementKey(hit.Key.ObjectIndex, DrawingElementKind.Stroke, 0), 0, 0, 1)
+                : DrawingElementHit.None;
+        var bestDistance = float.PositiveInfinity;
+        var candidates = new[] { wholeLine, hit, _selectedElement, _stage.HoveredLineElement }
             .Concat(_selectedElements)
             .Concat(_selectedObjects.Select(objectIndex => new DrawingElementHit(
                 new DrawingElementKey(objectIndex, DrawingElementKind.Stroke, 0), 0, 0, 1)));
@@ -2209,11 +2217,15 @@ internal sealed partial class MainForm : Form
                 || !_stage.TryResolveEditableBezierHit(screen, candidate, out var editable)) continue;
             var candidateHandle = _stage.HitTestLineElementHandle(screen, editable);
             if (candidateHandle is not (EditHandleKind.LineStart or EditHandleKind.LineEnd)) continue;
+            if (!_stage.TryGetEditableBezierWorldPoints(editable, out var start, out _, out _, out var end)) continue;
+            var endpoint = candidateHandle == EditHandleKind.LineStart ? start : end;
+            var distance = Distance(screen, _stage.WorldToScreen(endpoint.X, endpoint.Y));
+            if (distance >= bestDistance) continue;
+            bestDistance = distance;
             line = editable;
             handle = candidateHandle;
-            return true;
         }
-        return false;
+        return line.IsValid;
     }
 
     private bool TryFindSelectedLineControlHit(Point screen, out DrawingElementHit line)

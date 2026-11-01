@@ -115,7 +115,14 @@ internal sealed partial class TimelineStrip : Control
 
         if (graphics.IsVisible(new Rectangle(0, 0, Width, ToolbarHeaderHeight)))
             DrawToolbarHeader(graphics, layout);
-        DrawTabGroupBar(graphics, layout, clipBounds);
+        var tabGroupBounds = TabGroupBarBounds();
+        if (graphics.IsVisible(tabGroupBounds))
+        {
+            var tabGroupState = graphics.Save();
+            graphics.SetClip(tabGroupBounds, CombineMode.Intersect);
+            DrawTabGroupBar(graphics, layout, clipBounds);
+            graphics.Restore(tabGroupState);
+        }
     }
 
     private void DrawToolbarHeader(Graphics graphics, TimelineLayout layout)
@@ -135,7 +142,7 @@ internal sealed partial class TimelineStrip : Control
                     titleBounds, Theme.ReadableText(Theme.Panel, Theme.Text),
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         }
-        else
+        else if (graphics.IsVisible(TimelineTitleIconBounds()))
         {
             SvgIcons.Draw(graphics, SvgIconKind.TimelineTitle, TimelineTitleIconBounds(),
                 SystemInformation.HighContrast ? SystemColors.ControlText
@@ -254,6 +261,7 @@ internal sealed partial class TimelineStrip : Control
 
     private void DrawHeightResizeHandle(Graphics graphics)
     {
+        if (!graphics.IsVisible(HeightResizeHandleBounds())) return;
         var scale = DeviceDpi / 96f;
         var y = Math.Max(2f * scale, HeightResizeHandleHeight / 2f);
         var color = SystemInformation.HighContrast ? SystemColors.ControlText
@@ -275,7 +283,7 @@ internal sealed partial class TimelineStrip : Control
     private void DrawGutterSplitterHandle(Graphics graphics, TimelineLayout layout)
     {
         var bounds = GutterSplitterBounds(layout);
-        if (bounds.Width <= 0 || bounds.Height <= 0) return;
+        if (bounds.Width <= 0 || bounds.Height <= 0 || !graphics.IsVisible(bounds)) return;
         var scale = DeviceDpi / 96f;
         var active = _draggingGutterSplitter || _hoveringGutterSplitter;
         var color = SystemInformation.HighContrast ? SystemColors.ControlText

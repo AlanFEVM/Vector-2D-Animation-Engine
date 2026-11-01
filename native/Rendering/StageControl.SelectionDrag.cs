@@ -198,7 +198,8 @@ internal sealed partial class StageControl
 
     private bool ClearSelectionFillDragFrontCore()
     {
-        if (_selectionFillDragFrontScene is null && _selectionFillDragFrontObjects.Count == 0) return false;
+        var feedbackCleared = ClearSelectionMoveFeedbackCore();
+        if (_selectionFillDragFrontScene is null && _selectionFillDragFrontObjects.Count == 0) return feedbackCleared;
         _selectionFillDragFrontScene = null;
         _selectionFillDragFrontObjects.Clear();
         return true;

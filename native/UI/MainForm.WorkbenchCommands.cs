@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using ArrowCursorFeedback = VectorAnimationEngine.StageControl.SelectionArrowCursorFeedback;
 
 namespace VectorAnimationEngine;
 
@@ -13,6 +14,22 @@ internal sealed partial class MainForm : Form
         if (!CanActivateTool(tool)) return;
         var toolChanged = tool != _tool;
         if (toolChanged && !CommitTextEdit()) return;
+        var transitionStarted = (toolChanged || _inspectorCategory != InspectorCategory.Tools)
+            && BeginInspectorTransition();
+        try
+        {
+            ActivateToolContents(tool, toolChanged);
+            if (transitionStarted) CompleteInspectorTransition();
+        }
+        catch
+        {
+            if (transitionStarted) _inspectorTransition?.Cancel();
+            throw;
+        }
+    }
+
+    private void ActivateToolContents(ToolMode tool, bool toolChanged)
+    {
         if (toolChanged)
         {
             FinishPointerInteractionForContextChange();
@@ -39,8 +56,12 @@ internal sealed partial class MainForm : Form
         if (!IsLineTool(tool)) HideLineToolFlyout();
         if (!IsBrushTool(tool)) HideBrushToolFlyout();
         if (!_selectionToolGroup.Contains(tool)) HideToolPairFlyout(_selectionToolGroup);
+        if (_lassoToolGroup?.Contains(tool) != true) HideToolPairFlyout(_lassoToolGroup);
+        if (_transformToolGroup?.Contains(tool) != true) HideToolPairFlyout(_transformToolGroup);
         if (!_paintToolGroup.Contains(tool)) HideToolPairFlyout(_paintToolGroup);
         if (_selectionToolGroup.Contains(tool)) _selectionToolGroup.ActiveTool = tool;
+        else if (_lassoToolGroup?.Contains(tool) == true) _lassoToolGroup.ActiveTool = tool;
+        else if (_transformToolGroup?.Contains(tool) == true) _transformToolGroup.ActiveTool = tool;
         else if (_paintToolGroup.Contains(tool)) _paintToolGroup.ActiveTool = tool;
         else if (IsShapeTool(tool)) _activeShapeTool = tool;
         else if (IsLineTool(tool)) _activeLineTool = tool;
@@ -714,6 +735,11 @@ internal sealed partial class MainForm : Form
         _stage.ClearBrushTipCursor();
         _stage.ClearFillToolCursor();
         ClearFillHoverPreview();
+        if (IsSelectionArrow(_tool))
+        {
+            ApplySelectionArrowCursor(ArrowCursorFeedback.None);
+            return;
+        }
         _stage.Cursor = IsDrawingTool(_tool)
             ? Cursors.Cross
             : _tool == ToolMode.Hand ? Cursors.SizeAll : Cursors.Default;
@@ -747,37 +773,57 @@ internal sealed partial class MainForm : Form
                     && _stage.HitTestMotionTrackAnchor(screen) >= 0))
         {
             var frame = _stage.HitTestMotionTrackAnchor(screen);
-            _stage.Cursor = _motionTrackDragSession is not null
-                || _motionTrackSelectedFrames.Contains(frame)
-                    ? Cursors.SizeAll
-                    : Cursors.Default;
+            var moving = _motionTrackDragSession is not null || _motionTrackSelectedFrames.Contains(frame);
+            if (IsSelectionArrow(_tool)) ApplySelectionArrowCursor(moving ? ArrowCursorFeedback.Move : ArrowCursorFeedback.None);
+            else _stage.Cursor = moving ? Cursors.SizeAll : Cursors.Default;
             return;
         }
 
         if (IsSelectionArrow(_tool))
         {
-            if (_fillEdgeDetachPending.HasValue || _fillEdgeDetachMoving.HasValue)
+            if (_marqueeSelecting)
             {
-                _stage.Cursor = Cursors.SizeAll;
+                ApplySelectionArrowCursor(ArrowCursorFeedback.None);
                 return;
             }
-            if (_arcDragSession is not null || _cornerDragSession is not null
-                || _lineBranchDragSession is not null || _fillEdgePreSelect.HasValue
+            if (_fillEdgeDetachPending.HasValue || _fillEdgeDetachMoving.HasValue)
+            {
+                ApplySelectionArrowCursor(ArrowCursorFeedback.Move);
+                return;
+            }
+            if (_cornerDragSession is not null || _lineBranchDragSession is not null)
+            {
+                ApplySelectionArrowCursor(ArrowCursorFeedback.Node);
+                return;
+            }
+            if (_arcDragSession is not null || _fillEdgePreSelect.HasValue
                 || _fillEdgeNoUiArc.HasValue)
             {
-                _stage.Cursor = Cursors.Cross;
+                ApplySelectionArrowCursor(ArrowCursorFeedback.Bend);
+                return;
+            }
+            if (_fillEdgeBezierEditSession is { } edgeSession)
+            {
+                if (edgeSession.Handle == EditHandleKind.None) ApplySelectionArrowCursor(ArrowCursorFeedback.Bend);
+                else ApplySelectionArrowHandleCursor(edgeSession.Handle);
+                return;
+            }
+            if (_fillEdgeBezierArmedSession is { } armedSession)
+            {
+                if (armedSession.Handle == EditHandleKind.None) ApplySelectionArrowCursor(ArrowCursorFeedback.Bend);
+                else ApplySelectionArrowHandleCursor(armedSession.Handle);
                 return;
             }
             if (_activeHandle != EditHandleKind.None)
             {
-                _stage.Cursor = CursorForEditHandle(_activeHandle);
+                ApplySelectionArrowHandleCursor(_activeHandle);
                 return;
             }
             if (_stage.Capture && _selectedObject >= 0 && _startWorld is not null && _selectedStart is not null
                 && !_marqueeSelecting && !_forceMarqueeOnPointerDown
                 && !_pendingClickSelection.IsValid)
             {
-                _stage.Cursor = Cursors.SizeAll;
+                ApplySelectionArrowCursor(ArrowCursorFeedback.Move);
                 return;
             }
         }
@@ -883,13 +929,20 @@ internal sealed partial class MainForm : Form
 
         _stage.ClearFillToolCursor();
 
+        if (TryGetObjectArrowMoveTarget(screen, out _))
+        {
+            ClearFillHoverPreview();
+            ApplySelectionArrowCursor(ArrowCursorFeedback.Move);
+            return;
+        }
+
         if (UsesSelectionGeometryEditing)
         {
             if (_activeHandle is EditHandleKind.LineStart or EditHandleKind.LineEnd
                 || _stage.HitTestHoveredLineHandle(screen) is EditHandleKind.LineStart or EditHandleKind.LineEnd)
             {
                 ClearFillHoverPreview();
-                _stage.Cursor = Cursors.Cross;
+                ApplySelectionArrowCursor(ArrowCursorFeedback.Node);
                 return;
             }
 
@@ -906,9 +959,9 @@ internal sealed partial class MainForm : Form
                     && _scene.HasStroke(targetObject)
                     && TryGetFillEdgeBezierOverlayPiece(fillEdgeHit.PartIndex, out var piece)
                     && !_scene.IsBoundarySegmentDetached(targetObject, piece.SourcePartIndex);
-                _stage.Cursor = fillEdgeHit.Handle != EditHandleKind.None || bodyCanMove
-                    ? Cursors.SizeAll
-                    : Cursors.Cross;
+                if (fillEdgeHit.Handle != EditHandleKind.None) ApplySelectionArrowHandleCursor(fillEdgeHit.Handle);
+                else ApplySelectionArrowCursor(IsControlPressed() ? ArrowCursorFeedback.Insert
+                    : bodyCanMove ? ArrowCursorFeedback.Move : ArrowCursorFeedback.Bend);
                 return;
             }
         }
@@ -923,10 +976,9 @@ internal sealed partial class MainForm : Form
                 && _scene.IsObjectSelectable(localHit.Key.ObjectIndex, _frame);
             if (!localObjectHasPriority)
             {
-                _stage.Cursor = _sceneInstanceMoveActive
-                    || TryResolveSceneInstanceAt(world, out _) || IsPointerInsideSelectedSceneInstance(world)
-                    ? Cursors.SizeAll
-                    : Cursors.Default;
+                var moving = _sceneInstanceMoveActive
+                    || TryResolveSceneInstanceAt(world, out _) || IsPointerInsideSelectedSceneInstance(world);
+                ApplySelectionArrowCursor(moving ? ArrowCursorFeedback.Move : ArrowCursorFeedback.None);
                 return;
             }
         }
@@ -966,16 +1018,23 @@ internal sealed partial class MainForm : Form
                 handle = _stage.HitTestHandle(screen, _selectedObject);
             }
 
+            var world = _stage.ScreenToWorld(screen);
             var hit = handle == EditHandleKind.None
-                ? _scene.HitTestElement(_stage.ScreenToWorld(screen), _frame, SelectionToleranceWorld())
+                ? _scene.HitTestElement(world, _frame, SelectionToleranceWorld())
                 : DrawingElementHit.None;
             var selectedBody = hit.IsValid
                 && _scene.IsObjectSelectable(hit.Key.ObjectIndex, _frame)
                 && (_selectedElements.Any(selected => selected.Key == hit.Key)
                     || _selectedElements.Count == 0 && _selectedObjects.Contains(hit.Key.ObjectIndex));
-            _stage.Cursor = selectedBody ? Cursors.SizeAll
-                : handle == EditHandleKind.None && !IsShiftPressed() && !IsControlPressed() && IsArrowArcDragHit(hit)
-                    ? Cursors.Cross : CursorForEditHandle(handle);
+            if (handle != EditHandleKind.None) ApplySelectionArrowHandleCursor(handle);
+            else if (IsControlPressed() && CanInsertSelectionArrowCorner(hit, world))
+                ApplySelectionArrowCursor(ArrowCursorFeedback.Insert);
+            else ApplySelectionArrowCursor(selectedBody ? ArrowCursorFeedback.Move
+                : !IsShiftPressed() && !IsControlPressed()
+                    && (IsArrowArcDragHit(hit)
+                        || IsEditableDrawingContext() && !IsScene3DView()
+                            && TryResolveUnselectedFillEdgeCandidate(screen, out _, out _))
+                    ? ArrowCursorFeedback.Bend : ArrowCursorFeedback.None);
             return;
         }
 
@@ -1178,11 +1237,13 @@ internal sealed partial class MainForm : Form
         _timeline.FrameSelectionChanged += (_, _) => SynchronizeSelectionFromTimelineFrames();
         _timeline.CurrentFrameChanged += (_, _) =>
         {
-            SetToolStripText(_timelineFrameStatus, _timeline.FrameStatusText);
+            UpdateTimelineFrameStatus();
             if (_syncingFrame) return;
             StopPlayback();
-            SetFrame(_timeline.CurrentFrame,
+            var applied = SetFrame(_timeline.CurrentFrame,
                 refreshScenePanels: !_timeline.IsScrubbingPlayhead);
+            if (applied && _timeline.IsScrubbingPlayhead && _stage.IsHandleCreated && _stage.Visible)
+                _stage.Update();
         };
         _timeline.PlayheadScrubCompleted += (_, _) =>
         {
@@ -1229,7 +1290,6 @@ internal sealed partial class MainForm : Form
         _timeline.AutoKeyframeChanged += (_, _) => PersistTimelineAutoKeyframe();
         _timeline.SelectedTweenChanged += (_, _) =>
         {
-            RefreshTweenCurveInspector();
             if (TryResolveSelectedTimelineTween(out var target))
             {
                 var category = target.SceneDefinition?.FindShot(target.Track.TargetId) is not null
@@ -1237,7 +1297,8 @@ internal sealed partial class MainForm : Form
                 if (category == InspectorCategory.None) _inspectorToolContextActive = false;
                 RevealInspectorCategory(category, "timeline tween selected");
             }
-            LayoutInspectorCategoryRail();
+            UpdateInspector();
+            RefreshTweenCurveInspector();
         };
         _timeline.CommandRequested += (_, e) => HandleTimelineCommand(e.Command, e.Cells);
         _timeline.FrameTransformRequested += (_, e) => TransformTimelineFrames(e);
@@ -2400,7 +2461,7 @@ internal sealed partial class MainForm : Form
             _animationFpsStatus,
             $"UPS {(_hasUpdateRateSample ? $"{_updatesPerSecond:0}" : "--")}/{TargetUps:0}  Animation FPS {FormatPlaybackFps(_playbackSettings.Fps)}");
         SetToolStripText(_zoomStatus, $"Zoom {_stage.ActiveViewZoom * 100:0}%");
-        SetToolStripText(_timelineFrameStatus, _timeline.FrameStatusText);
+        UpdateTimelineFrameStatus();
     }
 
     private static string FormatPlaybackFps(decimal playbackFps)
@@ -2627,7 +2688,10 @@ internal sealed partial class MainForm : Form
                 or (Keys.Control | Keys.V) or (Keys.Control | Keys.Z) or Keys.Delete
                 || (keyData & (Keys.Control | Keys.Alt)) == Keys.None
                     && (keyData & Keys.KeyCode) is >= Keys.D0 and <= Keys.Z))
+        {
+            if (_spatialTransformKeyboardActive) CancelSpatialTransformKeyboard();
             return base.ProcessCmdKey(ref msg, physicalKeyData);
+        }
         keyData = keyData is (Keys.Control | Keys.C) or (Keys.Control | Keys.V)
             ? keyData : ShortcutProfiles.ResolveWorkbenchKey(profile, keyData);
         if (keyData == Keys.F1)

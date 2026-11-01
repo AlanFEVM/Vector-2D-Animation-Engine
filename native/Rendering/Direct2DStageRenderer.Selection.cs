@@ -127,7 +127,7 @@ internal sealed partial class Direct2DStageRenderer
                     if (drawnElements >= MaxSelectionOutlines) break;
                 }
 
-                if (_mergedSelectionActive) DrawMergedSelectionGeometry();
+                if (_mergedSelectionActive) DrawMergedSelectionGeometry(stage);
 
                 var primaryElement = stage.SelectedElement;
                 if (primaryElement.IsValid
@@ -198,7 +198,7 @@ internal sealed partial class Direct2DStageRenderer
             if (drawn >= MaxSelectionOutlines) break;
         }
 
-        if (_mergedSelectionActive) DrawMergedSelectionGeometry();
+        if (_mergedSelectionActive) DrawMergedSelectionGeometry(stage);
 
         var primary = stage.SelectedObject;
         if (primary >= 0

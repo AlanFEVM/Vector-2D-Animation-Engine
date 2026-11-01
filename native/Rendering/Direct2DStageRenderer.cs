@@ -895,7 +895,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 var underlay = stage.UnderlayScene;
                 var layeredUnderlay = stage.IsUnderlayHostScene(editableScene);
                 var underlayLimit = objectDrawLimit;
-                var forceEditableObjectRenderer = stage.SelectionFillDragFrontActive
+                var forceEditableObjectRenderer = stage.SelectionFillDragFrontActive || stage.SelectionMoveFeedbackActive
                     || stage.FillEdgeBezierPointerEditing
                         && UsesObjectRenderer(stage, editableScene, stage.Zoom)
                     || stage.RequiresObjectRendererForDragPreview(editableScene);
@@ -960,6 +960,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 }
             }
 
+            DrawSelectionMoveOrigins(stage);
             DrawCanvasFrame(stage);
             if (stage.DragPreviewScene is { } dragPreview)
             {
@@ -2023,7 +2024,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         }
 
         var deferredFillObjects = stage.SelectionFillDragFrontObjectsFor(scene);
-        if (deferredFillObjects is null or { Count: 0 }
+        if (!stage.SelectionMoveFeedbackActive
+            && (deferredFillObjects is null or { Count: 0 })
             && TryDrawLayerObjectsBatched(stage, scene, layer, objects, start))
         {
             return;
@@ -2259,7 +2261,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         DrawWithSceneCompositionMaskClips(
             stage,
             i,
-            () => DrawObjectUnclipped(stage, i, pass),
+            () => DrawSelectionMoveObject(stage, i, pass),
             reference3D: false);
     }
 

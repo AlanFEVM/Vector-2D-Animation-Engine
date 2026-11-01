@@ -27,6 +27,8 @@ internal sealed class InspectorTransitionOverlay : Control
         _host.Controls.Add(this);
     }
 
+    public bool IsPreparing => _previous is not null && _target is null;
+
     public bool Begin()
     {
         if (!UiMotion.AnimationsEnabled || !_host.Visible || !_host.IsHandleCreated

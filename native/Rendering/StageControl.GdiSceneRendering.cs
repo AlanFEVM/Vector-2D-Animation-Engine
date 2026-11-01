@@ -629,7 +629,7 @@ internal sealed partial class StageControl : Control
         DrawWithSceneCompositionMaskClips(
             g,
             i,
-            () => DrawObjectUnclipped(g, i, pass),
+            () => DrawSelectionMoveObject(g, i, pass),
             reference3D: false);
     }
 

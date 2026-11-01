@@ -29,30 +29,36 @@ internal sealed partial class MainForm
         var width = Math.Max(1, right - left);
         var height = Math.Max(1, bottom - top);
         tools.SuspendLayout();
-        if (!ReferenceEquals(tools.Parent, body)) body.Controls.Add(tools);
-        tools.AutoSize = false;
-        tools.FlowDirection = FlowDirection.LeftToRight;
-        tools.WrapContents = false;
-        tools.Padding = new Padding(compact ? 1 : gap);
-        tools.AutoScroll = false;
-        tools.AutoScrollPosition = Point.Empty;
-        var buttonHeight = Math.Max(1, height - tools.Padding.Vertical);
-        var buttonGap = compact ? 1 : gap;
-        var availableButtonWidth = Math.Max(1, (width - tools.Padding.Horizontal) / visibleCount - buttonGap);
-        var buttonWidth = Math.Min(availableButtonWidth, compact ? buttonHeight : (int)Math.Round(64 * scale));
-        foreach (Control control in tools.Controls)
+        try
         {
-            control.Margin = new Padding(0, 0, buttonGap, 0);
-            control.Size = new Size(buttonWidth, compact ? buttonWidth : buttonHeight);
-            if (control is SvgIconButton button)
+            if (!ReferenceEquals(tools.Parent, body)) body.Controls.Add(tools);
+            tools.AutoSize = false;
+            tools.FlowDirection = FlowDirection.LeftToRight;
+            tools.WrapContents = false;
+            tools.Padding = new Padding(compact ? 1 : gap);
+            tools.AutoScroll = false;
+            tools.AutoScrollPosition = Point.Empty;
+            var buttonHeight = Math.Max(1, height - tools.Padding.Vertical);
+            var buttonGap = compact ? 1 : gap;
+            var availableButtonWidth = Math.Max(1, (width - tools.Padding.Horizontal) / visibleCount - buttonGap);
+            var buttonWidth = Math.Min(availableButtonWidth, compact ? buttonHeight : (int)Math.Round(64 * scale));
+            foreach (Control control in tools.Controls)
             {
-                button.ShowsLabelBelowIcon = !compact;
-                button.Text = compact ? string.Empty : UiLocalization.T(ToolbarButtonLabel(button));
-                button.Invalidate();
+                control.Margin = new Padding(0, 0, buttonGap, 0);
+                control.Size = new Size(buttonWidth, compact ? buttonWidth : buttonHeight);
+                if (control is SvgIconButton button)
+                {
+                    button.ShowsLabelBelowIcon = !compact;
+                    button.Text = compact ? string.Empty : UiLocalization.T(ToolbarButtonLabel(button));
+                    button.Invalidate();
+                }
             }
+            tools.SetBounds(left, top, width, height);
         }
-        tools.SetBounds(left, top, width, height);
-        tools.ResumeLayout(true);
+        finally
+        {
+            tools.ResumeLayout(true);
+        }
         tools.BringToFront();
     }
 
@@ -82,10 +88,13 @@ internal sealed partial class MainForm
     private string ToolbarButtonLabel(SvgIconButton button)
     {
         if (ReferenceEquals(button, _selectionToolGroup.ParentButton)) return "Select";
+        if (ReferenceEquals(button, _lassoToolGroup?.ParentButton)) return "Lasso";
+        if (ReferenceEquals(button, _transformToolGroup?.ParentButton)) return "Transform";
         if (ReferenceEquals(button, _shapeToolButton)) return "Shapes";
         if (ReferenceEquals(button, _lineToolButton)) return "Lines";
         if (ReferenceEquals(button, _brushToolButton)) return "Brush";
         if (ReferenceEquals(button, _paintToolGroup.ParentButton)) return "Fill";
+        if (ReferenceEquals(button, _vaultButton)) return "Vault";
         return button.Tag is ToolMode tool ? tool switch
         {
             ToolMode.Text => "Text",
@@ -94,7 +103,7 @@ internal sealed partial class MainForm
             ToolMode.SnapPoint => "Snap points",
             ToolMode.Eraser => "Eraser",
             _ => "Tools"
-        } : "Vault";
+        } : button.AccessibleName ?? "Tools";
     }
 
     private void LayoutToolFlyout(FlowLayoutPanel flyout, Control button)

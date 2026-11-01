@@ -1336,6 +1336,7 @@ internal static partial class Benchmark
 
     public static void RunPressureBrushRegression()
     {
+        RunPressurePreviewStabilityRegression();
         RunSoftBrushRegression();
         RunMixingBrushRegression();
         RunBrushColorPaletteRegression();

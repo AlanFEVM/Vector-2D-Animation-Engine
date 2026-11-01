@@ -1051,6 +1051,15 @@ internal sealed partial class VectorScene
     private void RebuildSpatialIndex()
     {
         var cellCount = IndexColumns * IndexRows;
+        if (ObjectCount == 0)
+        {
+            if (CellStart.Length != cellCount + 1) CellStart = new int[cellCount + 1];
+            else Array.Clear(CellStart);
+            CellObjects = [];
+            ResetSpatialAppendBuffer();
+            GeometryRevision++;
+            return;
+        }
         var workers = ParallelBatch.WorkerCount(ObjectCount, 8192);
         if (workers == 1)
         {
@@ -1063,13 +1072,13 @@ internal sealed partial class VectorScene
             }
 
             for (var i = 1; i < starts.Length; i++) starts[i] += starts[i - 1];
-            var cursor = new int[cellCount];
-            Array.Copy(starts, cursor, cellCount);
             for (var i = 0; i < ObjectCount; i++)
             {
                 var cell = CellForWorld(X[i], Y[i]);
-                if (cell >= 0) objects[cursor[cell]++] = i;
+                if (cell >= 0) objects[starts[cell]++] = i;
             }
+            for (var cell = cellCount; cell > 0; cell--) starts[cell] = starts[cell - 1];
+            starts[0] = 0;
 
             CellStart = starts;
             CellObjects = objects;
@@ -1170,34 +1179,44 @@ internal sealed partial class VectorScene
         }
 
         ClearSummaries();
-        var tileR = new long[TileCount.Length];
-        var tileG = new long[TileCount.Length];
-        var tileB = new long[TileCount.Length];
-        var overviewR = new long[OverviewCount.Length];
-        var overviewG = new long[OverviewCount.Length];
-        var overviewB = new long[OverviewCount.Length];
-
-        for (var i = 0; i < ObjectCount; i++)
+        var channels = new long[6][];
+        try
         {
-            if (!ShouldRenderLayerContent(ObjectLayer[i])) continue;
-            var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
-            var color = Color.FromArgb(useFillColorForStrokeShapes
-                ? Argb[i]
-                : shape is VectorAnimationEngine.ShapeKind.Line or VectorAnimationEngine.ShapeKind.Freeform ? StrokeArgb[i] : Argb[i]);
-            if (IsFreehandShape(shape))
-            {
-                AddObjectBoundsToSummary(i, color, TileColumns, TileRows, TileCount, TileAtoms, tileR, tileG, tileB);
-                AddObjectBoundsToSummary(i, color, OverviewColumns, OverviewRows, OverviewCount, OverviewAtoms, overviewR, overviewG, overviewB);
-            }
-            else
-            {
-                AddObjectToTileSummary(i, color, tileR, tileG, tileB);
-                AddObjectToOverviewSummary(i, color, overviewR, overviewG, overviewB);
-            }
-        }
+            for (var channel = 0; channel < channels.Length; channel++)
+                channels[channel] = RentCleared<long>(channel < 3 ? TileCount.Length : OverviewCount.Length);
+            var tileR = channels[0];
+            var tileG = channels[1];
+            var tileB = channels[2];
+            var overviewR = channels[3];
+            var overviewG = channels[4];
+            var overviewB = channels[5];
 
-        FinalizeTileSummary(tileR, tileG, tileB);
-        FinalizeOverviewSummary(overviewR, overviewG, overviewB);
+            for (var objectIndex = 0; objectIndex < ObjectCount; objectIndex++)
+            {
+                if (!ShouldRenderLayerContent(ObjectLayer[objectIndex])) continue;
+                var shape = ShapeKind.Length > objectIndex ? ShapeKind[objectIndex] : VectorAnimationEngine.ShapeKind.Rectangle;
+                var color = Color.FromArgb(useFillColorForStrokeShapes
+                    ? Argb[objectIndex]
+                    : shape is VectorAnimationEngine.ShapeKind.Line or VectorAnimationEngine.ShapeKind.Freeform ? StrokeArgb[objectIndex] : Argb[objectIndex]);
+                if (IsFreehandShape(shape))
+                {
+                    AddObjectBoundsToSummary(objectIndex, color, TileColumns, TileRows, TileCount, TileAtoms, tileR, tileG, tileB);
+                    AddObjectBoundsToSummary(objectIndex, color, OverviewColumns, OverviewRows, OverviewCount, OverviewAtoms, overviewR, overviewG, overviewB);
+                }
+                else
+                {
+                    AddObjectToTileSummary(objectIndex, color, tileR, tileG, tileB);
+                    AddObjectToOverviewSummary(objectIndex, color, overviewR, overviewG, overviewB);
+                }
+            }
+
+            FinalizeTileSummary(tileR, tileG, tileB);
+            FinalizeOverviewSummary(overviewR, overviewG, overviewB);
+        }
+        finally
+        {
+            ReturnBatches(channels);
+        }
     }
 
     private void RebuildSummariesParallel(int workers, bool useFillColorForStrokeShapes)

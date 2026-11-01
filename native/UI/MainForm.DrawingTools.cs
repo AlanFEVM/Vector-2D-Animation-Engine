@@ -142,7 +142,8 @@ internal sealed partial class MainForm : Form
             _traditionalPenOutgoingHandle,
             _traditionalPenIncomingHandle,
             end);
-        CaptureUndoSnapshot(affectedLayers: [_scene.ActiveLayer]);
+        var objectDrawing = BeginObjectDrawingPenSegment();
+        if (!objectDrawing) CaptureUndoSnapshot(affectedLayers: [_scene.ActiveLayer]);
         var newObject = _scene.AddCubicCurveSegment(
             _scene.ActiveLayer,
             segment.Start,
@@ -154,7 +155,8 @@ internal sealed partial class MainForm : Form
             ActiveStrokeColor(),
             6);
         ClearSelection();
-        FinalizeNewTopologyStrokeDrawingOperation(newObject);
+        if (objectDrawing) _objectDrawingPenObjects.Add(newObject);
+        else FinalizeNewTopologyStrokeDrawingOperation(newObject);
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
         _traditionalPenSegmentCount++;
@@ -348,6 +350,7 @@ internal sealed partial class MainForm : Form
 
     private bool TryBeginTraditionalPenAnchorEdit(Point screen, bool selectedOnly)
     {
+        if (_objectDrawingPenCommit is not null) return false;
         var world = _stage.ScreenToWorld(screen);
         if (!TryFindTraditionalPenAnchor(world, selectedOnly, out var objectIndex, out var startEndpoint, out _))
         {
@@ -552,6 +555,7 @@ internal sealed partial class MainForm : Form
 
     private bool CancelTraditionalPenPath()
     {
+        CompleteObjectDrawingPenPath();
         var hadPath = _traditionalPenCurrentAnchor is not null
             || _traditionalPenPendingAnchor is not null
             || _traditionalPenAnchorEditing;
@@ -626,7 +630,8 @@ internal sealed partial class MainForm : Form
         if (_penStartWorld is not { } start || _penEndWorld is not { } end) return false;
         if (Distance(start, end) < DrawingTopologyRules.MinStrokeSegmentUnits) return false;
         var control = _penControlWorld ?? new PointF((start.X + end.X) * 0.5f, (start.Y + end.Y) * 0.5f);
-        CaptureUndoSnapshot(affectedLayers: [_scene.ActiveLayer]);
+        var objectDrawing = BeginObjectDrawingPenSegment();
+        if (!objectDrawing) CaptureUndoSnapshot(affectedLayers: [_scene.ActiveLayer]);
         var newObject = _scene.AddCurveSegment(
             _scene.ActiveLayer,
             start,
@@ -638,7 +643,8 @@ internal sealed partial class MainForm : Form
             6);
         _scene.QuadraticLineEditing[newObject] = true;
         SetSelection(newObject);
-        FinalizeNewTopologyStrokeDrawingOperation(newObject);
+        if (objectDrawing) _objectDrawingPenObjects.Add(newObject);
+        else FinalizeNewTopologyStrokeDrawingOperation(newObject);
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
         _penStartWorld = end;
@@ -689,6 +695,7 @@ internal sealed partial class MainForm : Form
 
     private bool CancelPenCurve()
     {
+        CompleteObjectDrawingPenPath();
         var hadCurve = _penStartWorld is not null || _penEndWorld is not null;
         var hadPointerDrag = _penSegmentDragging;
         _penStartWorld = null;
@@ -719,6 +726,7 @@ internal sealed partial class MainForm : Form
 
     private bool TryInsertPenAnchor(Point screen)
     {
+        if (_objectDrawingPenCommit is not null) return false;
         var world = _stage.ScreenToWorld(screen);
         if (!TryGetPenAnchorInsertion(world, out var objectIndex, out var parameter, out _)) return false;
 
@@ -897,6 +905,7 @@ internal sealed partial class MainForm : Form
     {
         _stage.Focus();
         _freehandSamples.Clear();
+        ClearBrushPreviewTrajectory();
         _freehandSamples.Add(VectorUnits.Quantize(world));
         _pressureBrushSamples.Clear();
         _mixingBrushRegionAccumulator = null;
@@ -907,6 +916,7 @@ internal sealed partial class MainForm : Form
         _freehandMixingBrush = _tool == ToolMode.MixingBrush;
         _freehandErasing = _tool == ToolMode.Eraser;
         _freehandPencilSmoothing = _drawSettings.PencilSmoothing;
+        _freehandBrushSmoothing = _drawSettings.PressureBrushSmoothing;
         _freehandPencilWorldPerPixel = _stage.ScreenLengthToWorld(1);
         _freehandPencilPreviewSampleCount = 0;
         _freehandPencilPreviewUpdatedAt = 0;
@@ -926,7 +936,6 @@ internal sealed partial class MainForm : Form
         _brushAreaPreviewSampleCount = 0;
         _brushAreaPressureProfile.Clear();
         _brushAreaPressureDistances.Clear();
-        _smoothedPressurePreview.Clear();
         _freehandStrokeUnits = Math.Max(VectorUnits.MinimumStrokeUnits, ActiveStrokeUnits());
         _freehandColor = _freehandErasing
             ? Color.FromArgb(150, 255, 120, 120)
@@ -1061,11 +1070,28 @@ internal sealed partial class MainForm : Form
         };
     }
 
-    private readonly List<PressureBrushPoint> _smoothedPressurePreview = new(1024);
+    private int _freehandBrushSmoothing;
+    private long _brushTrajectoryPreviewUpdatedAt;
+    private int _brushTrajectoryPreviewSampleCount;
 
     private void UpdateFreehandPreview()
     {
         if (_freehandMixingBrush && TryUpdateMixingBrushPreview()) return;
+        if ((_freehandBrushStroke || _freehandPressureBrush)
+            && !_freehandMixingBrush && !_freehandErasing
+            && _drawSettings.BrushContinuous && !_brushShape.IsRadiallySymmetric
+            && TryUpdateBrushAreaPreviewSafely()) return;
+
+        if ((_freehandBrushStroke || _freehandPressureBrush) && !_freehandMixingBrush && !_freehandErasing)
+        {
+            var timestamp = Stopwatch.GetTimestamp();
+            var sampleCount = _freehandPressureBrush ? _pressureBrushSamples.Count : _freehandSamples.Count;
+            if (_brushTrajectoryPreviewSampleCount > 1 && sampleCount > _brushTrajectoryPreviewSampleCount
+                && Stopwatch.GetElapsedTime(_brushTrajectoryPreviewUpdatedAt, timestamp).TotalMilliseconds
+                    < Math.Max(16, PencilPreviewMinimumIntervalMilliseconds(sampleCount))) return;
+            _brushTrajectoryPreviewUpdatedAt = timestamp;
+            _brushTrajectoryPreviewSampleCount = sampleCount;
+        }
 
         var tipShape = _freehandBrushStroke || _freehandPressureBrush || _freehandErasing
             ? _brushShape
@@ -1083,19 +1109,7 @@ internal sealed partial class MainForm : Form
                 _freehandStrokeUnits,
                 _brushAreaPressureProfile,
                 _brushAreaPressureDistances);
-            // Two smoothing passes each depend on at most four neighbours. Only this tail can
-            // change when samples are appended or the latest pressure is updated.
-            const int smoothingContext = 8;
-            var rewriteStart = Math.Max(0, Math.Min(
-                _smoothedPressurePreview.Count,
-                _brushAreaPressureProfile.Count) - 1 - smoothingContext);
-            var contextStart = Math.Max(0, rewriteStart - smoothingContext);
-            var tail = FreehandStrokeProcessor.SmoothPressureProfile(
-                _brushAreaPressureProfile.GetRange(contextStart, _brushAreaPressureProfile.Count - contextStart),
-                _drawSettings.PressureBrushSmoothing);
-            _smoothedPressurePreview.RemoveRange(rewriteStart, _smoothedPressurePreview.Count - rewriteStart);
-            _smoothedPressurePreview.AddRange(tail.AsSpan(rewriteStart - contextStart).ToArray());
-            var profile = _smoothedPressurePreview;
+            IReadOnlyList<PressureBrushPoint> profile = ProcessBrushPressurePreview();
             var pressurePreviewPoints = new PointF[profile.Count];
             var previewDiameters = new float[profile.Count];
             for (var index = 0; index < profile.Count; index++)
@@ -1140,7 +1154,7 @@ internal sealed partial class MainForm : Form
         // A growing brush stroke must keep its existing samples in place. Re-selecting a
         // fixed number of points across the whole trajectory makes old segments wobble.
         IReadOnlyList<PointF> previewPoints = _freehandBrushStroke
-            ? _freehandSamples.ToArray()
+            ? ProcessBrushPreviewTrajectory()
             : LimitDrawingPreview(_freehandSamples, previewLimit);
         _stage.SetFreehandPreview(
             previewPoints,
@@ -1195,12 +1209,12 @@ internal sealed partial class MainForm : Form
         return result;
     }
 
-    internal static int ResolveSimpleFreehandSmoothing(ToolMode tool, int pencilSmoothing)
+    internal static int ResolveSimpleFreehandSmoothing(ToolMode tool, int pencilSmoothing, int brushSmoothing = 70)
     {
         return tool switch
         {
             ToolMode.Pencil => Math.Clamp(pencilSmoothing, 0, 100),
-            ToolMode.Brush => 64,
+            ToolMode.Brush => Math.Clamp(brushSmoothing, 0, 100),
             ToolMode.Eraser => 52,
             _ => 0
         };
@@ -1224,6 +1238,7 @@ internal sealed partial class MainForm : Form
             return true;
         }
 
+        if (_brushAreaPreviewSampleCount == 0) ResetBrushAreaPreview();
         for (var objectIndex = 0; objectIndex < _brushAreaPreviewStage.ObjectCount; objectIndex++)
         {
             _brushAreaPreviewStage.DisableLinearGradient(objectIndex);
@@ -1236,34 +1251,7 @@ internal sealed partial class MainForm : Form
             int[] additions;
             if (_freehandPressureBrush)
             {
-                FreehandStrokeProcessor.UpdatePressurePreviewProfile(
-                    _pressureBrushSamples,
-                    _freehandStrokeUnits,
-                    _brushAreaPressureProfile,
-                    _brushAreaPressureDistances);
-                if (_brushAreaPressureProfile.Count == 0)
-                {
-                    ClearShapeGradientBrushPreview();
-                    return false;
-                }
-
-                var startIndex = _brushAreaPreviewSampleCount <= 0
-                    ? 0
-                    : Math.Min(_brushAreaPressureProfile.Count - 1, _brushAreaPreviewSampleCount - 1);
-                var contextStart = Math.Max(0, startIndex - 3);
-                var smoothedTail = FreehandStrokeProcessor.SmoothPressureProfile(
-                    _brushAreaPressureProfile.GetRange(
-                        contextStart,
-                        _brushAreaPressureProfile.Count - contextStart),
-                    _drawSettings.PressureBrushSmoothing);
-                additions = _brushAreaPreviewStage.AddPressureBrushProfile(
-                    _scene.ActiveLayer,
-                    smoothedTail.AsSpan(startIndex - contextStart).ToArray(),
-                    _freehandColor,
-                    _brushShape,
-                    (uint)Math.Max(3, _brushAreaPressureProfile.Count - startIndex),
-                    _drawSettings.BrushFrequency,
-                    _drawSettings.BrushContinuous);
+                additions = BuildPressureBrushAreaPreview();
             }
             else
             {
@@ -1271,13 +1259,15 @@ internal sealed partial class MainForm : Form
                     ? 0
                     : Math.Min(_freehandSamples.Count - 1, _brushAreaPreviewSampleCount - 1);
                 var segment = _freehandSamples.GetRange(startIndex, _freehandSamples.Count - startIndex);
-                additions = _brushAreaPreviewStage.AddSoftBrushStroke(
+                additions = BrushStrokeBuilder.AddStroke(
+                    _brushAreaPreviewStage,
                     _scene.ActiveLayer,
                     segment,
                     _freehandStrokeUnits,
                     _freehandColor,
                     _brushShape,
-                    (uint)Math.Max(3, segment.Count),
+                    _freehandBrushSmoothing,
+                    _freehandPencilWorldPerPixel,
                     _drawSettings.BrushFrequency,
                     _drawSettings.BrushContinuous);
             }
@@ -1328,7 +1318,7 @@ internal sealed partial class MainForm : Form
             gradientPath[0],
             gradientPath[^1]);
 
-        var matchingSources = _scene.FindIntersectingMatchingShapeGradientFills(
+        var matchingSources = ObjectDrawingActive ? [] : _scene.FindIntersectingMatchingShapeGradientFills(
             _shapeGradientBrushPreviewStage,
             previewObjects,
             _frame,
@@ -1386,7 +1376,6 @@ internal sealed partial class MainForm : Form
         _brushAreaPreviewSampleCount = 0;
         _brushAreaPressureProfile.Clear();
         _brushAreaPressureDistances.Clear();
-        _smoothedPressurePreview.Clear();
         var layerCount = Math.Max(1, _scene.LayerCount);
         var frameCount = Math.Max(1, _scene.FrameCount);
         _brushAreaPreviewStage.CreateEmpty(layerCount, frameCount);
@@ -1420,27 +1409,33 @@ internal sealed partial class MainForm : Form
         if (_freehandPressureBrush)
         {
             UpdatePressureBrushHoldTime(Stopwatch.GetTimestamp());
-            var snapshot = CreateCanvasMutationSnapshot(affectedLayers: [_scene.ActiveLayer]);
-            var objects = _scene.AddPressureBrushStroke(
+            var commit = BeginDrawingToolCommit();
+            var objects = BuildBrushStrokeForCommit(commit, () => BrushStrokeBuilder.AddPressureStroke(
+                _scene,
                 _scene.ActiveLayer,
                 _pressureBrushSamples,
                 _freehandStrokeUnits,
                 _freehandColor,
                 _brushShape,
-                (uint)Math.Max(3, _pressureBrushSamples.Count),
-                _drawSettings.PressureBrushSmoothing,
-                _stage.ScreenLengthToWorld(0.9f),
+                _freehandBrushSmoothing,
+                _freehandPencilWorldPerPixel,
                 _drawSettings.BrushFrequency,
-                _drawSettings.BrushContinuous);
+                _drawSettings.BrushContinuous));
             if (objects.Length > 0)
             {
-                PushUndoSnapshot(snapshot);
                 var gradientPath = _pressureBrushSamples.Select(sample => sample.Point).ToArray();
                 ApplyFillGradientToBrushObjects(
                     objects,
                     gradientPath,
                     _pressureBrushSamples[0].Point,
                     _pressureBrushSamples[^1].Point);
+                if (CompleteObjectDrawingCommit(commit, objects))
+                {
+                    CancelFreehandStroke();
+                    _stage.Invalidate();
+                    return;
+                }
+                PushUndoSnapshot(commit.Snapshot);
                 NormalizeNewPaintObjects(objects, enforceComplexityBudget: true);
                 _materialEditor.RecordRecentFillColor(_freehandColor);
                 ClearSelection();
@@ -1449,7 +1444,7 @@ internal sealed partial class MainForm : Form
             }
             else
             {
-                RestoreCanvasMutationSnapshot(snapshot);
+                RestoreCanvasMutationSnapshot(commit.Snapshot);
             }
 
             CancelFreehandStroke();
@@ -1475,7 +1470,16 @@ internal sealed partial class MainForm : Form
                 ? _mixingBrushLayer
                 : _scene.ActiveLayer;
             var targetFrame = _mixingBrushFrame >= 0 ? _mixingBrushFrame : _frame;
-            var snapshot = CreateCanvasMutationSnapshot(affectedLayers: [targetLayer]);
+            var commit = BeginDrawingToolCommit();
+            if (ObjectDrawingActive)
+            {
+                var independent = _scene.AddMixingBrushRegion(
+                    targetLayer, region, (uint)Math.Max(3, region.Vertices.Length));
+                CompleteObjectDrawingCommit(commit, independent >= 0 ? [independent] : []);
+                CancelFreehandStroke();
+                _stage.Invalidate();
+                return;
+            }
             var mergeResult = _scene.AddOrMergeMixingBrushRegion(
                 targetLayer,
                 targetFrame,
@@ -1483,7 +1487,7 @@ internal sealed partial class MainForm : Form
                 (uint)Math.Max(3, region.Vertices.Length));
             if (mergeResult.Success)
             {
-                PushUndoSnapshot(snapshot);
+                PushUndoSnapshot(commit.Snapshot);
                 _materialEditor.RecordRecentFillColor(_freehandColor);
                 ClearSelection();
                 _hierarchyPanel.RefreshScene();
@@ -1491,7 +1495,7 @@ internal sealed partial class MainForm : Form
             }
             else
             {
-                RestoreCanvasMutationSnapshot(snapshot);
+                RestoreCanvasMutationSnapshot(commit.Snapshot);
             }
 
             CancelFreehandStroke();
@@ -1511,7 +1515,7 @@ internal sealed partial class MainForm : Form
                 return;
             }
 
-            var snapshot = CreateCanvasMutationSnapshot(affectedLayers: [_scene.ActiveLayer]);
+            var commit = BeginDrawingToolCommit();
             var newObject = _scene.AddFreehandBezierStroke(
                 _scene.ActiveLayer,
                 pencil.Nodes,
@@ -1520,7 +1524,13 @@ internal sealed partial class MainForm : Form
                 (uint)Math.Max(3, pencil.PreviewPoints.Length));
             if (newObject >= 0)
             {
-                PushUndoSnapshot(snapshot);
+                if (CompleteObjectDrawingCommit(commit, [newObject]))
+                {
+                    CancelFreehandStroke();
+                    _stage.Invalidate();
+                    return;
+                }
+                PushUndoSnapshot(commit.Snapshot);
                 SetSelection(newObject);
                 FinalizeNewTopologyStrokeDrawingOperation(newObject);
                 _hierarchyPanel.RefreshScene();
@@ -1528,7 +1538,7 @@ internal sealed partial class MainForm : Form
             }
             else
             {
-                RestoreCanvasMutationSnapshot(snapshot);
+                RestoreCanvasMutationSnapshot(commit.Snapshot);
             }
 
             CancelFreehandStroke();
@@ -1536,12 +1546,14 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        var smoothing = ResolveSimpleFreehandSmoothing(_tool, _freehandPencilSmoothing);
+        var smoothing = ResolveSimpleFreehandSmoothing(_tool, _freehandPencilSmoothing, _freehandBrushSmoothing);
         var tolerancePixels = _freehandBrushStroke ? 0.9f : 0.65f;
-        var points = FreehandStrokeProcessor.Process(
-            _freehandSamples,
-            smoothing,
-            _stage.ScreenLengthToWorld(tolerancePixels));
+        var points = _freehandBrushStroke
+            ? _freehandSamples.ToArray()
+            : FreehandStrokeProcessor.Process(
+                _freehandSamples,
+                smoothing,
+                _stage.ScreenLengthToWorld(tolerancePixels));
         if (points.Length == 0)
         {
             CancelFreehandStroke();
@@ -1556,27 +1568,37 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        CaptureUndoSnapshot(affectedLayers: [_scene.ActiveLayer]);
+        var drawingCommit = BeginDrawingToolCommit();
         if (_freehandBrushStroke)
         {
-            var objects = _scene.AddSoftBrushStroke(
+            var objects = BuildBrushStrokeForCommit(drawingCommit, () => BrushStrokeBuilder.AddStroke(
+                _scene,
                 _scene.ActiveLayer,
-                points,
+                _freehandSamples,
                 _freehandStrokeUnits,
                 _freehandColor,
                 _brushShape,
-                (uint)Math.Max(3, points.Length),
+                _freehandBrushSmoothing,
+                _freehandPencilWorldPerPixel,
                 _drawSettings.BrushFrequency,
-                _drawSettings.BrushContinuous);
+                _drawSettings.BrushContinuous));
             if (objects.Length > 0)
             {
                 ApplyFillGradientToBrushObjects(objects, points, points[0], points[^1]);
+                if (CompleteObjectDrawingCommit(drawingCommit, objects))
+                {
+                    CancelFreehandStroke();
+                    _stage.Invalidate();
+                    return;
+                }
+                PushUndoSnapshot(drawingCommit.Snapshot);
                 NormalizeNewPaintObjects(objects, enforceComplexityBudget: true);
                 _materialEditor.RecordRecentFillColor(_freehandColor);
                 ClearSelection();
                 _hierarchyPanel.RefreshScene();
                 UpdateInspector();
             }
+            else RestoreCanvasMutationSnapshot(drawingCommit.Snapshot);
         }
         else
         {
@@ -1589,10 +1611,18 @@ internal sealed partial class MainForm : Form
                 (uint)Math.Max(3, points.Length));
             if (newObject >= 0)
             {
+                if (CompleteObjectDrawingCommit(drawingCommit, [newObject]))
+                {
+                    CancelFreehandStroke();
+                    _stage.Invalidate();
+                    return;
+                }
+                PushUndoSnapshot(drawingCommit.Snapshot);
                 SetSelection(newObject);
                 _hierarchyPanel.RefreshScene();
                 UpdateInspector();
             }
+            else RestoreCanvasMutationSnapshot(drawingCommit.Snapshot);
         }
 
         CancelFreehandStroke();
@@ -1699,6 +1729,9 @@ internal sealed partial class MainForm : Form
         _freehandMixingBrush = false;
         _freehandErasing = false;
         _freehandPencilSmoothing = 0;
+        _freehandBrushSmoothing = 0;
+        _brushTrajectoryPreviewUpdatedAt = 0;
+        _brushTrajectoryPreviewSampleCount = 0;
         _freehandPencilWorldPerPixel = 0;
         _freehandPencilPreviewSampleCount = 0;
         _freehandPencilPreviewUpdatedAt = 0;
@@ -1708,6 +1741,7 @@ internal sealed partial class MainForm : Form
         _freehandStartedTimestamp = 0;
         _freehandLastSampleTimestamp = 0;
         _freehandSamples.Clear();
+        ClearBrushPreviewTrajectory();
         _pressureBrushSamples.Clear();
         _mixingBrushRegionAccumulator = null;
         _mixingBrushLayer = -1;
@@ -1717,7 +1751,6 @@ internal sealed partial class MainForm : Form
         _brushAreaPreviewSampleCount = 0;
         _brushAreaPressureProfile.Clear();
         _brushAreaPressureDistances.Clear();
-        _smoothedPressurePreview.Clear();
         _stage.ClearFreehandPreview();
     }
 
@@ -1871,10 +1904,7 @@ internal sealed partial class MainForm : Form
             && _selectedCurveStarts.TryGetValue(_selectedObject, out var originalFirst)
             && _selectedCurve2Starts.TryGetValue(_selectedObject, out var originalSecond))
         {
-            _scene.CurveControlX[_selectedObject] = originalFirst.X;
-            _scene.CurveControlY[_selectedObject] = originalFirst.Y;
-            _scene.CurveControl2X[_selectedObject] = originalSecond.X;
-            _scene.CurveControl2Y[_selectedObject] = originalSecond.Y;
+            _scene.SetLineControlPointsForPreview(_selectedObject, originalFirst, originalSecond);
             return;
         }
         if (_activeHandle == EditHandleKind.BezierControl)
@@ -2447,6 +2477,17 @@ internal sealed partial class MainForm : Form
                 continue;
             }
 
+            if (_scene.ShapeKind[i] == ShapeKind.Line)
+            {
+                if (_scene.TryGetClosestPointOnLine(i, world, out _, out var point, out var distance)
+                    && distance < bestDistance)
+                {
+                    snapped = point;
+                    bestDistance = distance;
+                }
+                continue;
+            }
+
             foreach (var part in _scene.GetStrokeParts(i, _frame))
                 AccumulateClosestOnPolyline(part.Points, world, ref snapped, ref bestDistance);
             foreach (var part in _scene.GetBoundaryParts(i, _frame))
@@ -2593,7 +2634,7 @@ internal sealed partial class MainForm : Form
     private void AddDrawnObject(PointF start, PointF end, ToolMode tool)
     {
         if (DrawingToolsBlocked()) return;
-        CaptureUndoSnapshot(affectedLayers: [_scene.ActiveLayer]);
+        var commit = BeginDrawingToolCommit();
         var shape = ToolShapeKind(tool) ?? _drawSettings.ShapeKind;
         int newObject;
         if (tool == ToolMode.Line)
@@ -2638,6 +2679,13 @@ internal sealed partial class MainForm : Form
         {
             _scene.SetGradientPaint(newObject, _materialEditor.GradientKind, _materialEditor.GradientStops);
         }
+        if (CompleteObjectDrawingCommit(commit, newObject >= 0 ? [newObject] : [])) return;
+        if (newObject < 0)
+        {
+            RestoreCanvasMutationSnapshot(commit.Snapshot);
+            return;
+        }
+        PushUndoSnapshot(commit.Snapshot);
         if (newObject >= 0 && tool != ToolMode.Line)
         {
             var overwritten = NormalizeNewPaintObjects([newObject]);

@@ -175,7 +175,7 @@ $validationScript = Join-Path $skillsRoot "vector2d-validate-change\scripts\invo
 if (Test-Path -LiteralPath $validationScript -PathType Leaf) {
     try {
         $validationPlan = (& $validationScript -Suite All -Plan | ConvertFrom-Json)
-        $expectedSuites = @("Build", "Launcher", "Release", "Timeline", "Pressure", "Freehand", "Stress", "Render")
+        $expectedSuites = @("Build", "Launcher", "Release", "Timeline", "Pressure", "Freehand", "Stress", "Render", "GpuOptics")
         foreach ($expectedSuite in $expectedSuites) {
             if ($validationPlan.Suites -notcontains $expectedSuite) {
                 Add-WorkflowError "Validation All plan does not include suite: $expectedSuite"
@@ -184,6 +184,29 @@ if (Test-Path -LiteralPath $validationScript -PathType Leaf) {
         if ($validationPlan.Builds -notcontains "ReleaseManager" -or
                 $validationPlan.Builds -notcontains "SingleExeRelease") {
             Add-WorkflowError "Validation All plan does not include Release Manager and single-EXE builds"
+        }
+        if ($validationPlan.Status -ne "Planned" -or
+                @($validationPlan.Results | Where-Object Status -ne "Planned").Count -gt 0) {
+            Add-WorkflowError "Validation plan must not claim executed results"
+        }
+        $programText = [IO.File]::ReadAllText((Join-Path $repoRoot "native\App\Program.cs"))
+        $mappedArguments = @($validationPlan.BenchmarkArguments.PSObject.Properties.Value)
+        $nativeArguments = @([regex]::Matches($programText, '\["(?<argument>--bench[^"]*)"\]') |
+            ForEach-Object { $_.Groups["argument"].Value })
+        foreach ($argument in $nativeArguments) {
+            if ($argument -ne "--bench-collision" -and $mappedArguments -notcontains $argument) {
+                Add-WorkflowError "Native benchmark CLI is not routed by validation: $argument"
+            }
+        }
+        $suiteMapText = [IO.File]::ReadAllText((Join-Path $skillsRoot "vector2d-validate-change\references\suite-map.md"))
+        foreach ($mapping in $validationPlan.BenchmarkArguments.PSObject.Properties) {
+            if ($nativeArguments -notcontains $mapping.Value) {
+                Add-WorkflowError "Validation routes a missing native benchmark CLI: $($mapping.Value)"
+            }
+            $routingRow = '| `{0}` | `{1}` |' -f $mapping.Name, $mapping.Value
+            if ($suiteMapText.IndexOf($routingRow, [StringComparison]::Ordinal) -lt 0) {
+                Add-WorkflowError "Validation suite mapping is missing from suite-map.md: $($mapping.Name)"
+            }
         }
     } catch {
         Add-WorkflowError "Validation plan smoke test failed: $($_.Exception.Message)"

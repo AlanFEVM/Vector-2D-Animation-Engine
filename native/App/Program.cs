@@ -25,6 +25,7 @@ internal static class Program
         AppLog.Initialize(args);
         LauncherShutdownSignal.Configure(args);
         InstallCrashHandlers();
+        System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.SustainedLowLatency;
 
         if (TryRunBenchmark(args) || TryValidateReleaseNotes(args)) return;
 

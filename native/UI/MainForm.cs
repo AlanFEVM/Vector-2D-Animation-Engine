@@ -84,6 +84,12 @@ internal sealed partial class MainForm : Form, IMessageFilter
     }
 
     private const int ResizeGripSize = 7;
+    private const int WsCaption = 0x00C00000;
+    private const int WsThickFrame = 0x00040000;
+    private const int WsSysMenu = 0x00080000;
+    private const int WsMinimizeBox = 0x00020000;
+    private const int WsMaximizeBox = 0x00010000;
+    private const int WmNcCalcSize = 0x0083;
     private const int WmNcHitTest = 0x0084;
     private const int WmNcLeftButtonDown = 0x00A1;
     private const int WmDisplayChange = 0x007E;
@@ -180,7 +186,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private readonly ToolMode[] _shapeTools = [ToolMode.Rectangle, ToolMode.Ellipse, ToolMode.Triangle, ToolMode.Polygon, ToolMode.Star];
     private readonly ToolMode[] _lineTools = [ToolMode.Line, ToolMode.Pen, ToolMode.SimplePen, ToolMode.Pencil];
     private readonly ToolMode[] _brushTools = [ToolMode.Brush, ToolMode.PressureBrush, ToolMode.MixingBrush];
-    private readonly ToolPairGroup _selectionToolGroup = new([ToolMode.ObjectSelect, ToolMode.Select, ToolMode.PolygonLasso, ToolMode.FreehandLasso, ToolMode.Transform, ToolMode.Transform3D, ToolMode.Distort]);
+    private readonly ToolPairGroup _selectionToolGroup = new([ToolMode.ObjectSelect, ToolMode.Select]);
+    private readonly ToolPairGroup _lassoToolGroup = new([ToolMode.PolygonLasso, ToolMode.FreehandLasso]);
+    private readonly ToolPairGroup _transformToolGroup = new([ToolMode.Transform, ToolMode.Transform3D, ToolMode.Distort, ToolMode.Gradient]);
     private readonly ToolPairGroup _paintToolGroup = new([ToolMode.Fill, ToolMode.InkBottle]);
     private readonly Dictionary<ToolMode, Button> _shapeFlyoutButtons = new();
     private readonly Dictionary<ToolMode, Button> _lineFlyoutButtons = new();
@@ -215,7 +223,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private readonly ToolStripStatusLabel _drawStatus = StatusLabel("Draw 0");
     private readonly ToolStripStatusLabel _atomsStatus = StatusLabel("Atoms 0");
     private readonly ToolStripStatusLabel _zoomStatus = StatusLabel("Zoom 100%");
-    private readonly ToolStripStatusLabel _timelineFrameStatus = StatusLabel("");
+    private readonly ToolStripControlHost _timelineFrameStatus = CreateTimelineFrameStatus();
     private readonly ToolStripStatusLabel _devReloadStatus = StatusLabel("Module Reload On");
     private Panel? _topBar;
     private Label? _topPlaybackFpsLabel;
@@ -774,7 +782,6 @@ internal sealed partial class MainForm : Form, IMessageFilter
         public required int ObjectIndex { get; init; }
         public required PointF Start { get; init; }
         public required PointF End { get; init; }
-        public required float Parameter { get; init; }
         public PointF Control1 { get; init; }
         public PointF Control2 { get; init; }
         public PointF PointerStart { get; init; }
@@ -953,6 +960,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _brushFlyoutHideTimer.Interval = 100;
         _brushFlyoutHideTimer.Tick += (_, _) => UpdateBrushToolFlyoutVisibility();
         _selectionToolGroup.HideTimer.Tick += (_, _) => UpdateToolPairFlyoutVisibility(_selectionToolGroup);
+        _lassoToolGroup.HideTimer.Tick += (_, _) => UpdateToolPairFlyoutVisibility(_lassoToolGroup);
+        _transformToolGroup.HideTimer.Tick += (_, _) => UpdateToolPairFlyoutVisibility(_transformToolGroup);
         _paintToolGroup.HideTimer.Tick += (_, _) => UpdateToolPairFlyoutVisibility(_paintToolGroup);
         _vaultDrawerTimer.Tick += (_, _) => TickVaultDrawer();
         _workspacePanelAnimationTimer.Tick += (_, _) => TickWorkspacePanelAnimation();
@@ -1475,15 +1484,17 @@ internal sealed partial class MainForm : Form, IMessageFilter
             e.Graphics.DrawRectangle(pen, 0, 0, tools.Width - 1, tools.Height - 1);
         };
         AddToolPairGroup(tools, stagePanel, _selectionToolGroup);
+        AddToolPairGroup(tools, stagePanel, _lassoToolGroup);
+        AddToolPairGroup(tools, stagePanel, _transformToolGroup);
         AddShapeToolGroup(tools, stagePanel);
         AddLineToolGroup(tools, stagePanel);
         AddBrushToolGroup(tools, stagePanel);
         AddTool(tools, SvgIconKind.Text, ToolMode.Text, "Text Tool");
         AddToolPairGroup(tools, stagePanel, _paintToolGroup);
         AddTool(tools, SvgIconKind.Eyedropper, ToolMode.Eyedropper, "Eyedropper Tool");
-        AddTool(tools, SvgIconKind.Gradient, ToolMode.Gradient, "Gradient Tool");
         AddTool(tools, SvgIconKind.Snap, ToolMode.SnapPoint, "Snap Point Tool");
         AddTool(tools, SvgIconKind.Eraser, ToolMode.Eraser, "Eraser Tool");
+        AddObjectDrawingToggle(tools);
 
         var vaultButton = new SvgIconButton(SvgIconKind.Vault)
         {
@@ -2424,6 +2435,16 @@ internal sealed partial class MainForm : Form, IMessageFilter
         Padding = WindowState == FormWindowState.Maximized ? Padding.Empty : new Padding(1);
     }
 
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var parameters = base.CreateParams;
+            parameters.Style |= WsCaption | WsThickFrame | WsSysMenu | WsMinimizeBox | WsMaximizeBox;
+            return parameters;
+        }
+    }
+
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
@@ -2479,6 +2500,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
             _shapeFlyoutHideTimer.Dispose();
             _lineFlyoutHideTimer.Dispose();
             _selectionToolGroup.HideTimer.Dispose();
+            _lassoToolGroup?.HideTimer.Dispose();
+            _transformToolGroup?.HideTimer.Dispose();
             _paintToolGroup.HideTimer.Dispose();
             _vaultDrawerTimer.Dispose();
             _workspacePanelAnimationTimer.Dispose();
@@ -2509,6 +2532,24 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
     protected override void WndProc(ref Message m)
     {
+        if (m.Msg == WmNcCalcSize)
+        {
+            if (m.WParam != IntPtr.Zero && m.LParam != IntPtr.Zero && IsZoomed(m.HWnd))
+            {
+                var clientBounds = Marshal.PtrToStructure<NativeWindowRect>(m.LParam);
+                var windowBounds = Rectangle.FromLTRB(clientBounds.Left, clientBounds.Top, clientBounds.Right, clientBounds.Bottom);
+                var workingArea = Screen.FromRectangle(windowBounds).WorkingArea;
+                clientBounds.Left = Math.Max(clientBounds.Left, workingArea.Left);
+                clientBounds.Top = Math.Max(clientBounds.Top, workingArea.Top);
+                clientBounds.Right = Math.Min(clientBounds.Right, workingArea.Right);
+                clientBounds.Bottom = Math.Min(clientBounds.Bottom, workingArea.Bottom);
+                Marshal.StructureToPtr(clientBounds, m.LParam, false);
+            }
+
+            m.Result = IntPtr.Zero;
+            return;
+        }
+
         if (m.Msg == WmNcHitTest)
         {
             base.WndProc(ref m);
@@ -2563,6 +2604,19 @@ internal sealed partial class MainForm : Form, IMessageFilter
         return new Point((short)(value & 0xFFFF), (short)((value >> 16) & 0xFFFF));
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeWindowRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsZoomed(IntPtr window);
+
     [DllImport("user32.dll")]
     private static extern bool ReleaseCapture();
 
@@ -2589,7 +2643,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _statusBar.Items.Add(_zoomStatus);
         _statusBar.Items.Add(StatusSeparator());
         _statusBar.Items.Add(_timelineFrameStatus);
-        SetToolStripText(_timelineFrameStatus, _timeline.FrameStatusText);
+        UpdateTimelineFrameStatus();
         if (IsModuleHotReloadEnabled())
         {
             _statusBar.Items.Add(StatusSeparator());
@@ -2922,6 +2976,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _project.TrySetSceneDimension(scene.Id, dimension);
         _stage.CompleteReferenceCameraTransition(invalidate: false);
         _stage.ConfigureReferenceView(scene, dimension, ReferenceCameraMotion.Immediate);
+        RebuildSceneComposition();
         if (dimension == SceneDimension.ThreeD && _tool is ToolMode.Transform or ToolMode.Distort)
         {
             _tool = ToolMode.Transform3D;
@@ -2931,6 +2986,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             _tool = ToolMode.Transform;
         }
         if (_selectionToolGroup.Contains(_tool)) _selectionToolGroup.ActiveTool = _tool;
+        if (_transformToolGroup?.Contains(_tool) == true) _transformToolGroup.ActiveTool = _tool;
         UpdateSceneDimensionButton();
         UpdateSpatialTransformPanelState();
         RefreshSceneOpticsInspector();
@@ -3654,8 +3710,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         parent.Click += (_, _) =>
         {
             ActivateTool(group.ActiveTool);
-            if (_applicationSettings.ToolbarPosition == ToolbarPosition.Top) HideToolFlyouts();
-            else ShowToolPairFlyout(group);
+            ShowToolPairFlyout(group);
         };
         panel.Controls.Add(parent);
 
@@ -3713,6 +3768,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
         HideLineToolFlyout();
         HideBrushToolFlyout();
         if (!ReferenceEquals(group, _selectionToolGroup)) HideToolPairFlyout(_selectionToolGroup);
+        if (!ReferenceEquals(group, _lassoToolGroup)) HideToolPairFlyout(_lassoToolGroup);
+        if (!ReferenceEquals(group, _transformToolGroup)) HideToolPairFlyout(_transformToolGroup);
         if (!ReferenceEquals(group, _paintToolGroup)) HideToolPairFlyout(_paintToolGroup);
         group.HideAtUtc = default;
         if (group.Flyout.Visible)
@@ -3728,8 +3785,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
         RefreshToolButtons();
     }
 
-    private void HideToolPairFlyout(ToolPairGroup group)
+    private void HideToolPairFlyout(ToolPairGroup? group)
     {
+        if (group is null) return;
         group.HideTimer.Stop();
         group.HideAtUtc = default;
         if (group.Flyout is not null) group.Flyout.Visible = false;
@@ -3788,7 +3846,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _shapeToolButton.Click += (_, _) =>
         {
             ActivateTool(_activeShapeTool);
-            if (_applicationSettings.ToolbarPosition == ToolbarPosition.Top) HideToolFlyouts();
+            ShowShapeToolFlyout();
         };
         panel.Controls.Add(_shapeToolButton);
 
@@ -3844,6 +3902,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
         HideLineToolFlyout();
         HideBrushToolFlyout();
         HideToolPairFlyout(_selectionToolGroup);
+        HideToolPairFlyout(_lassoToolGroup);
+        HideToolPairFlyout(_transformToolGroup);
         HideToolPairFlyout(_paintToolGroup);
         _shapeFlyoutHideAtUtc = default;
         tools.PerformLayout();
@@ -3868,6 +3928,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
         HideLineToolFlyout();
         HideBrushToolFlyout();
         HideToolPairFlyout(_selectionToolGroup);
+        HideToolPairFlyout(_lassoToolGroup);
+        HideToolPairFlyout(_transformToolGroup);
         HideToolPairFlyout(_paintToolGroup);
     }
 
@@ -3927,8 +3989,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _lineToolButton.Click += (_, _) =>
         {
             ActivateTool(_activeLineTool);
-            if (_applicationSettings.ToolbarPosition == ToolbarPosition.Top) HideToolFlyouts();
-            else ShowLineToolFlyout();
+            ShowLineToolFlyout();
         };
         panel.Controls.Add(_lineToolButton);
 
@@ -3988,8 +4049,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _brushToolButton.Click += (_, _) =>
         {
             ActivateTool(_activeBrushTool);
-            if (_applicationSettings.ToolbarPosition == ToolbarPosition.Top) HideToolFlyouts();
-            else ShowBrushToolFlyout();
+            ShowBrushToolFlyout();
         };
         panel.Controls.Add(_brushToolButton);
 
@@ -4045,6 +4105,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
         HideShapeToolFlyout();
         HideLineToolFlyout();
         HideToolPairFlyout(_selectionToolGroup);
+        HideToolPairFlyout(_lassoToolGroup);
+        HideToolPairFlyout(_transformToolGroup);
         HideToolPairFlyout(_paintToolGroup);
         _brushFlyoutHideAtUtc = default;
         tools.PerformLayout();
@@ -4091,6 +4153,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
         HideShapeToolFlyout();
         HideBrushToolFlyout();
         HideToolPairFlyout(_selectionToolGroup);
+        HideToolPairFlyout(_lassoToolGroup);
+        HideToolPairFlyout(_transformToolGroup);
         HideToolPairFlyout(_paintToolGroup);
         _lineFlyoutHideAtUtc = default;
         tools.PerformLayout();

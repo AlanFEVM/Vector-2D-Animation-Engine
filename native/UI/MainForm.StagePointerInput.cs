@@ -251,6 +251,8 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (TryBeginObjectArrowSelectionMove(e)) return;
+
         if (UsesObjectSelection && IsControlPressed() && _selectedObject >= 0
             && _scene.HasFill(_selectedObject) && !IsWholeObjectOnlyObject(_selectedObject))
         {
@@ -472,7 +474,7 @@ internal sealed partial class MainForm : Form
                 return;
             }
 
-            var hit = _scene.HitTestElement(startWorld, _frame, SelectionToleranceWorld());
+            var hit = HitTestSelectionArrow(_scene, startWorld, _frame, SelectionToleranceWorld());
             if (hit.IsValid && _scene.IsObjectSelectable(hit.Key.ObjectIndex, _frame))
             {
                 // Body drag on an unselected line bends it (arc drag). Once the line is
@@ -1279,13 +1281,11 @@ internal sealed partial class MainForm : Form
         if ((uint)objectIndex >= _scene.ObjectCount
             || _scene.ShapeKind[objectIndex] != ShapeKind.Line
             || !_scene.TryGetLineEndpoint(objectIndex, startEndpoint: true, out var start)
-            || !_scene.TryGetLineEndpoint(objectIndex, startEndpoint: false, out var end)
-            || !_scene.TryGetClosestPointOnLine(objectIndex, world, out var t, out _, out _))
+            || !_scene.TryGetLineEndpoint(objectIndex, startEndpoint: false, out var end))
         {
             return false;
         }
 
-        t = Math.Clamp(t, 0.05f, 0.95f);
         var snapshot = CreateCanvasMutationSnapshot([objectIndex]);
         // Capture while the line is still straight so coincident fill edges
         // are linked and follow the arc while it is dragged.
@@ -1297,7 +1297,6 @@ internal sealed partial class MainForm : Form
             ObjectIndex = objectIndex,
             Start = start,
             End = end,
-            Parameter = t,
             Control1 = new PointF(_scene.CurveControlX[objectIndex], _scene.CurveControlY[objectIndex]),
             Control2 = new PointF(_scene.CurveControl2X[objectIndex], _scene.CurveControl2Y[objectIndex]),
             PointerStart = world,
@@ -1318,27 +1317,21 @@ internal sealed partial class MainForm : Form
         var world = _stage.ScreenToWorld(screen);
         if (world == session.PointerStart)
         {
-            _scene.CurveControlX[session.ObjectIndex] = session.Control1.X;
-            _scene.CurveControlY[session.ObjectIndex] = session.Control1.Y;
-            _scene.CurveControl2X[session.ObjectIndex] = session.Control2.X;
-            _scene.CurveControl2Y[session.ObjectIndex] = session.Control2.Y;
+            _scene.SetLineControlPointsForPreview(session.ObjectIndex, session.Control1, session.Control2);
         }
         else if (_scene.IsQuadraticLine(session.ObjectIndex))
         {
             var originalControl = new PointF(
                 1.5f * session.Control1.X - 0.5f * session.Start.X,
                 1.5f * session.Control1.Y - 0.5f * session.Start.Y);
-            _scene.SetLineQuadraticControl(session.ObjectIndex, ResolveQuadraticArcDragControl(
-                originalControl, session.PointerStart, world, session.Parameter));
+            _scene.SetLineQuadraticControl(session.ObjectIndex, ResolveArcDragControl(
+                originalControl, session.PointerStart, world, quadratic: true));
         }
         else
         {
-            var influence = 3f * session.Parameter * (1f - session.Parameter);
-            var dx = (world.X - session.PointerStart.X) / influence;
-            var dy = (world.Y - session.PointerStart.Y) / influence;
-            _scene.SetLineEndpoint(session.ObjectIndex, true, session.Start, session.End,
-                new PointF(session.Control1.X + dx, session.Control1.Y + dy),
-                new PointF(session.Control2.X + dx, session.Control2.Y + dy), false);
+            _scene.SetLineControlPointsForPreview(session.ObjectIndex,
+                ResolveArcDragControl(session.Control1, session.PointerStart, world, quadratic: false),
+                ResolveArcDragControl(session.Control2, session.PointerStart, world, quadratic: false));
         }
         if (session.FillBoundaryLinks.Length > 0)
         {
@@ -1350,15 +1343,13 @@ internal sealed partial class MainForm : Form
         _stage.Invalidate();
     }
 
-    internal static PointF ResolveQuadraticArcDragControl(
-        PointF originalControl, PointF pointerStart, PointF pointer, float parameter)
+    internal static PointF ResolveArcDragControl(
+        PointF originalControl, PointF pointerStart, PointF pointer, bool quadratic)
     {
-        var t = Math.Clamp(parameter, 0.05f, 0.95f);
-        // Move the grabbed curve point, preserving the pointer's initial hit-test offset.
-        var influence = 2f * t * (1f - t);
+        var gain = quadratic ? 2f : 4f / 3f;
         return new PointF(
-            originalControl.X + (pointer.X - pointerStart.X) / influence,
-            originalControl.Y + (pointer.Y - pointerStart.Y) / influence);
+            originalControl.X + (pointer.X - pointerStart.X) * gain,
+            originalControl.Y + (pointer.Y - pointerStart.Y) * gain);
     }
 
     private void CompleteArcDrag(Point screen, MouseButtons button)
@@ -2907,8 +2898,6 @@ internal sealed partial class MainForm : Form
         return (null, null, null, null);
     }
 
-    private float _fillEdgeNoUiArcParameter;
-
     private void BeginFillEdgeNoUiArc((int ObjectIndex, int PartIndex) candidate, PointF world)
     {
         _fillEdgePreSelect = null;
@@ -2923,13 +2912,9 @@ internal sealed partial class MainForm : Form
         var (start, control1, control2, end) = ResolveWorldSegment(contours, part);
         if (start is null) return;
         var pointerStart = _startWorld ?? world;
-        if (!_scene.TryGetClosestPointOnPathBezierSegment(obj, part, pointerStart,
-                out var parameter, out _, out _)) return;
-
         var snapshot = CreateCanvasGeometryMutationSnapshot([obj]);
         _fillEdgeSuppressOverlay = true;
         _stage.ClearFillEdgeBezierOverlay();
-        _fillEdgeNoUiArcParameter = Math.Clamp(parameter, 0.05f, 0.95f);
         _fillEdgeNoUiArc = (obj, part, start.Value, control1!.Value, control2!.Value, end!.Value, pointerStart, snapshot);
         BeginSelectionArrowGeometryFeedback();
         UpdateFillEdgeNoUiArc(world);
@@ -2940,15 +2925,12 @@ internal sealed partial class MainForm : Form
         var arc = _fillEdgeNoUiArc;
         if (arc is null) return;
         var target = world == arc.Value.PointerStart ? world : SnapDrawingPoint(world);
-        var influence = 3f * _fillEdgeNoUiArcParameter * (1f - _fillEdgeNoUiArcParameter);
-        var dx = (target.X - arc.Value.PointerStart.X) / influence;
-        var dy = (target.Y - arc.Value.PointerStart.Y) / influence;
         _scene.SetPathBezierSegmentForPreview(
             arc.Value.ObjectIndex,
             arc.Value.PartIndex,
             arc.Value.Start,
-            new PointF(arc.Value.Control1.X + dx, arc.Value.Control1.Y + dy),
-            new PointF(arc.Value.Control2.X + dx, arc.Value.Control2.Y + dy),
+            ResolveArcDragControl(arc.Value.Control1, arc.Value.PointerStart, target, quadratic: false),
+            ResolveArcDragControl(arc.Value.Control2, arc.Value.PointerStart, target, quadratic: false),
             arc.Value.End,
             preserveStraightAdjacentSegments: false,
             handle: EditHandleKind.BezierControl);
@@ -3045,7 +3027,7 @@ internal sealed partial class MainForm : Form
         var world = _stage.ScreenToWorld(screen);
         var hit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
         if (hit.IsValid
-            && hit.Key.Kind == DrawingElementKind.BoundaryStroke
+            && hit.Key.Kind is DrawingElementKind.Fill or DrawingElementKind.BoundaryStroke
             && hit.Key.ObjectIndex == candidate.ObjectIndex)
         {
             SetSelection(hit);

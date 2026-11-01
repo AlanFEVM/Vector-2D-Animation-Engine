@@ -8,6 +8,7 @@
     <AssemblyName>VectorAnimationEngine</AssemblyName>
     <RootNamespace>VectorAnimationEngine</RootNamespace>
     <ApplicationIcon>..\assets\branding\vector2d-icon.ico</ApplicationIcon>
+    <TieredCompilation>false</TieredCompilation>
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="VectorAnimationEngine.ReleaseManager" />

@@ -2,11 +2,45 @@
 
 本文档描述当前代码对应的操作行为，重点说明工作流、交互规则和排查方法。具体版本的新增、修复和兼容性差异请查看[文档索引](README.md)中的 Release History。
 
+框选完成时，画布先呈现选择结果，检查器在该帧呈现后的界面消息中同步刷新，避免复杂曲线的属性面板阻塞首次选择反馈；几何拆分、选区、材质和单步撤销语义保持不变。
+
+After a marquee selection, the canvas presents the selection before refreshing the inspector on the following UI message. Complex-curve properties do not block the first selection frame; geometry splitting, selection, materials and single-step undo are unchanged.
+
+位图经过倾斜、镜像或自由变形后，选择命中会按相同的图像映射还原坐标，避免可见图像与可点击区域错位。
+
+Bitmap picking applies the image mapping's inverse after skew, mirroring or free deformation, keeping the clickable region aligned with the visible image.
+
+时间轴局部刷新会限制分组栏的绘制边界，避免拖动播放头时边框污染相邻像素。状态栏帧数读数在连续拖动时保持布局稳定，字体或 DPI 改变时重新测量首选尺寸，避免文字被固定高度裁切。
+
+Timeline partial repaints clip the group bar to its own bounds so its border cannot bleed into adjacent pixels during scrubbing. The status-bar frame readout keeps its layout stable while scrubbing and remeasures its preferred size when the font or DPI changes to avoid clipping text.
+
+大量对象的合并选择轮廓保留世界坐标，平移时复用绘制命令并在渲染时统一投影，避免旧屏幕坐标重复平移造成抗锯齿像素差异。选择颜色、线宽、轮廓简化规则及缩放结束后的精细显示保持不变。
+
+Merged outlines for large selections retain world coordinates and reuse drawing commands while panning, applying projection consistently during rendering instead of translating already-rounded screen vertices. Selection colors, stroke widths, contour simplification and full-detail rendering after zoom are unchanged.
+
 界面刷新会复用当前元件标签和添加按钮；灯光参数变化采用列表增量更新，保持当前选择与滚动位置。主动选择其他灯光时，列表仍会定位到所选项。此优化不改变元件切换、拖放或灯光编辑命令。
 
 初次使用时，可悬停顶部工作区标签查看用途与快捷键：在“基础绘制”独立制作可复用元件（Ctrl+1），或直接在“场景与动画”的二维正面视图绘制、装配并制作逐帧动画（Ctrl+2）；相机构图在场景时间轴的“镜头”分组中完成（Ctrl+3）。吸附栏的网格、对象、对齐和角度按钮提供用途与开关状态提示；总吸附关闭时会说明前置条件，数值框会解释单位和步长。提示随中英文语言与当前设置更新，不改变已选的吸附选项。
 
+## 窗口与任务栏 / Window and taskbar
+
+主窗口保留自绘标题栏，并使用 Windows 标准窗口机制处理最小化、最大化和还原，包括从任务栏点击还原。系统过渡动画遵循 Windows 的动画与辅助功能设置；关闭系统窗口动画或处于受限的远程桌面环境时，动画可能不会显示。最大化仍使用当前显示器的工作区域，不遮挡任务栏。
+
+自绘标题栏按钮通过 WinForms 的窗口状态切换执行最小化、最大化和还原，不依赖额外发送系统菜单命令；原生窗口样式仅用于保留系统过渡能力，不显示另一套系统标题栏。最大化时客户区限制在目标显示器工作区域内，避免系统边框的外扩裁切自绘标题栏与窗口按钮。
+
+The main window keeps its custom title bar while using standard Windows minimize, maximize, and restore behavior, including restoration from the taskbar. Transitions follow Windows animation and accessibility settings and may not appear when system window animations are disabled or in restricted remote desktop sessions. Maximizing continues to use the current monitor's working area without covering the taskbar.
+
+Custom title-bar buttons change the WinForms window state directly rather than sending additional system-menu commands. Native window styles retain system transition support without displaying a second title bar. The maximized client area is constrained to the target monitor's working area so native frame overhang cannot clip the custom title bar or window buttons.
+
 ## 使用本指南
+
+直线和曲线的对象吸附使用真实中心路径，不使用用于查询的包围框边缘；端点编辑保持较小吸附半径，绘制时保留较宽的磁吸范围。
+
+Object snapping follows the actual centerline of straight and curved lines, not their query bounding boxes. Endpoint editing keeps a smaller snap radius while drawing retains its wider magnetic range.
+
+选择箭头编辑端点时优先命中鼠标最近的锚点，避免附近的虚拟交点抢占真实连接端点。
+
+The selection arrow picks the nearest endpoint handle so a nearby virtual intersection cannot steal a drag from the actual connected endpoint.
 
 时间轴分组栏右侧集中放置新建分组加号与分组设置按钮，与上方新建图层加号分开。分组设置提供当前分组的颜色、恢复默认颜色、重命名、删除和排序；选择“全部”时可按分组进入这些操作。内置分组不能重命名或删除。
 
@@ -186,6 +220,13 @@ Light-theme selectors no longer produce black text ghosting. Expanding Harmony r
 - 混合模式、描边宽度、和谐色与 HEX 完整输入框统一左右边界和 32 个逻辑像素高度；文字与数值字号分别保留，颜色通道滑条旁的小数值框仍采用紧凑布局。
 - 展开的颜色编辑区在模式按钮上下、选色区顶部与底部分隔线前保留额外留白；和谐色小色块与上方下拉框保留间隔，通道及 HEX 参数区与上方分隔线留出更大距离，不改变输入框尺寸和列对齐。
 - 在基础绘制、场景与动画、镜头与导演之间切换时，右侧检查器使用约 180ms 的淡入淡出和轻微上移过渡；连续切换以最后一次选择为准。窗口尺寸变化或系统关闭动画时直接显示目标面板。
+- 切换右侧的属性、工具、着色、场景、相机和文档面板时，沿用相同的短过渡；不只响应手动 Tab，还覆盖舞台或层级树选中物体、对象页取消选区后回到工具、激活工具、时间轴补间选择、快捷键和返回操作。对象、文字、图像、元件实例、补间或多选导致检查器内容类型变化时也使用过渡。导航按钮与窄栏分类选择器保持可用，快速切换从当前过渡画面接续，不排队播放旧面板。舞台选择反馈、同页数值更新、拖动与播放逐帧刷新仍即时完成，不重复启动动画。
+
+  Inspector properties, tools, appearance, scene, camera, and document pages share the same short transition for manual tabs and automatic navigation: stage or hierarchy object selection, returning from object properties to tools after deselection, tool activation, timeline tween selection, shortcuts, and back navigation. Changes between object, text, image, symbol-instance, tween, and multiple-selection content also transition. Navigation buttons and the compact category selector remain usable; rapid switches continue from the displayed transition instead of queuing old pages. Stage selection feedback, same-page value updates, dragging, and per-frame playback refreshes remain immediate without restarting animations.
+
+  先保留切换前的画面，再改变面板分类和更新目标控件，避免“旧画面”已经变成目标面板而无法产生过渡。过渡期间，内容区的布局刷新不会把目标面板提前顶到动画上方；导航维持在最上层，动画结束后显示可交互的真实控件，避免出现各个模块分别加载、直接跳出的观感。
+
+  The outgoing page is captured before changing the category and updating destination controls, so the old snapshot cannot already contain the new page. Content layout refreshes keep destination pages behind the running transition instead of exposing them early. Navigation remains above the transition, and the live controls are revealed when it finishes, avoiding a sequence of independently appearing modules.
 - 镜头与导演顶部相机标题与图层标题采用相同的顶部留白；相机数量、时长及帧／关键帧统计收纳到标题悬停提示中，不占用常驻参数区。
 - 相机单行属性采用半栏宽、32 逻辑像素高的统一输入框；文字保持常规字号，数值使用 11pt。位置与旋转各使用一个半栏宽的暗色向量输入组，XYZ 纵向排列；左侧采用主题强调色底的轴标徽章和轴向细色条，行间使用轻分隔线，点击轴标可聚焦对应数值。保留数值编辑、步进和连续编辑行为；下拉菜单及相机编辑行为保持不变。
 - 镜头与导演连续参数框采用与播放面板一致的 8 逻辑像素净间距，向量组之间及其相邻参数也沿用该间距，不额外拉大空行。
@@ -228,6 +269,10 @@ Camera View and Lock Camera use Direct2D/GPU draw commands when hardware and sce
 
 While scrubbing the playhead, the Stage, camera settings and micro-motion continue to follow the requested frame. The hierarchy panel rebinds on release or capture loss rather than on every frame. Unchanged motion-track controls no longer invalidate the entire timeline, and partial feedback paints only the affected regions. Image quality, animation frames, keyframes and tween semantics are unchanged. Performance checks use the timeline's frame-change event and include UI updates and painting, rather than substituting GPU-only timing or repeated presentations for scrub throughput.
 
+时间轴拖动切到新帧后，舞台直接提交该帧绘制，不等待后续空闲绘制消息；停在同一帧不会为了提高 FPS 读数而重复绘制。底部帧号仍实时更新，但使用独立、按当前工程帧数预留宽度的读数区域，避免逐帧重新布局整条状态栏。水平跟随播放头时只刷新帧网格、标尺和滚动条，不重绘固定的图层名称和工具区。验证分别覆盖相机运动／微动与画面静止的位图场景；120 FPS 对应完整切帧约 8.33 ms 的验收预算，原有 180 FPS 严格检查仍保留。目标不是所有工程、输入设备或硬件上的已达成保证。
+
+Dragging to a new timeline frame presents that Stage frame directly instead of waiting for a later idle paint. Holding the same frame does not trigger repeated painting to inflate the FPS counter. The bottom frame readout remains live in an independently painted region sized for the current timeline, avoiding per-frame status-bar layout. Horizontal playhead following repaints the frame grid, ruler and scrollbar rather than pinned layer names and tools. Validation covers bitmap scenes with camera motion/micro-motion and stationary artwork separately. The 120 FPS acceptance budget is approximately 8.33 ms for the complete frame transition; the existing strict 180 FPS check remains available. These targets are not achieved-performance guarantees for every project, input device or computer.
+
 Use **Project Files → Project settings…**, or **Canvas & background…** in document information, to configure the active scene. Canvas sizes and transparent/solid/image backgrounds are scene-owned and travel with saved projects. Presets, locked dimensions, proportional image sizing, fit modes, alignment, opacity and canvas-pixel offsets do not rescale artwork or rewrite animation. Applying commits once; Cancel leaves the project unchanged. The empty-scene guide dismisses on actual work or **Start creating**, while settings remain available. Editor checkerboards, outside dimming and borders stay out of camera previews; symbol SVG exports remain transparent and do not acquire scene backgrounds. Canvas settings support undo and redo without taking shortcuts away from text editors.
 
 Preset cards show their names, dimensions and aspect-ratio illustrations. Color buttons include swatches, with a checkerboard for transparency, in both square and subtly rounded interface styles. Common canvas and background choices appear first; Advanced settings starts collapsed and contains opacity, proportional image sizing, offsets, alignment, source details and outside dimming. Collapsing never resets values, and the preview and action footer stay separate from the scrolling settings.
@@ -267,6 +312,10 @@ Dialogs retain their original sizes in logical pixels: Settings 820×700, operat
 镜头过渡：切换 `正交` / `透视`、`2D` / `3D`、2D 方向参考视图、`Numpad 1/3/7` 固定视图、使用 `Home` 重置，或在 3D 视图按 `F` 聚焦所选元件时，画面会平滑过渡到目标镜头。快速重复切换会从当前画面继续，不会先跳回上一目标；过渡期间使用滚轮或拖动旋转、平移、推近/拉远时，手动操作会立即接管镜头。系统关闭界面动画或启用高对比模式时，这些切换会即时完成。
 
 播放时切换 `2D` / `3D` 会先停止播放，再立即完成旧镜头过渡并应用新维度，避免两套投影状态同时参与绘制。3D 播放会复用光学 surface，并跳过不会影响当前画面的工作区缓存和 CPU 光栅预加载；2D 播放使用后台光栅帧快速呈现，不会进入 3D GPU 光学通道；硬件光学通道不可用时仍自动回退到原有 Direct2D/GDI 路径。
+
+切换 `2D` / `3D` 时会同步重建场景组合，重新选择本地绘制表面或空间组合表面，避免空的绘制表面沿用到 3D 或返回 2D 后丢失正视投影。界面按钮与 MCP 维度切换遵循相同规则。
+
+Switching 2D/3D also rebuilds the scene composition and rebinds the appropriate drawing or spatial surface. This prevents an empty drawing surface from persisting in 3D or losing front projection on return to 2D; the UI and MCP use the same rule.
 
 播放自然结束或手动停止后，时间轴拖动会立即恢复当前帧预览；此时可以继续播放、拖动 3D 镜头，或切换 `2D` / `3D`。若后台预加载仍在收尾，界面不会等待其完成。
 
@@ -339,15 +388,32 @@ Background playback preparation on the CPU optical fallback uses the same optica
 - Select 或 Free Transform 只选择实际命中的连通岛；`Shift` 可追加。移动、变形、删除或局部框选时会拆出所选岛，未选岛保持不变，操作仍可一次撤销。
 - Eraser 在启用 `Fill` 擦除时直接裁切区域网格，并把不再连接的剩余部分拆成独立区域。旧工程中的轨迹式 Mixing Brush 数据仍可读取和渲染。
 
-Pressure Brush 的连续圆形笔尖预览使用完整采样的压力与平滑结果，并按最终笔划的闭合轮廓显示；长距离不停笔绘制时不再反复从整条笔迹抽取固定数量的点。Direct2D 与 GDI 使用相同的预览轮廓，保留笔尖软边与透明度。
+Brush 与 Pressure Brush 共用笔尖面板的 `Smooth`（0–100%）。该值控制轨迹和闭合轮廓的曲线拟合误差：较高数值在误差范围内减少可编辑贝塞尔段，而不只是防抖；0 保留更多手绘细节。连续模式沿拟合轨迹扫掠笔尖，圆形、椭圆形和形状笔尖不再依靠稀疏独立印章拼接；方形笔尖自身的真实角点仍保留。
 
-Continuous round Pressure Brush previews retain the full pressure and smoothing samples and display the same closed outlines used for the committed stroke. Long uninterrupted strokes no longer repeatedly resample the whole trajectory to a fixed point count. Direct2D and GDI share the preview outlines, including brush softness and opacity.
+Brush and Pressure Brush share the tip panel's `Smooth` control (0–100%). Higher values fit fewer editable Bezier segments within a bounded error rather than only stabilizing the pointer; zero retains more gesture detail. Continuous mode sweeps the tip along a fitted trajectory instead of joining sparse stamps. Real corners of a square tip remain intentional.
 
-普通 Brush 的长笔划预览同样保留完整轨迹，不随笔划增长重新抽点。连续圆形笔尖使用与提交相同的等宽闭合轮廓生成方式，Direct2D 与 GDI 共用软边分层和透明度。
+预览保留完整轨迹和压力，不按整笔长度重新抽取固定数量的点；预览更新受节流保护。Direct2D 与 GDI 复用既有预览、Path/贝塞尔填色与软边透明层接口；最终笔触仍为可编辑的闭合 Path，不引入新的绘制后端。关闭 `Continuous` 时保留独立盖章效果，由 `Freq` 控制间距。
 
-Long Brush previews also retain the full trajectory without repeatedly selecting new samples as the stroke grows. Continuous round tips use the same constant-width outline builder as committed strokes, with shared softness layers and opacity in Direct2D and GDI.
+Previews retain the complete trajectory and pressure without selecting a fixed sample count over the growing stroke; updates are throttled. Both renderers reuse the existing preview and editable Path/Bezier fill interfaces, including soft-layer opacity. Turning `Continuous` off keeps separate stamps with spacing controlled by `Freq`.
+
+压感笔刷持续绘画时，轨迹和宽度按相邻采样局部平滑，不再按不断变化的整笔总长度重新分配压力；已经稳定的笔迹不会随新采样来回摆动。平滑只重算笔尖附近最多 8 个采样的影响范围，并保留当前笔尖端点。形状笔尖的未稳定尾段会替换旧预览，而不是叠加旧宽度；松笔使用相同的压力和平滑流程，不改写既有图形或底层绘制后端。
+
+Continuous pressure strokes smooth positions and widths locally without redistributing pressure over the changing total stroke length. Completed samples stay fixed; only the tip's bounded smoothing neighborhood can change (up to eight samples of look-ahead). Shape-tip previews replace their mutable tail instead of accumulating obsolete widths, and committed strokes use the same pressure processing. Existing artwork and render backends are unchanged.
 
 Brush 和 Pressure Brush 仍保存为闭合 Path 填色。普通同色笔刷填色相交或边界距离小于 `10 vu` 时可能自动合并；未接触的岛屿之间不会自动补成填色。
+
+### 对象绘制 / Object Drawing
+
+顶部工具栏中，此开关标为“对象绘制”（英文 `Object Drawing`）；旁边的“素材库”（`Vault`）按钮用于打开素材库，两者是独立入口。
+
+In the top toolbar, this toggle is labeled **Object Drawing**; the adjacent **Vault** button opens the asset library. They are separate controls.
+
+- 绘图工具栏的 `Object Drawing` 是模式开关，默认关闭。开启后，形状、Line、Pencil、Brush、Pressure Brush 和 Mixing Brush 每次提交生成一个独立元件实例；软边笔刷的多层轮廓整体属于同一对象，不会裁掉或合并宿主原有图形。Pen / Simple Pen 在闭合、双击、右键或结束路径时把本条路径的所有已提交曲线段组成一个对象，而不是每段一个对象。
+- 用箭头工具整体选择、移动对象，双击按现有元件编辑设置进入内部编辑；内部仍使用原有绘图和拓扑工具。一次 `Ctrl+Z` 撤销整次创建。沿用现有工程格式保存元件、实例、位置和 Cel 曝光，不改变旧工程格式；通用绘图重做及跨元件切换历史不由此开关扩展。
+- 支持 `Current` 和场景二维绘图层；不用于遮罩、碰撞地形、文字/填充改色、橡皮擦或已有几何编辑。`Open` 范围不承载嵌套实例：在 Open 点击此按钮会明确切回 Current 并开启对象绘制，不移动 Open 的既有内容。关闭开关仅影响之后的绘制，不转换现有对象。
+- 新对象遵循当前实例层序规则，后画的实例位于先画的实例上方；宿主原始图形与实例之间仍沿用现有组合顺序，不引入任意混排的新渲染机制。
+
+`Object Drawing` defaults to off. In Current scope or a scene's 2D drawing layer, each shape, line, pencil or brush gesture becomes one independent symbol instance; all soft layers stay together. Pen tools collect the complete path before wrapping it. Arrow selection, movement, double-click symbol editing, single-step creation undo and Save/Open reuse existing symbol behavior. Open scope switches explicitly to Current without moving its contents. Masks, collision terrain, text/fill editing and erasing are not wrapped; raw geometry and instances retain their established composition order.
 
 ### 吸附与绘制设置
 
@@ -364,9 +430,41 @@ Brush 和 Pressure Brush 仍保存为闭合 Path 填色。普通同色笔刷填�
 
 ## 6. 选择与变形
 
+黑、白箭头在二维舞台中使用与工具栏一致的飞镖形光标，点击热点固定在箭头尖端。箭头旁的小标记提示当前操作：四向箭头为移动，端部水平 / 竖直的平滑开放弧线为弯曲，加号为可插入节点。端点 / 节点移动时，黑箭头右下角显示开口朝左、线宽适中的直角符号（┘），主体外接尺寸、位置及黑白描边粗细均与弯曲弧线一致；白箭头保留小方节点及斜线提示。实际拖动期间保持对应提示；对象缩放、文字宽度、空间操纵器和临时平移等专用光标沿用原有反馈。光标以目标尺寸的四倍绘制后，高质量缩小到对应屏幕 DPI 的实际尺寸，改善斜边和弧线的抗锯齿，不改变大小、位置或热点；黑箭头仅用白色描边、白箭头仅用黑色描边，操作标记使用黑色线条和白色外缘，不叠加灰边或重复边框。光标不写入作品或导出。
+
+For endpoint / node movement, the black arrow shows a medium-weight lower-right right-angle mark opening to the left (┘), matching the bend mark's path bounds, placement and black/white stroke widths; the white arrow retains its small square node and diagonal line.
+
+在二维绘图中，无需按下鼠标，悬停在可弯曲的未选线身或未选填色边缘上就显示弧线光标。已选主体仍提示移动，端点、控制柄、Ctrl 插入节点和 Shift 追加选择沿用各自的操作提示；悬停不改写几何或选区。
+
+In 2D drawing, hovering over a reshapeable unselected line body or fill edge shows the bend cursor before pressing the mouse. Selected bodies retain movement feedback, while endpoints, control handles, Ctrl node insertion and Shift additive selection retain their own feedback. Hovering does not modify geometry or selection.
+
+箭头与操作标记采用紧凑尺寸，不照搬工具栏图标的显示大小；箭头左边缘接近竖直并略向左倾，不照搬工具栏倾角，操作标记保持原方向。弯曲提示使用较粗的紧凑四分之一圆弧，平滑连接底部水平短尾与右侧竖直短尾，主体位于箭头下方，弯部沿箭头的斜向延长方向摆放，右端向上弯起，与箭头轮廓保留间隙。缩放和转向围绕尖端热点进行，不改变点击位置。
+
+The black and white selection cursors share the toolbar's dart silhouette and keep their hotspot at the arrow tip. The arrow and operation marks use compact cursor proportions rather than toolbar display sizes. The dart rotates around its unchanged tip to a near-vertical left edge with a slight counterclockwise tilt, rather than copying the toolbar's angle; operation marks retain their orientation. Operation marks indicate movement, reshaping (a smooth upright open curve), endpoint / node movement, or node insertion. The reshaping mark uses a thicker, compact quarter-circle smoothly joining short horizontal and vertical ends; its body sits below the dart along the arrow's diagonal continuation, with its right end curving upward and a gap from the dart outline. Feedback follows the active drag; dedicated resize, text-width, spatial-gizmo and temporary-pan cursors remain unchanged. Cursors render at four times the target dimensions before high-quality downsampling to the display-DPI size, improving diagonal and curve antialiasing without changing their dimensions, placement or hotspot. Black darts have a single white outline, white darts a single black outline, and operation marks use black strokes with white edging, without extra gray or duplicate borders. Cursors are editor feedback only.
+
 选择工具组区分 `Black Arrow`（黑箭头，传统键位 `V`）与 `White Arrow`（白箭头，传统键位 `A`）。黑箭头默认分别选择填色与描边：点中填色只以 Animate 风格的细密黑白雪花点纹覆盖该填色，不连带高亮描边、不显示外接框或节点；点中描边只强调该段描边。点纹保留原色可辨，不覆盖孔洞和被不透明上层填色遮挡的区域，也不写入作品或导出。拖动沿用既有填色/描边分离与撤销流程。打散状态的填色、线条和描边可用黑箭头框选局部，沿框边切分并只选中框内部分；未编辑就取消选区会恢复临时切分。组、元件实例、文字、图片和整体 SVG 保持整体选择，以整体选框反馈，不因局部框选被拆开。黑白箭头共享线身弯曲、端点移动、曲率与节点插入等几何交互；黑箭头默认不显示悬停路径、节点或控制柄轮廓。黑箭头弯曲、插入节点和移动端点期间不显示雪花；松手后结束临时几何选中，不自动转为可移动的整条线，再次拖线身仍可继续弯曲。单击不拖动才选中描边并显示雪花，之后拖动已选主体才是移动；`Shift` 追加选择不启动弯曲。白箭头保留可见路径、锚点和控制柄的编辑反馈。上述区别跟随设置中的箭头角色，交换角色后也随之交换。选择多个对象不会自动建立组。
 
 黑箭头普通点选填色或描边仅更新选区，不会因为边缘命中检查就把矩形、椭圆等转换为路径；实际拖动弯曲时才进入几何编辑。白箭头路径编辑仍沿原有流程准备几何。Black-arrow selection hit testing is read-only; primitive-to-path conversion is deferred until reshaping.
+
+黑箭头已显示密集雪花的选区只接受移动：在选中的填色内部、边缘、描边或端点拖动，均移动原有选区，不切换为弯曲、节点插入、端点编辑或分支延伸；`Ctrl` / `Alt` 不会绕过此规则。移动时保留多选和局部框选范围，不因点到边缘缩成单个描边。`Shift` 追加选择、空白处取消选区及未选中区域的编辑仍保留；要编辑已选区域的形状，先取消雪花选区或切换白箭头。规则跟随设置中的箭头角色。
+
+A dense-stipple Black Arrow selection is move-only. Dragging its fill, edge, stroke or endpoint translates the existing selection instead of bending, inserting nodes, editing endpoints or extending branches, including with Ctrl/Alt held. Multiple and partial selections stay intact. Shift-add, deselection on blank space and editing unselected regions remain available; deselect or switch to White Arrow to reshape selected artwork. This rule follows the configured arrow role.
+
+黑箭头移动二维绘制选区时，填色、描边与雪花选区同步移动；原位保留 25% 不透明度的作品参照，不显示雪花、高亮边线、节点或选框。移动对象保持真实叠放顺序：若被其他对象覆盖，仅将上方对象与移动选区重叠的部分临时以 35% 不透明度显示，便于定位；非重叠区域、选区孔洞及下方对象不变。松开、取消、切换工具或帧后清除原位参照并恢复正常遮挡，不改写作品颜色、透明度、层级或导出结果。
+
+Black-arrow drags move 2D paint and its stipple together. A plain 25%-opacity reference remains at the original position, without stipple, highlights, nodes or selection bounds. Moving objects retain their real stacking order; only overlapping portions of objects above the moving selection are temporarily drawn at 35% opacity for positioning. Non-overlapping areas, selection holes and lower objects stay unchanged. Release, cancellation, tool changes and frame changes clear this feedback and restore normal occlusion without changing artwork colours, opacity, stacking or exports.
+
+黑白箭头拖动未选中的线身或填色边界来调整弧度时，越过拖动阈值后首次预览即更新，包括直线首次变弯。弯曲增益不随按下位置靠近端点而放大：相同光标位移对线段中部产生相同的弯曲位移；端点保持固定，因此靠近端点的被按位置不会被强制拉到光标下。拖回按下位置恢复原始曲线，撤销仍按一次手势记录。
+
+Arrow body reshaping updates the first drag preview, including straight-to-curve edits. Bend gain is uniform along the segment rather than amplified near its ends: equal pointer deltas move the segment midpoint equally. Endpoints stay fixed, so an off-center grabbed point is not forced onto the cursor. Returning to the press position restores the original curve; each gesture remains one undo step.
+
+黑白箭头的单击拾取容差按屏幕像素计算，不随舞台缩放变小。未直接命中时，可在设置的容差内拾取真实可见填色的最近边缘，因此缩小到亚像素宽度的填色也可单击选择；不使用外接框代替轮廓，不拾取隐藏、锁定或完全被遮挡的填色，孔洞深处与超出容差的位置仍为空白。容差补偿不会启动端点、边界弯曲或分离编辑；直接命中细小填色内部时也不会仅因邻近边缘而丢失填色选择。
+
+Arrow click tolerance stays in screen pixels at every supported zoom. A missed direct hit can pick the nearest visible fill contour within that tolerance, including subpixel-thin fills, without selecting empty bounding-box corners, deep holes, hidden/locked content or fully occluded fills. Compensated picking only changes selection; it does not arm a deformation tool.
+
+框选或套索选取复杂笔迹的一部分时，曲线恢复使用本次操作的空间索引，并复用内外区域的曲线准备数据，避免逐条边扫描整笔曲线。仍按原精度切分并保留贝塞尔控制柄、孔洞、材质、透明度及撤销行为，不通过简化节点或改变底层绘制来加速。
+
+Partial marquee/lasso selection reuses prepared curves and a per-operation spatial index instead of scanning every source curve for every clipped edge. Exact matching, Bezier handles, holes, materials, opacity and undo remain unchanged; acceleration does not simplify nodes or change the render backend.
 
 移动打散填色并松手时，不透明填色会沿真实填色边界截去同图层、同 Cel 内被覆盖的未选中描边，保留填色范围外的线段及曲率；孔洞中的线段不被截去。恰好沿填色边界的描边不视为被内部覆盖：弯曲带缺口的填色边缘后保留其余原有描边，不自动补齐缺口。Boundary-aligned strokes survive fill-edge bending, and existing outline gaps remain open. 一起移动的所选描边、其他图层/Cel、锁定内容、元件实例与未打散的图片/文字/SVG 不受该切分影响，半透明填色不破坏下方描边。移动与截断沿用同一次撤销，不在拖动预览期间破坏原描边。
 
@@ -374,13 +472,25 @@ Brush 和 Pressure Brush 仍保存为闭合 Path 填色。普通同色笔刷填�
 
 雪花点纹用于普通二维绘制画布，密度按屏幕像素固定，不随缩放变成大格子；Reference 3D / 空间投影视图保留既有投影选择反馈，不把二维覆盖层套在透视、深度和遮罩结果上。
 
+打散选区中的填色、描边和端点相互重叠时，雪花覆盖按可见区域合并后只绘制一次；交叉处、重合线段和相接端点使用一致的纹理相位与透明度，不因重复覆盖出现加深的黑块。孔洞和未选区域保持不覆盖，作品的实际颜色、线宽与几何不受影响。Direct2D、缓存选区和 GDI 回退遵循同一规则。
+
+Overlapping selected raw fills, strokes and endpoints share one visible coverage mask and one stipple pass. Crossings, coincident segments and connected endpoints keep a uniform pattern phase and opacity instead of accumulating dark patches. Holes and unselected regions remain uncovered; artwork colours, stroke widths and geometry are unchanged. Direct2D, cached selections and GDI fallback use the same coverage.
+
 点纹锚定所选填色或描边的原始几何边界，而非屏幕原点；移动时随选区一起平移，拖动预览与提交后保持同一纹理相位。遮挡裁剪不改变纹理锚点；Direct2D、缓存选区与 GDI 回退均使用最近邻采样，避免移动时点纹被插值成条带。The stipple follows the selected geometry instead of sliding underneath it. Drag previews and committed moves share the same phase; occlusion clipping does not move the anchor, and both renderers use nearest-neighbor sampling.
 
 整条 `Line`（含移动后转为整体选中的线段）沿真实直线或贝塞尔中心线及原线宽覆盖点纹，不沿外接矩形描边，不在线条两侧额外生成点纹边带。Whole-line selection uses the actual straight or Bezier centerline and original stroke width, including after dragging; it never outlines the line's bounding rectangle.
 
 Black Arrow selects fills and strokes independently. An Animate-like, screen-pixel stipple covers only the selected region, preserving holes and opaque-fill occlusion without highlighting an unselected boundary stroke. Selection feedback never changes artwork or exports. Its marquee cuts raw fills and strokes at the rectangle and selects only the enclosed portions; cancelling an unedited selection restores temporary cuts. Groups, instances, text, bitmaps and whole SVGs remain whole selections. Both arrows share curve bending, endpoint movement and node insertion. Black Arrow shows no hover path or handle outlines, suppresses stipple during geometry edits, and releases the temporary selection afterward so the next body drag can keep bending. A plain click explicitly selects the stroke for movement; Shift preserves additive selection. White Arrow retains visible path and handle feedback. These differences follow the configured arrow roles. Committing a moved opaque raw fill cuts covered unselected strokes in the same layer and Cel, preserving holes, outside curves, jointly selected strokes and other layers; translucent fills do not cut strokes. The cut belongs to the same undo operation as movement. Settings > Selection and editing owns arrow roles, symbol entry, optional whole-selection corner marks/labels, outline width and hit tolerance. Corner marks and labels default to off. Shared symbols require explicit editor entry. The stipple applies to ordinary 2D drawing canvases; spatial projection retains its existing feedback.
 
-同一选择工具组中的 `Polygon Lasso` 与 `Freehand Lasso` 分别用于逐点绘制直线边界和拖动绘制自由边界；`Free Transform` 用于缩放、旋转和倾斜；`Distort` 用于可编辑三次贝塞尔包络扭曲。下文的 `Select` 路径编辑操作对应默认白箭头。
+默认工具栏依次提供三个独立的折叠按钮：“选择”收纳黑箭头与白箭头；“套索”收纳 `Polygon Lasso` 与 `Freehand Lasso`；“变换”收纳 `Free Transform`、`3D Transform`、`Distort` 与 `Gradient`，默认启用任意变形。套索不再挤在变换菜单里，渐变不单独占用工具栏按钮。各组保留上次启用的工具；点击工具组默认显示列表，同时启用当前工具。左侧还支持悬停展开，顶部还支持右键展开；点击列表内的工具后收起。3D 工具仍按原有上下文规则显示。
+
+The default toolbar has three separate grouped buttons in order: Select contains Black Arrow and White Arrow; Lasso contains Polygon Lasso and Freehand Lasso; Transform contains Free Transform, 3D Transform, Distort and Gradient, defaulting to Free Transform. Lasso tools no longer share the Transform menu, and Gradient has no standalone button. Each group remembers its last active tool. Clicking a group opens its list by default and activates its current tool. Hover also opens groups on the left, and right-click remains available on top. Choosing a tool from the list closes it. Existing context rules still control 3D tool visibility.
+
+开发模式下变更工具栏分组结构时，旧窗口会沿用保状态重启流程以重建工具按钮；新工具组尚未初始化时不会中断旧窗口布局或阻止重启。
+
+In development mode, toolbar group structure changes use the existing state-preserving restart to rebuild tool buttons. A group that has not yet been initialized in the old window does not interrupt its layout or block the restart.
+
+`Polygon Lasso` 与 `Freehand Lasso` 分别用于逐点绘制直线边界和拖动绘制自由边界；`Free Transform` 用于缩放、旋转和倾斜；`Distort` 用于可编辑三次贝塞尔包络扭曲。下文的 `Select` 路径编辑操作对应默认白箭头。
 
 - 单击对象：选择单个填色、线条、文本或整体 SVG。
 - `Polygon Lasso`：单击逐点添加直线顶点，每次松开左键后保留已添加的顶点；双击、按 `Enter` 或在至少三个顶点时点击首点附近提交。移动时会预览当前边；按 `Escape` 或右键取消。
@@ -395,6 +505,8 @@ Black Arrow selects fills and strokes independently. An Animate-like, screen-pix
 
   Canvas dimensions do not restrict selection: visible images and drawing objects outside the canvas remain selectable by click and marquee after panning or zooming out.
 - 黑白箭头在空白处拖框均可截取打散形状的局部填色和描边；选择框穿过 Line 或 Pencil 时，会沿框边把描边拆成框内与框外的开放曲线，并只选中框内部分。图片、文字、整体 SVG 与元件仍按整体选择。Mixing Brush 只选择与框选范围实际着色相交的连通岛，外接矩形中的透明区域不会误选；按 `Shift` 追加选择。
+- 框选期间清除先前悬停曲线的控制柄；框选切分重排对象或切换画布后，旧悬停目标失效，需重新悬停才显示对应曲线的控制柄，避免残留控制柄误指向其他线段。
+  Marquee selection clears previous hover handles. Geometry changes or canvas switches invalidate old hover targets; hover again to show the current curve's controls instead of retaining handles for a reused object index.
 - 拖动已选对象：移动。指针悬停在已选直线、描边、填色或整体对象的主体上，以及整体移动期间，显示四向交叉箭头；移动已选边界描边或运动轨锚点时同样显示该光标。端点和曲率编辑使用十字光标，缩放手柄使用对应方向的双向箭头。
 - 舞台获得焦点时按 `Ctrl+A`：仅全选当前帧实际曝光、可见且未锁定的内容；不会跨帧选择。Basic Drawing 优先选择本地对象，该帧没有本地对象时选择实际可见的嵌套实例；Scene & Animation 选择当前帧实际可见的可编辑场景实例。
 - `Delete`：删除全部所选内容；Basic Drawing 可在一次操作中同时删除本地图形和嵌套元件实例，Scene & Animation 可删除一个或多个场景元件实例。
@@ -428,6 +540,8 @@ Distort 控制框：
 - 按住 `Ctrl` 单击包络边界：在命中位置添加扭曲锚点。插点使用精确曲线分割，添加瞬间不会改变当前扭曲形态。整个包络全局只允许存在一个插入锚点：四个角点属于固定结构锚点，不占用该名额；已有一个插入锚点时再次单击边界不会添加第二个锚点。旧工程中已存在多个插入锚点的包络会在下次写入时自动折叠为单个锚点，折叠会保留边界曲率而不是把曲线拉直。
 - 未预先选择对象时，第一次点击对象会先建立扭曲选择框；随后即可直接拖动锚点、方向柄或包络内部。
 - 扭曲支持当前帧中的基础图形、文本、普通对象、导入 SVG、混色区域和嵌套实例，也可在 `Scene & Animation` 中用于场景实例。
+- 场景实例在投影 2D 视图中也会显示可编辑的扭曲包络；撤销变换后重新选择实例仍可直接扭曲。
+  Scene instances expose an editable Distort envelope in projected 2D views, including after undoing a transform and reselecting the instance.
 - 位图支持包络扭曲：`Distort` 为图片放置对象显示扭曲包络，像素随包络变形，透明区域保留。扭曲参数可保存和撤销，不改变 Vault 中共享的原始图片素材。切回 `Select` 后可重新选中并整体移动，扭曲包络随图片一起平移；隐藏的原始角点不会拦截图片内部的点击。当前包络扭曲沿用软件栅格渲染路径；拖动扭曲柄时保留轻量网格预览，松手后生成完整结果并缓存。
 - 位图按原素材的像素精度生成一张透明的扭曲贴图，同时缓存选择轮廓和场景裁剪边界。缩放、平移、窗口尺寸、帧号、背景、舞台遮罩或对象透明度变化时，直接映射并绘制已有贴图，不重新计算图片扭曲；放大后的细节仍受原素材像素精度限制，`Point` 采样保持最近邻。图片内容、擦除范围、采样设置、对象位置/尺寸/旋转或包络变化时重新生成。结果缓存最多保留 32 项、合计 64 MiB；超出尺寸、内存或网格精度预算时使用原绘制路径，这些图片缩放时仍可能重算。首次生成大图的完整结果仍可能耗时。
 - 扭曲只保存源坐标框架、边界锚点和控制柄参数；不会拆散、隐藏或矢量化打包对象、文本和导入 SVG。复制、撤销、工程保存、素材 SVG 保存及实例关键帧都会保留这些参数。
@@ -445,7 +559,7 @@ On commit, shape edits recompute local topology using the existing Adobe Animate
 单条封闭边界自交形成两个封闭填色区域时，两块填色均保留，边界曲线在交点处切分并建立端点；不会通过删除回环来消除自交。
 When a closed boundary crosses itself into two filled faces, both faces remain, with boundary curves split into endpoints at the intersection. The loop is not discarded.
 
-移动填色时，当前被拖动的填色会临时显示在所属图层的最上方，便于在纯色、线性渐变、径向渐变和形状渐变中持续确认位置；松开或取消后恢复原有显示顺序，不会改写对象的永久层级。多个填色一起移动时仍保留它们原来的相对顺序。
+黑箭头移动填色时不临时置顶，而通过无高亮的原位半透明参照及上方对象重叠区域的淡化确认位置；纯色与渐变保留原有外观，多选对象保留相对顺序。白箭头的路径编辑反馈保持原有规则。Black-arrow fill movement uses a plain translucent origin reference and faded occluders rather than promoting the fill to the front. Solid and gradient paint keep their appearance and multi-selections retain relative order; White Arrow path-editing feedback is unchanged.
 
 ### 锚点与曲线
 
@@ -1032,6 +1146,10 @@ SVG 位图会复用同一内容、宽高比相容且分辨率足够的已有缓�
 
 选择场景中的普通内容层，并在时间轴右键菜单中使用 `New Mask Layer`，即可为该内容层建立 2D Scene Mask。选择 Mask 图层后，舞台切换到独立的二维遮罩编辑面，维度按钮固定显示为禁用的 `2D`，完整场景作为不可编辑参考；此时启用基础形状、线条、路径、笔刷、文字、填充和擦除工具，并禁用 3D Transform。右侧检查器随当前工具提供材质、形状、铅笔、笔刷、混合笔和文字参数，Pressure Brush 继续读取数位笔压力。Mask 同时裁切该内容层中的 2D 与 3D 实例；空白关键帧、隐藏 Mask 或当前帧没有有效遮罩几何时，被遮罩内容不显示。完成后选择普通内容层即可返回场景装配。
 
+场景点选会忽略在当前点击位置被遮罩裁掉的上层实例，使其下方实际可见的内容仍可选中；被裁掉的实例也不会占用选择遮挡检查的候选名额。
+
+Scene picking ignores upper instances clipped out at the pointer, so visible content beneath remains selectable. Clipped instances also do not consume the selection occlusion candidate budget.
+
 实例可以独立设置：
 
 - 二维位置、旋转、缩放和倾斜，以及三维位置、旋转和缩放。
@@ -1356,11 +1474,11 @@ The **Charcoal** theme adds neutral charcoal panels, darker fields, subtle borde
 
 ### 操作偏好
 
-**工具栏位置 / Toolbar position**：在操作偏好中选择 **左侧 / Left**（默认）或 **顶部 / Top**，点击 `OK` 返回设置，再点击 `Save` 即时应用并保存，下次启动仍保留。左侧沿用紧凑纵向工具栏；顶部仅使用元件页签右侧、吸附设置左侧的原有顶部空白，显示适度大小的图标及下方名称，不新增功能区高度、不压缩画布。工具按钮随可用宽度缩排，不显示底部横向滚动条；普通分屏仍保留图标及下方名称，不提前移到下一行。仅在顶部可用宽度极窄时回退到原有视图操作行中的紧凑方形图标，图标保持比例，不随按钮横向拉伸。顶部选择、形状、线条、笔刷、填色等折叠工具组改为右键展开带图标与名称的网格，悬停仅显示提示，左键直接启用当前工具；点击网格中的工具后收起。左侧工具栏保留原有悬停展开行为。取消子面板或设置窗口不改变已保存的位置。
+**工具栏位置 / Toolbar position**：在操作偏好中选择 **左侧 / Left**（默认）或 **顶部 / Top**，点击 `OK` 返回设置，再点击 `Save` 即时应用并保存，下次启动仍保留。左侧沿用紧凑纵向工具栏；顶部仅使用元件页签右侧、吸附设置左侧的原有顶部空白，显示适度大小的图标及下方名称，不新增功能区高度、不压缩画布。工具按钮随可用宽度缩排，不显示底部横向滚动条；普通分屏仍保留图标及下方名称，不提前移到下一行。仅在顶部可用宽度极窄时回退到原有视图操作行中的紧凑方形图标，图标保持比例，不随按钮横向拉伸。顶部选择、套索、变换、形状、线条、笔刷、填色等折叠工具组左键点击默认展开带图标与名称的网格，同时启用当前工具；右键也能展开，悬停仅显示提示。点击网格中的工具后收起。左侧工具栏保留悬停展开行为，也可点击展开。取消子面板或设置窗口不改变已保存的位置。
 
-顶部工具栏不绘制容器外框，下方名称保持 8pt 字体；图标在原有图标槽内缩小显示，文字位置、按钮点击区域及整体布局保持不变。选中状态及键盘焦点提示保留，左侧工具栏、右侧分类栏和展开网格的图标不受影响。从顶部切回左侧时，工具栏立即显示在画布上方，无需重启。
+顶部工具栏不绘制容器外框，下方名称保持 8pt 字体；图标在原有图标槽内缩小显示，文字位置、按钮点击区域及整体布局保持不变。选中状态及键盘焦点提示保留，左侧工具栏、右侧分类栏和展开网格的图标不受影响。从顶部切回左侧时重置横排与换列状态、恢复舞台左侧位置，并置于画布前方；无需重启，窗口缩放后仍可反复切换。
 
-In **Settings → General → Operation preferences**, choose **Toolbar position → Left** (default) or **Top**, confirm with `OK`, then `Save`. Top uses only the existing header space between the symbol tabs and snapping controls, with smaller icons centered in their existing slots and unchanged 8pt labels underneath, without a container border; selection and keyboard focus cues remain visible. It adds no header height and takes no extra canvas space. Buttons adapt to the available width without a bottom horizontal scrollbar; ordinary split-screen layouts retain the icons and labels in the header rather than moving them to another row prematurely. Only extremely narrow header space uses compact square icons in the existing view-action row, preserving icon proportions without horizontal stretching. Right-click a grouped tool in the top toolbar to open its labeled grid; hovering only shows a tooltip, and left-click activates its current tool. The grid closes after selection. The left toolbar retains hover-to-open behavior. Switching from Top back to Left immediately restores the toolbar above the canvas without restarting. The position persists across restarts; canceling either dialog leaves the saved position unchanged.
+In **Settings → General → Operation preferences**, choose **Toolbar position → Left** (default) or **Top**, confirm with `OK`, then `Save`. Top uses only the existing header space between the symbol tabs and snapping controls, with smaller icons centered in their existing slots and unchanged 8pt labels underneath, without a container border; selection and keyboard focus cues remain visible. It adds no header height and takes no extra canvas space. Buttons adapt to the available width without a bottom horizontal scrollbar; ordinary split-screen layouts retain the icons and labels in the header rather than moving them to another row prematurely. Only extremely narrow header space uses compact square icons in the existing view-action row, preserving icon proportions without horizontal stretching. Left-click a grouped tool to open its labeled grid by default and activate its current tool; right-click also opens it, while hovering on top only shows a tooltip. The grid closes after selection. The left toolbar supports both hover and click to open. Switching from Top back to Left resets horizontal and wrapping state, restores its position on the left of the Stage, and brings it in front of the canvas without restarting. Repeated switching remains available after resizing. The position persists across restarts; canceling either dialog leaves the saved position unchanged.
 
 点击 `Settings → General → Operation preferences... / 操作偏好...` 打开独立面板，调整与具体工具操作相关的开关。点击 `OK` 返回设置，再点击 `Save` 后写入 `settings.json`，重新打开软件仍然生效；取消子面板或设置窗口不会改变已保存值。
 
@@ -1499,6 +1617,10 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:43521/mcp/' -Method Post `
 | `F` | Scene & Animation 3D：平滑聚焦全部选中实例；能完整显示时保持 100%，过大时自动缩小适配 |
 | `Delete` | 删除舞台全部选择，包括 Scene & Animation 场景实例和 Basic Drawing 混合选择 |
 
+空间键盘变换过程中转到文本或数值输入框输入时，会先取消变换并恢复原值，不产生撤销记录，当前按键仍交给输入框。
+
+Typing in a text or numeric editor during a spatial keyboard transform cancels the transform without an undo entry, restores its original values, and leaves the key with the focused editor.
+
 ### 工具快捷键方案
 
 点击 `Settings → General → Shortcut profiles... / 快捷键方案...` 打开独立面板，可选择方案、创建/重命名/删除自定义方案、分配或清除快捷键。点击 `OK` 返回设置，再点击 `Save` 应用；取消子面板会放弃该次编辑。
@@ -1575,6 +1697,18 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:43521/mcp/' -Method Post `
 - 误把 `.V2DSymbol` 当成 SVG 打开会失败：它是有独立格式版本的压缩包，请使用导入命令，而非 `Import SVG...`。
 
 ### 性能或渲染异常
+
+Release 构建的原生编辑器直接使用优化后的 JIT 代码，并启用持续低延迟垃圾回收，减少绘画或播放途中首次触发循环重编译和阻塞式完整回收带来的尖峰。代价是冷启动时会多做一些编译，短期内也可能保留更多内存；系统内存紧张时仍可能发生回收停顿。Release 命令行回归使用与编辑器相同的策略，不降低几何精度、采样数量或性能预算；源码 Debug 构建仍保留调试编译设置。
+
+Release builds of the native editor use optimized JIT code from the outset and sustained low-latency garbage collection to reduce interaction-time compilation and blocking full-collection spikes. Cold startup may do more compilation and transient memory use can increase; memory pressure can still cause pauses. Release CLI regressions use the same policy without reducing geometry quality, sampling or performance budgets; source Debug builds retain their debugging compilation settings.
+
+长笔画的软笔刷会并行计算互不依赖的透明度层与拟合片段，再按原顺序写回可编辑路径；单核模式与多核模式保留相同的控制点、颜色和透明度层次，原有最大耗时预算保持不变。
+
+Long soft-brush strokes compute independent opacity layers and fitting spans in parallel, then append editable paths in their original order. Single-worker and multi-worker execution retain identical control points, colors and opacity ordering, with unchanged maximum-time budgets.
+
+笔刷提交微基准在三次暖机后、七次计时前清理先前功能回归留下的堆，避免把已关闭测试窗口的存活对象扫描归因于当前笔画。七次测量仍全部计入最大耗时，包括其中发生的 GC，并输出每个样本的耗时和各代回收次数；每笔仍使用新空场景，计时覆盖撤销快照、完整构建与提交整理。
+
+The brush commit microbenchmark collects the prior functional tests' heap after three warmups and before seven timed samples, isolating earlier closed test windows from the current stroke. All seven samples still count toward the maximum-time budget, including any in-sample GC; individual times and per-generation collection counts are logged. Every stroke still uses a fresh empty scene and includes the undo snapshot, full build and commit normalization.
 
 - 填色桶图标绑定到系统鼠标光标，由 Windows 跟随指针显示，不再作为舞台覆盖层逐帧绘制；仅移动填色光标不会触发舞台重绘。光标保留当前填色颜色与原命中点，按颜色、主题和 DPI 缓存；区域悬停预览和填色动画保持不变。填色光标的流畅度与舞台 `Render FPS` 读数分离。
 - The Fill bucket is a Windows cursor rather than a Stage overlay, so moving it alone does not repaint the Stage. It retains the active fill color and original hotspot and is cached by color, theme and DPI. Region hover previews and fill animations are unchanged; cursor smoothness is independent of Stage Render FPS.

@@ -362,6 +362,7 @@ internal static partial class Benchmark
     /// </summary>
     private static void RunLargeMarqueeSelectionRegression()
     {
+        RunMarqueeCurvePerformanceRegression(verifyRendering: true);
         var scene = BuildComplexArtworkScene(ComplexArtworkObjectCount);
         var marquee = new RectangleF(-20_000, -20_000, 40_000, 40_000);
         var started = Stopwatch.GetTimestamp();

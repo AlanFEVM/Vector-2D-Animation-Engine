@@ -1,4 +1,5 @@
 using System.Drawing.Drawing2D;
+using Clipper2Lib;
 
 namespace VectorAnimationEngine;
 
@@ -12,8 +13,11 @@ internal sealed partial class StageControl
     private readonly Dictionary<DrawingElementKey, ObjectArrowSelectionRegion> _objectArrowFillContours = new();
     private readonly Dictionary<int, DrawingElementHit[]> _objectArrowParts = new();
     private (VectorScene Scene, long Geometry, long Summary, long Content, long Selection, int Frame, ulong Layers) _objectArrowFillKey;
+    private ObjectArrowStippleMask? _objectArrowStippleMask;
+    private float _objectArrowStippleMaskZoom;
 
     internal readonly record struct ObjectArrowSelectionRegion(int ObjectIndex, PointF[][] Contours, PointF PatternOrigin);
+    internal readonly record struct ObjectArrowStippleMask(PointF[][] Contours, PointF PatternOrigin);
 
     private static PointF ObjectArrowPatternOrigin(PointF[][] contours)
     {
@@ -58,6 +62,7 @@ internal sealed partial class StageControl
         {
             _objectArrowFillContours.Clear();
             _objectArrowParts.Clear();
+            _objectArrowStippleMask = null;
             foreach (var group in SelectedElements.GroupBy(hit => hit.Key.ObjectIndex))
                 _objectArrowParts[group.Key] = group.ToArray();
             _objectArrowFillKey = key;
@@ -148,6 +153,44 @@ internal sealed partial class StageControl
         new(objectIndex, Scene.GetVisiblePathSelectionPolylines(objectIndex, Frame, contours, closed),
             ObjectArrowPatternOrigin(contours));
 
+    internal ObjectArrowStippleMask GetObjectArrowStippleMask()
+    {
+        PrepareObjectArrowSelection();
+        if (_objectArrowStippleMask is { } cached && _objectArrowStippleMaskZoom == Zoom) return cached;
+        const int precision = 4;
+        var coverage = new PathsD();
+        var left = float.PositiveInfinity;
+        var top = float.PositiveInfinity;
+        foreach (var fill in ObjectArrowSelectedFills())
+        {
+            var contours = new PathsD(fill.Contours.Where(contour => contour.Length >= 3)
+                .Select(contour => new PathD(contour.Select(point => new PointD(point.X, point.Y)))));
+            if (contours.Count == 0) continue;
+            coverage.AddRange(Clipper.Union(contours, new PathsD(), FillRule.EvenOdd, precision));
+            left = Math.Min(left, fill.PatternOrigin.X);
+            top = Math.Min(top, fill.PatternOrigin.Y);
+        }
+        foreach (var stroke in ObjectArrowSelectedStrokes())
+        {
+            var contours = new PathsD(stroke.Contours.Where(contour => contour.Length > 0)
+                .Select(contour => new PathD(contour.Select(point => new PointD(point.X, point.Y)))));
+            if (contours.Count == 0) continue;
+            var radius = Math.Max(ScreenLengthToWorld(1), Scene.Stroke[stroke.ObjectIndex]) * 0.5d;
+            coverage.AddRange(Clipper.InflatePaths(contours, radius, JoinType.Round, EndType.Round,
+                precision: precision, arcTolerance: Math.Max(0.0001, ScreenLengthToWorld(0.1f))));
+            left = Math.Min(left, stroke.PatternOrigin.X);
+            top = Math.Min(top, stroke.PatternOrigin.Y);
+        }
+        var union = coverage.Count == 0 ? coverage
+            : Clipper.Union(coverage, new PathsD(), FillRule.NonZero, precision);
+        var mask = new ObjectArrowStippleMask(
+            union.Select(contour => contour.Select(point => new PointF((float)point.x, (float)point.y)).ToArray()).ToArray(),
+            float.IsFinite(left) && float.IsFinite(top) ? new PointF(left, top) : PointF.Empty);
+        _objectArrowStippleMask = mask;
+        _objectArrowStippleMaskZoom = Zoom;
+        return mask;
+    }
+
     internal void ConfigureSelectionArrows(SelectionArrowSettings settings, bool objectSelection,
         bool suppressGeometryFeedback = false)
     {
@@ -155,10 +198,13 @@ internal sealed partial class StageControl
         var suppress = objectSelection && suppressGeometryFeedback;
         if (SelectionArrows == settings && ObjectSelectionMode == objectSelection
             && SelectionFeedbackSuppressed == suppress) return;
+        var clearsMoveFeedback = ObjectSelectionMode != objectSelection && SelectionMoveFeedbackActive;
+        if (ObjectSelectionMode != objectSelection) ClearSelectionFillDragFront(invalidate: false);
         SelectionArrows = settings;
         ObjectSelectionMode = objectSelection;
         SelectionFeedbackSuppressed = suppress;
-        InvalidateOverlay();
+        if (clearsMoveFeedback) Invalidate();
+        else InvalidateOverlay();
     }
 
     internal PointF[][] GetObjectArrowSelectionContours(int objectIndex)
@@ -222,31 +268,14 @@ internal sealed partial class StageControl
             {
                 var offset = SelectionDragPreviewOffset;
                 graphics.TranslateTransform(WorldLengthToScreen(1) * offset.X, WorldLengthToScreen(1) * offset.Y);
-                foreach (var fill in ObjectArrowSelectedFills())
-                {
-                    var origin = WorldToScreen(fill.PatternOrigin);
-                    using var patternTransform = new Matrix(1, 0, 0, 1, origin.X, origin.Y);
-                    stipple.Transform = patternTransform;
-                    using var path = new GraphicsPath(FillMode.Alternate);
-                    foreach (var contour in fill.Contours)
-                        if (contour.Length >= 3) path.AddPolygon(contour.Select(WorldToScreen).ToArray());
-                    graphics.FillPath(stipple, path);
-                }
-                foreach (var stroke in ObjectArrowSelectedStrokes())
-                {
-                    var origin = WorldToScreen(stroke.PatternOrigin);
-                    using var patternTransform = new Matrix(1, 0, 0, 1, origin.X, origin.Y);
-                    stipple.Transform = patternTransform;
-                    using var pen = new Pen(stipple, Math.Max(1, WorldLengthToScreen(Scene.Stroke[stroke.ObjectIndex])))
-                    { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
-                    foreach (var contour in stroke.Contours)
-                    {
-                        var points = contour.Select(WorldToScreen).ToArray();
-                        if (points.Length > 1) graphics.DrawLines(pen, points);
-                        else if (points.Length == 1)
-                            graphics.FillEllipse(stipple, points[0].X - pen.Width / 2, points[0].Y - pen.Width / 2, pen.Width, pen.Width);
-                    }
-                }
+                var mask = GetObjectArrowStippleMask();
+                var origin = WorldToScreen(mask.PatternOrigin);
+                using var patternTransform = new Matrix(1, 0, 0, 1, origin.X, origin.Y);
+                stipple.Transform = patternTransform;
+                using var path = new GraphicsPath(FillMode.Alternate);
+                foreach (var contour in mask.Contours)
+                    if (contour.Length >= 3) path.AddPolygon(contour.Select(WorldToScreen).ToArray());
+                graphics.FillPath(stipple, path);
             }
             finally { graphics.Restore(preview); }
             foreach (var objectIndex in SelectedObjects)

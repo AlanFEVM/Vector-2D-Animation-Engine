@@ -109,9 +109,15 @@ Use the repository validation entry point so builds and benchmarks share the cro
 .agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite Freehand
 .agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite Render
 .agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite Stress -EnforcePerformanceBudget
+.agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite GpuOptics
+.agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite SelectionPerf
 ```
 
 The repository has no separate test project or CI pipeline. `native/App/Benchmark*.cs` supplies the focused CLI regression harness.
+
+`All` now includes hardware-required GPU optics checks; focused selection performance is already reached by `Render`. Each run emits a final JSON summary, including failed and unexecuted steps. Use `-ContinueOnFailure` to collect subsequent suite results serially (native build failure still stops execution), and `-EnforcePerformanceBudget` for strict performance acceptance. Without strict enforcement, failed budget markers are reported as `PassedWithWarnings`. `-Plan` only lists planned work and does not establish a pass. Follow the repository's regression-approval rules before executing product suites.
+
+Runner control-flow checks can be run independently with `.agents\skills\vector2d-validate-change\scripts\test-validation-runner.ps1`; these use a mocked dotnet command in a temporary workspace and never build or run the product.
 
 Shared assertions, fixture cleanup, reflection lookup and sampling live in `Benchmark.RegressionHelpers.cs`; feature partials retain their test cases and measurement loops. Use the [benchmark map](.agents/skills/vector2d-validate-change/references/benchmark-map.md) to select suites. `--bench-collision` is a manual project-specific probe, not part of the standard validation suites.
 

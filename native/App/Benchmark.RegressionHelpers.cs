@@ -9,6 +9,49 @@ internal static partial class Benchmark
     [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "PrintWindow", SetLastError = true)]
     private static extern bool PrintBenchmarkWindow(IntPtr window, IntPtr target, uint flags);
 
+    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "DrawIconEx", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool DrawBenchmarkCursor(IntPtr target, int positionX, int positionY, IntPtr cursor,
+        int width, int height, uint step, IntPtr background, uint flags);
+
+    [System.Runtime.InteropServices.DllImport("gdi32.dll", EntryPoint = "CreateCompatibleDC")]
+    private static extern IntPtr CreateBenchmarkCursorDc(IntPtr source);
+
+    [System.Runtime.InteropServices.DllImport("gdi32.dll", EntryPoint = "SelectObject")]
+    private static extern IntPtr SelectBenchmarkCursorBitmap(IntPtr target, IntPtr bitmap);
+
+    [System.Runtime.InteropServices.DllImport("gdi32.dll", EntryPoint = "DeleteDC")]
+    private static extern bool DeleteBenchmarkCursorDc(IntPtr target);
+
+    [System.Runtime.InteropServices.DllImport("gdi32.dll", EntryPoint = "DeleteObject")]
+    private static extern bool DeleteBenchmarkCursorBitmap(IntPtr bitmap);
+
+    private static Bitmap CaptureBenchmarkCursor(Cursor cursor, int size, Color background)
+    {
+        using var source = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+        using (var graphics = Graphics.FromImage(source)) graphics.Clear(background);
+        var bitmap = source.GetHbitmap();
+        var target = CreateBenchmarkCursorDc(IntPtr.Zero);
+        var previous = IntPtr.Zero;
+        try
+        {
+            if (target == IntPtr.Zero)
+                throw new System.ComponentModel.Win32Exception(System.Runtime.InteropServices.Marshal.GetLastWin32Error());
+            previous = SelectBenchmarkCursorBitmap(target, bitmap);
+            if (previous == IntPtr.Zero || previous == new IntPtr(-1))
+                throw new System.ComponentModel.Win32Exception(System.Runtime.InteropServices.Marshal.GetLastWin32Error());
+            if (!DrawBenchmarkCursor(target, 0, 0, cursor.Handle, size, size, 0, IntPtr.Zero, 3))
+                throw new System.ComponentModel.Win32Exception(System.Runtime.InteropServices.Marshal.GetLastWin32Error());
+            return Image.FromHbitmap(bitmap);
+        }
+        finally
+        {
+            if (previous != IntPtr.Zero && previous != new IntPtr(-1)) SelectBenchmarkCursorBitmap(target, previous);
+            if (target != IntPtr.Zero) DeleteBenchmarkCursorDc(target);
+            DeleteBenchmarkCursorBitmap(bitmap);
+        }
+    }
+
     private static Bitmap CaptureBenchmarkWindow(Control window)
     {
         var capture = new Bitmap(window.ClientSize.Width, window.ClientSize.Height);

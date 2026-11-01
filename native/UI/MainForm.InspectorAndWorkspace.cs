@@ -8,6 +8,27 @@ internal sealed partial class MainForm : Form
 {
     private void UpdateInspector(bool refreshLineEndpointStyles = true)
     {
+        var presentation = ResolveInspectorPresentation(ResolvePendingObjectInspectorCategory());
+        var transitionStarted = _inspectorPresentation is { } previous && previous != presentation
+            && !_playing && !_syncingFrame && _inspectorTransition is not { IsPreparing: true }
+            && BeginInspectorTransition();
+        try
+        {
+            if (_inspectorPresentation?.Tween != presentation.Tween || _inspectorTransition is { IsPreparing: true })
+                RefreshTweenCurveInspector();
+            UpdateInspectorContents(refreshLineEndpointStyles);
+            _inspectorPresentation = ResolveInspectorPresentation(_inspectorCategory);
+            if (transitionStarted) CompleteInspectorTransition();
+        }
+        catch
+        {
+            if (transitionStarted) _inspectorTransition?.Cancel();
+            throw;
+        }
+    }
+
+    private void UpdateInspectorContents(bool refreshLineEndpointStyles)
+    {
         ApplyPendingObjectInspectorSelection();
         UpdateCanvasWorkspace();
         UpdateToolInspectorSummary();
@@ -949,8 +970,7 @@ internal sealed partial class MainForm : Form
         var animateInspector = false;
         if (_displayedInspectorWorkspace is { } previousView && previousView != view && Visible)
         {
-            _inspectorTransition ??= new InspectorTransitionOverlay(_inspectorHost);
-            animateInspector = _inspectorTransition.Begin();
+            animateInspector = BeginInspectorTransition();
         }
         var switchedInspector = false;
         SuspendLayout();
@@ -1025,7 +1045,7 @@ internal sealed partial class MainForm : Form
             LayoutInspectorCategoryRail();
             if (animateInspector)
             {
-                if (switchedInspector) _inspectorTransition?.Complete();
+                if (switchedInspector) CompleteInspectorTransition();
                 else _inspectorTransition?.Cancel();
             }
         }
@@ -1382,6 +1402,7 @@ internal sealed partial class MainForm : Form
             ToolMode.Transform => "Free Transform Tool",
             ToolMode.Transform3D => "3D Transform Tool",
             ToolMode.Distort => "Distort Tool",
+            ToolMode.Gradient => "Gradient Tool",
             ToolMode.PolygonLasso => "Polygon Lasso Tool",
             ToolMode.FreehandLasso => "Freehand Lasso Tool",
             ToolMode.Fill => "Fill Tool",
@@ -1446,7 +1467,10 @@ internal sealed partial class MainForm : Form
         }
 
         RefreshToolPairGroup(_selectionToolGroup, workspace, drawingToolsBlocked);
+        RefreshToolPairGroup(_lassoToolGroup, workspace, drawingToolsBlocked);
+        RefreshToolPairGroup(_transformToolGroup, workspace, drawingToolsBlocked);
         RefreshToolPairGroup(_paintToolGroup, workspace, drawingToolsBlocked);
+        RefreshObjectDrawingToggle();
 
         if (_shapeToolButton is not null)
         {
@@ -1541,10 +1565,11 @@ internal sealed partial class MainForm : Form
     }
 
     private void RefreshToolPairGroup(
-        ToolPairGroup group,
+        ToolPairGroup? group,
         WorkspaceView workspace,
         bool drawingToolsBlocked)
     {
+        if (group is null) return;
         var groupVisible = group.Tools.Any(IsToolVisibleForCurrentContext);
         var groupEnabled = group.Tools.Any(tool =>
             IsToolVisibleForCurrentContext(tool)
@@ -1587,10 +1612,10 @@ internal sealed partial class MainForm : Form
         if (!ReferenceEquals(tools.Parent, stagePanel))
         {
             stagePanel.Controls.Add(tools);
-            // Reparenting appends behind the fill-docked Stage; restore the floating toolbar layer.
-            tools.BringToFront();
         }
         tools.SuspendLayout();
+        tools.AutoSize = false;
+        tools.WrapContents = false;
         tools.FlowDirection = FlowDirection.TopDown;
         tools.Padding = new Padding(4);
         foreach (Control control in tools.Controls)
@@ -1611,6 +1636,8 @@ internal sealed partial class MainForm : Form
         PositionVaultToolStrip();
         tools.Width = Theme.IconButtonSize + tools.Padding.Horizontal;
         tools.ResumeLayout(true);
+        tools.Visible = true;
+        tools.BringToFront();
 
         var visibleStageHeight = stagePanel.ClientSize.Height;
         if (_timeline.Visible && ReferenceEquals(_timeline.Parent, this))

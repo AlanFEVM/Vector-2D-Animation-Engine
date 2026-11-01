@@ -44,6 +44,10 @@ internal sealed partial class MainForm
     private readonly Dictionary<InspectorCategory, Button> _inspectorCategoryButtons = [];
     private InspectorCategory _inspectorCategory = InspectorCategory.None;
     private InspectorCategory? _presentedInspectorCategory;
+    private readonly record struct InspectorPresentation(
+        InspectorCategory Category, bool DrawingContext, ToolMode? Tool,
+        bool Text, bool Image, bool ImportedSvg, bool SceneInstance, bool Tween, bool Multiple);
+    private InspectorPresentation? _inspectorPresentation;
     private Padding _inspectorRailBasePadding;
     private bool _layingOutInspectorRail;
     private bool _colorMaterialAvailable = true;
@@ -164,7 +168,7 @@ internal sealed partial class MainForm
             if (!CommitTextEdit()) return;
             if (IsSymbolEditing && !ExitSceneSymbolEditing()) return;
             _workspaceTabs.SelectView(view);
-            ApplyInspectorCategoryPresentation();
+            ApplyInspectorCategoryPresentation(_inspectorCategory);
         };
         UiComposition.MountVertical(_inspectorUnavailablePage.Content,
             [new(_inspectorUnavailableMessage), new(_inspectorContextButton)]);
@@ -297,9 +301,7 @@ internal sealed partial class MainForm
                 }
                 _presentedInspectorCategory = presentedCategory;
             }
-            if (available) _inspectorRail.BringToFront();
-            if (compact) _inspectorCategorySelector.BringToFront();
-            if (compact && properties) _inspectorPropertyNavigation.BringToFront();
+            RestoreInspectorPresentationOrder();
         }
         finally
         {
@@ -358,14 +360,19 @@ internal sealed partial class MainForm
                 : "Tool and drawing appearance settings require a drawing workspace or scene mask. Switching tabs does not change the workspace.");
             _inspectorContextButton.Text = UiLocalization.T(camera || scene
                 ? "Open Scene & Animation" : "Open Basic Drawing");
-            _inspectorUnavailablePage.BringToFront();
         }
-        else if (color) _colorInspectorPage.BringToFront();
-        else if (tools) _toolInspectorPage.BringToFront();
-        else if (camera) _shotDirectorPanel.BringToFront();
-        else if (document) _documentInspectorPage.BringToFront();
-        else if (scene) _sceneEditPage.BringToFront();
-        else _basicInspectorPage.BringToFront();
+        if (_inspectorTransition is not { Visible: true }
+            || !ReferenceEquals(_inspectorTransition.Parent, _inspectorHost))
+        {
+            Control page = unavailable ? _inspectorUnavailablePage
+                : color ? _colorInspectorPage
+                : tools ? _toolInspectorPage
+                : camera ? _shotDirectorPanel
+                : document ? _documentInspectorPage
+                : scene ? _sceneEditPage
+                : _basicInspectorPage;
+            page.BringToFront();
+        }
     }
 
     private void ToggleInspectorCategory(InspectorCategory category)
@@ -392,14 +399,12 @@ internal sealed partial class MainForm
         if (!_inspectorPanelOpen) return;
         if (category == _inspectorCategory)
         {
+            UpdateInspector();
             if (category == InspectorCategory.None) _basicInspectorPage.RestoreScrollPosition(0);
             return;
         }
         if (!CommitTextEdit()) return;
-        _inspectorCategory = category;
-        if (IsInspectorPropertyCategory(category)) _inspectorPropertyCategory = category;
-        ApplyInspectorCategoryPresentation();
-        if (category == InspectorCategory.None) _basicInspectorPage.RestoreScrollPosition(0);
+        ApplyInspectorCategoryPresentation(category, resetObjectScroll: category == InspectorCategory.None);
         AppLog.Info($"Inspector category revealed: {category} ({reason})");
     }
 
@@ -427,12 +432,67 @@ internal sealed partial class MainForm
         return true;
     }
 
-    private void ApplyInspectorCategoryPresentation()
+    private void ApplyInspectorCategoryPresentation(InspectorCategory category, bool resetObjectScroll = false)
     {
-        _inspectorTransition?.Cancel();
-        UpdateInspector();
-        RefreshShotDirector(force: true);
-        LayoutInspectorCategoryRail();
+        var transitionStarted = BeginInspectorTransition();
+
+        try
+        {
+            _inspectorCategory = category;
+            if (IsInspectorPropertyCategory(category)) _inspectorPropertyCategory = category;
+            UpdateInspector();
+            RefreshShotDirector(force: true);
+            LayoutInspectorCategoryRail();
+            if (resetObjectScroll) _basicInspectorPage.RestoreScrollPosition(0);
+            if (transitionStarted) CompleteInspectorTransition();
+        }
+        catch
+        {
+            _inspectorTransition?.Cancel();
+            throw;
+        }
+    }
+
+    private bool BeginInspectorTransition()
+    {
+        if (_inspectorTransition is { IsPreparing: true }) return false;
+        if (!_inspectorPanelOpen)
+        {
+            _inspectorTransition?.Cancel();
+            return false;
+        }
+        _inspectorTransition ??= new InspectorTransitionOverlay(_inspectorHost);
+        return _inspectorTransition.Begin();
+    }
+
+    private InspectorPresentation ResolveInspectorPresentation(InspectorCategory category)
+    {
+        var objectContent = category is InspectorCategory.None or InspectorCategory.Color;
+        var selection = objectContent
+            ? _selectedObjects.Where(index => (uint)index < _scene.ObjectCount).ToArray() : [];
+        return new InspectorPresentation(category, IsDrawingInspectorContext(),
+            category == InspectorCategory.Tools ? _tool : null,
+            objectContent && (IsTextEditActive() || selection.Any(index => _scene.ShapeKind[index] == ShapeKind.Text)),
+            selection.Any(index => _scene.ShapeKind[index] == ShapeKind.Bitmap),
+            selection.Any(index => _scene.ShapeKind[index] == ShapeKind.ImportedSvg),
+            objectContent && _selectedSceneInstanceIds.Count > 0,
+            category is InspectorCategory.None or InspectorCategory.Camera && TryResolveSelectedTimelineTween(out _),
+            objectContent && (selection.Length > 1 || _selectedElements.Count > 1 || _selectedSceneInstanceIds.Count > 1));
+    }
+
+    private void CompleteInspectorTransition()
+    {
+        _inspectorTransition?.Complete();
+        RestoreInspectorPresentationOrder();
+    }
+
+    private void RestoreInspectorPresentationOrder()
+    {
+        if (_inspectorTransition is { Visible: true } transition
+            && ReferenceEquals(transition.Parent, _inspectorHost)) transition.BringToFront();
+        if (_inspectorRail.Visible) _inspectorRail.BringToFront();
+        if (_inspectorCategorySelector.Visible) _inspectorCategorySelector.BringToFront();
+        if (_inspectorPropertyNavigation.Visible) _inspectorPropertyNavigation.BringToFront();
     }
 
     private void NotifyInspectorSelectionChanged(bool drawingSelectionChanged)
@@ -473,29 +533,30 @@ internal sealed partial class MainForm
         RevealInspectorCategory(InspectorCategory.Tools, "tool activation");
     }
 
+    private InspectorCategory ResolvePendingObjectInspectorCategory()
+    {
+        var hasTarget = HasInspectorObjectTarget();
+        if (_objectInspectorSelectionPending && _inspectorPanelOpen && !_playing && !_syncingFrame && hasTarget)
+            return InspectorCategory.None;
+        return _inspectorCategory == InspectorCategory.None && !hasTarget ? InspectorCategory.Tools : _inspectorCategory;
+    }
+
     private void ApplyPendingObjectInspectorSelection()
     {
-        if (_inspectorCategory == InspectorCategory.None && !HasInspectorObjectTarget())
-        {
-            _inspectorCategory = InspectorCategory.Tools;
-            _inspectorPropertyCategory = InspectorCategory.Tools;
-        }
-        if (!_objectInspectorSelectionPending) return;
+        var category = ResolvePendingObjectInspectorCategory();
+        var resetObjectScroll = _objectInspectorSelectionPending && category == InspectorCategory.None
+            && _inspectorPanelOpen && !_playing && !_syncingFrame && HasInspectorObjectTarget();
         _objectInspectorSelectionPending = false;
-        if (!_inspectorPanelOpen || _playing || _syncingFrame
-            || !HasInspectorObjectTarget()) return;
-        _inspectorTransition?.Cancel();
-        _inspectorCategory = InspectorCategory.None;
-        _inspectorPropertyCategory = InspectorCategory.None;
-        _basicInspectorPage.RestoreScrollPosition(0);
+        _inspectorCategory = category;
+        if (IsInspectorPropertyCategory(category)) _inspectorPropertyCategory = category;
+        if (resetObjectScroll) _basicInspectorPage.RestoreScrollPosition(0);
     }
 
     private void CloseInspectorCategory()
     {
         _objectInspectorSelectionPending = false;
-        _inspectorCategory = HasInspectorObjectTarget() ? InspectorCategory.None : InspectorCategory.Tools;
-        _inspectorPropertyCategory = _inspectorCategory;
-        ApplyInspectorCategoryPresentation();
+        var category = HasInspectorObjectTarget() ? InspectorCategory.None : InspectorCategory.Tools;
+        ApplyInspectorCategoryPresentation(category);
         _inspectorCategoryButtons[InspectorCategory.None].Focus();
     }
 

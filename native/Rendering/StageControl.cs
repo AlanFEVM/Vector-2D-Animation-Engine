@@ -710,6 +710,8 @@ internal sealed partial class StageControl : Control
     private int[] _selectedObjects = Array.Empty<int>();
     private DrawingElementHit[] _selectedElements = Array.Empty<DrawingElementHit>();
     private DrawingElementHit _hoveredLineElement = DrawingElementHit.None;
+    private VectorScene? _hoveredLineScene;
+    private long _hoveredLineGeometryRevision = -1;
     private TransformOverlayFrame _transformFrame;
     private DistortEnvelope _distortFrame;
     private VectorScene? _distortPreviewScene;
@@ -967,7 +969,11 @@ internal sealed partial class StageControl : Control
     public IReadOnlyList<DrawingElementHit> SelectedElements => _selectedElements;
     public DrawingElementHit SelectedElement { get; private set; } = DrawingElementHit.None;
     public bool PenPathHandlesVisible { get; private set; }
-    public DrawingElementHit HoveredLineElement => _hoveredLineElement;
+    public DrawingElementHit HoveredLineElement => !MarqueeVisible
+        && ReferenceEquals(_hoveredLineScene, Scene)
+        && _hoveredLineGeometryRevision == Scene.GeometryRevision
+            ? _hoveredLineElement
+            : DrawingElementHit.None;
     public bool TransformMode { get; private set; }
     public bool DistortMode { get; private set; }
     public bool TransformBoundsVisible { get; private set; }
@@ -1642,8 +1648,10 @@ internal sealed partial class StageControl : Control
 
     public void BindScene(VectorScene scene)
     {
+        ClearHoveredLineElement();
         CompleteReferenceCameraTransition(invalidate: false);
         ClearSelectionDragPreviewCore(invalidate: false);
+        ClearSelectionFillDragFront(invalidate: false);
         ResetFillEdgeBezierOverlay(invalidate: false);
         EndZoomLodPreview(invalidate: false);
         SetTransformOverlay(false, RectangleF.Empty);
@@ -3431,7 +3439,7 @@ internal sealed partial class StageControl : Control
         var underlay = UnderlayScene;
         var layeredUnderlay = IsUnderlayHostScene(editableScene);
         var underlayLimit = objectDrawLimit;
-        var forceEditableObjectRenderer = SelectionFillDragFrontActive
+        var forceEditableObjectRenderer = SelectionFillDragFrontActive || SelectionMoveFeedbackActive
             || FillEdgeBezierPointerEditing && UsesObjectRenderer(editableScene)
             || RequiresObjectRendererForDragPreview(editableScene);
         if (underlay is not null
@@ -3489,6 +3497,7 @@ internal sealed partial class StageControl : Control
 
     private void DrawGdiDynamic2D(Graphics g, RenderStats editableStats)
     {
+        DrawSelectionMoveOrigins(g);
         DrawCanvasFrameGdi(g);
         var objectDrawLimit = ObjectDrawLimit();
         if (DragPreviewScene is { } dragPreview)
@@ -3699,7 +3708,9 @@ internal sealed partial class StageControl : Control
         if (disposing)
         {
             _disposingResources = true;
+            ClearSelectionMoveFeedbackCore();
             DisposeFillSystemCursor();
+            DisposeSelectionArrowCursors();
             InvalidateReference3DRenderPlanCache();
             ResetFrameSchedulerState();
             ResetFillEdgeBezierOverlay(invalidate: false);
@@ -4814,9 +4825,11 @@ internal sealed partial class StageControl : Control
 
     public void SetHoveredLineElement(DrawingElementHit hit)
     {
-        if (!IsValidEditableBezierHit(hit)) hit = DrawingElementHit.None;
-        if (_hoveredLineElement == hit) return;
+        if (MarqueeVisible || !IsValidEditableBezierHit(hit)) hit = DrawingElementHit.None;
+        if (_hoveredLineElement == hit && HoveredLineElement == hit) return;
         _hoveredLineElement = hit;
+        _hoveredLineScene = hit.IsValid ? Scene : null;
+        _hoveredLineGeometryRevision = Scene.GeometryRevision;
         InvalidateOverlay();
     }
 
@@ -4855,8 +4868,9 @@ internal sealed partial class StageControl : Control
 
     public EditHandleKind HitTestHoveredLineHandle(Point screen)
     {
-        return IsValidEditableBezierHit(_hoveredLineElement)
-            ? HitTestLineBezierHandle(screen, _hoveredLineElement)
+        var hit = HoveredLineElement;
+        return IsValidEditableBezierHit(hit)
+            ? HitTestLineBezierHandle(screen, hit)
             : EditHandleKind.None;
     }
 
@@ -4896,7 +4910,7 @@ internal sealed partial class StageControl : Control
 
     internal bool ShouldDrawHoveredLineControls()
     {
-        var hit = _hoveredLineElement;
+        var hit = HoveredLineElement;
         if (!IsValidEditableBezierHit(hit)) return false;
 
         if (Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
@@ -5288,6 +5302,7 @@ internal sealed partial class StageControl : Control
     public void SetMarquee(Point start, Point end)
     {
         if (MarqueeVisible && MarqueeStart == start && MarqueeEnd == end) return;
+        if (!MarqueeVisible) ClearHoveredLineElement();
         var hadLodPreview = MarqueeLodPreviewActive;
         MarqueeVisible = true;
         MarqueeStart = start;

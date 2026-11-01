@@ -60,6 +60,8 @@ internal static partial class Benchmark
         var vaultButtonField = RequireField(typeof(MainForm), "_vaultButton");
         var shapeFlyoutField = RequireField(typeof(MainForm), "_shapeToolFlyout");
         var selectionGroupField = RequireField(typeof(MainForm), "_selectionToolGroup");
+        var lassoGroupField = RequireField(typeof(MainForm), "_lassoToolGroup");
+        var transformGroupField = RequireField(typeof(MainForm), "_transformToolGroup");
         var paintGroupField = RequireField(typeof(MainForm), "_paintToolGroup");
         var toolField = RequireField(typeof(MainForm), "_tool");
         var settingsField = RequireField(typeof(MainForm), "_applicationSettings");
@@ -134,6 +136,10 @@ internal static partial class Benchmark
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the shape flyout.");
             var selectionGroup = selectionGroupField.GetValue(form)
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the selection group.");
+            var lassoGroup = lassoGroupField.GetValue(form)
+                ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the lasso group.");
+            var transformGroup = transformGroupField.GetValue(form)
+                ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the transform group.");
             var paintGroup = paintGroupField.GetValue(form)
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the paint group.");
             var flyoutProperty = RequireProperty(
@@ -144,6 +150,14 @@ internal static partial class Benchmark
                     | System.Reflection.BindingFlags.Static);
             var selectionFlyout = flyoutProperty.GetValue(selectionGroup) as FlowLayoutPanel
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the selection flyout.");
+            var transformFlyout = flyoutProperty.GetValue(transformGroup) as FlowLayoutPanel
+                ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the transform flyout.");
+            var lassoFlyout = flyoutProperty.GetValue(lassoGroup) as FlowLayoutPanel
+                ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the lasso flyout.");
+            var lassoParentButton = lassoGroup.GetType().GetProperty("ParentButton")?.GetValue(lassoGroup) as SvgIconButton
+                ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the lasso group button.");
+            var transformParentButton = transformGroup.GetType().GetProperty("ParentButton")?.GetValue(transformGroup) as SvgIconButton
+                ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the transform group button.");
             var paintFlyout = flyoutProperty.GetValue(paintGroup) as FlowLayoutPanel
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the paint flyout.");
             var settings = settingsField.GetValue(form) as ApplicationSettings
@@ -151,8 +165,10 @@ internal static partial class Benchmark
             settingsField.SetValue(form, settings with
             {
                 ActiveShortcutProfileId = ShortcutProfiles.TraditionalFlashProfileId,
-                CustomShortcutProfiles = []
+                CustomShortcutProfiles = [],
+                ToolbarPosition = ToolbarPosition.Left
             });
+            RequireMethod(typeof(MainForm), "LayoutToolPalette").Invoke(form, null);
             var drawSettings = drawSettingsField.GetValue(form) as DrawSettings
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain draw settings.");
             var project = projectField.GetValue(form) as VectorProject
@@ -229,13 +245,50 @@ internal static partial class Benchmark
                 .Where(control => control.Visible && control.Tag is ToolMode)
                 .Select(control => (ToolMode)control.Tag!)
                 .ToArray();
-            static bool IsSelectionTool(ToolMode tool) =>
-                tool is ToolMode.ObjectSelect or ToolMode.Select
-                    or ToolMode.PolygonLasso
-                    or ToolMode.FreehandLasso
-                    or ToolMode.Transform
+            void ShowPinnedFlyout(object group)
+            {
+                showToolPairFlyout.Invoke(form, [group]);
+                var timer = (System.Windows.Forms.Timer)RequireProperty(group.GetType(), "HideTimer",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+                    .GetValue(group)!;
+                timer.Stop();
+            }
+            ToolMode[] drawingTransformTools =
+            [
+                ToolMode.Transform,
+                ToolMode.Distort,
+                ToolMode.Gradient
+            ];
+            bool ToolFlyoutsMatch(params ToolMode[] expectedTransformTools)
+            {
+                ShowPinnedFlyout(selectionGroup);
+                Application.DoEvents();
+                var selectionMatches = selectionFlyout.Visible
+                    && VisibleFlyoutTools(selectionFlyout).SequenceEqual([ToolMode.ObjectSelect, ToolMode.Select]);
+                var expectsLasso = expectedTransformTools.Contains(ToolMode.Transform);
+                if (expectsLasso)
+                {
+                    ShowPinnedFlyout(lassoGroup);
+                    Application.DoEvents();
+                }
+                var lassoMatches = expectsLasso
+                    ? lassoParentButton.Visible && lassoFlyout.Visible
+                        && VisibleFlyoutTools(lassoFlyout).SequenceEqual([ToolMode.PolygonLasso, ToolMode.FreehandLasso])
+                    : !lassoParentButton.Visible && !lassoFlyout.Visible;
+                if (expectedTransformTools.Length == 0)
+                    return selectionMatches && lassoMatches && !transformParentButton.Visible && !transformFlyout.Visible;
+                ShowPinnedFlyout(transformGroup);
+                Application.DoEvents();
+                return selectionMatches && lassoMatches && transformParentButton.Visible && transformFlyout.Visible
+                    && VisibleFlyoutTools(transformFlyout).SequenceEqual(expectedTransformTools);
+            }
+            static bool IsSelectionTool(ToolMode tool) => tool is ToolMode.ObjectSelect or ToolMode.Select;
+            static bool IsLassoTool(ToolMode tool) => tool is ToolMode.PolygonLasso or ToolMode.FreehandLasso;
+            static bool IsTransformTool(ToolMode tool) =>
+                tool is ToolMode.Transform
                     or ToolMode.Transform3D
-                    or ToolMode.Distort;
+                    or ToolMode.Distort
+                    or ToolMode.Gradient;
             static bool IsShapeTool(ToolMode tool) =>
                 tool is ToolMode.Rectangle or ToolMode.Ellipse or ToolMode.Triangle or ToolMode.Polygon or ToolMode.Star;
             static bool IsLineTool(ToolMode tool) =>
@@ -243,22 +296,25 @@ internal static partial class Benchmark
             static bool IsBrushTool(ToolMode tool) =>
                 tool is ToolMode.Brush or ToolMode.PressureBrush or ToolMode.MixingBrush;
             static bool HasFullDrawingPalette(IReadOnlyCollection<ToolMode> tools) =>
-                tools.Count == 10
+                tools.Count == 11
                 && tools.Count(IsSelectionTool) == 1
+                && tools.Count(IsLassoTool) == 1
+                && tools.Count(IsTransformTool) == 1
                 && tools.Count(IsShapeTool) == 1
                 && tools.Count(IsLineTool) == 1
                 && tools.Count(IsBrushTool) == 1
                 && tools.Contains(ToolMode.Text)
                 && tools.Count(tool => tool is ToolMode.Fill or ToolMode.InkBottle) == 1
                 && tools.Contains(ToolMode.Eyedropper)
-                && tools.Contains(ToolMode.Gradient)
                 && tools.Contains(ToolMode.SnapPoint)
                 && tools.Contains(ToolMode.Eraser);
             bool HasScenePalette(IReadOnlyCollection<ToolMode> tools) =>
                 stage.ReferenceDimension == SceneDimension.TwoD
                     && stage.Reference2DViewDirection == ReferenceViewDirection.Front
                     ? HasFullDrawingPalette(tools)
-                    : tools.Count == 1 && IsSelectionTool(tools.Single());
+                    : stage.ReferenceDimension == SceneDimension.ThreeD
+                        ? tools.Count == 2 && tools.Count(IsSelectionTool) == 1 && tools.Count(IsTransformTool) == 1
+                        : tools.Count == 1 && IsSelectionTool(tools.Single());
             bool TryShortcut(Keys keys) => tryActivateShortcut.Invoke(form, [keys]) is true;
             int SceneUndoCount()
             {
@@ -272,14 +328,19 @@ internal static partial class Benchmark
             form.Show();
             Application.DoEvents();
             var basicPaletteSize = palette.Size;
+            var basicPaletteAutoSize = palette.AutoSize;
+            var basicPaletteWrapContents = palette.WrapContents;
             if (workspaceTabs.SelectedView != WorkspaceView.BasicDrawing
                 || !HasFullDrawingPalette(VisiblePaletteTools())
+                || !ToolFlyoutsMatch(drawingTransformTools)
                 || !vaultButton.Visible
                 || projectionButton.Visible
                 || projectionButton.Enabled)
             {
                 throw new InvalidOperationException(
-                    "Basic Drawing did not initially show the complete drawing toolbar and Vault.");
+                    "Basic Drawing did not initially show the complete drawing toolbar and Vault: "
+                    + $"workspace={workspaceTabs.SelectedView}, tools=[{string.Join(',', VisiblePaletteTools())}], "
+                    + $"vault={vaultButton.Visible}, projection={projectionButton.Visible}/{projectionButton.Enabled}.");
             }
 
             showShapeFlyout.Invoke(form, null);
@@ -308,8 +369,8 @@ internal static partial class Benchmark
                 || cameraProjection.SelectedIndex != 1
                 || projectionButton.Right >= dimensionButton.Left
                 || shapeFlyout.Visible
-                || !palette.AutoSize
-                || palette.WrapContents
+                || palette.AutoSize != basicPaletteAutoSize
+                || palette.WrapContents != basicPaletteWrapContents
                 || scenePaletteSize.Height != basicPaletteSize.Height)
             {
                 throw new InvalidOperationException(
@@ -376,34 +437,25 @@ internal static partial class Benchmark
                     "A Scene Building draw-settings change did not activate the available shape tool.");
             }
 
-            showToolPairFlyout.Invoke(form, [paintGroup]);
+            ShowPinnedFlyout(paintGroup);
             Application.DoEvents();
             if (!paintFlyout.Visible
                 || !VisibleFlyoutTools(paintFlyout).ToHashSet().SetEquals([ToolMode.Fill, ToolMode.InkBottle]))
             {
                 throw new InvalidOperationException("Scene Building did not expose Fill and Ink Bottle.");
             }
-            showToolPairFlyout.Invoke(form, [selectionGroup]);
+            ShowPinnedFlyout(selectionGroup);
             Application.DoEvents();
-            if (!selectionFlyout.Visible
-                || !VisibleFlyoutTools(selectionFlyout).ToHashSet().SetEquals(
-                    [
-                        ToolMode.ObjectSelect,
-                        ToolMode.Select,
-                        ToolMode.PolygonLasso,
-                        ToolMode.FreehandLasso,
-                        ToolMode.Transform,
-                        ToolMode.Distort
-                    ]))
+            if (!ToolFlyoutsMatch(drawingTransformTools))
             {
                 throw new InvalidOperationException(
-                    "Scene Building did not retain Select, both Lasso tools, Free Transform, and Distort in the selection flyout.");
+                    "Scene Building did not retain both selection arrows and the Lasso, Transform, Distort, and Gradient tool group.");
             }
             Console.WriteLine("scene_drawing_tool_controls=ok");
 
             dimensionButton.PerformClick();
             Application.DoEvents();
-            showToolPairFlyout.Invoke(form, [selectionGroup]);
+            ShowPinnedFlyout(selectionGroup);
             Application.DoEvents();
             var spatialTransformHost = spatialTransformPanel.Parent
                 ?? throw new InvalidOperationException("Scene Building 3D did not attach the Transform floating panel.");
@@ -414,8 +466,7 @@ internal static partial class Benchmark
             var spatialTransformTopInset = spatialTransformPanel.Top - stageMetrics.Bottom;
             if (dimensionButton.Text != "3D"
                 || !HasScenePalette(VisiblePaletteTools())
-                || !VisibleFlyoutTools(selectionFlyout).ToHashSet().SetEquals(
-                    [ToolMode.ObjectSelect, ToolMode.Select, ToolMode.Transform3D])
+                || !ToolFlyoutsMatch(ToolMode.Transform3D)
                 || spatialTransformPanel.Visible
                 || spatialTransformPanel.FloatingVisibilityRequested
                 || spatialTransformPanel.FloatingMotionActive
@@ -435,9 +486,9 @@ internal static partial class Benchmark
                 || handleSpatialTransformShortcut.Invoke(form, [Keys.R]) is not true
                 || handleSpatialTransformShortcut.Invoke(form, [Keys.S]) is not true
                 || toolField.GetValue(form) is not ToolMode.Transform3D
-                || selectionGroup.GetType().GetProperty("ActiveTool")?.GetValue(selectionGroup) is not ToolMode.Transform3D
-                || selectionGroup.GetType().GetProperty("ParentButton")?.GetValue(selectionGroup) is not Button transform3DButton
-                || transform3DButton.Tag is not ToolMode.Transform3D)
+                || transformGroup.GetType().GetProperty("ActiveTool")?.GetValue(transformGroup) is not ToolMode.Transform3D
+                || transformParentButton.Tag is not ToolMode.Transform3D
+                || transformParentButton.Icon != SvgIconKind.Transform3D)
             {
                 throw new InvalidOperationException(
                     "Scene Building 3D did not keep the Transform panel hidden until selection or synchronize its tools and shortcuts.");
@@ -515,7 +566,7 @@ internal static partial class Benchmark
 
             dimensionButton.PerformClick();
             Application.DoEvents();
-            showToolPairFlyout.Invoke(form, [selectionGroup]);
+            ShowPinnedFlyout(selectionGroup);
             Application.DoEvents();
             if (dimensionButton.Text != "2D"
                 || !projectionButton.Visible
@@ -528,17 +579,10 @@ internal static partial class Benchmark
                 || toolField.GetValue(form) is not ToolMode.Transform
                 || spatialTransformPanel.Visible
                 || !referenceViewPad.Visible
-                || !VisibleFlyoutTools(selectionFlyout).ToHashSet().SetEquals(
-                    [
-                        ToolMode.ObjectSelect,
-                        ToolMode.Select,
-                        ToolMode.PolygonLasso,
-                        ToolMode.FreehandLasso,
-                        ToolMode.Transform,
-                        ToolMode.Distort
-                    ])
-                || selectionGroup.GetType().GetProperty("ParentButton")?.GetValue(selectionGroup) is not Button transform2DButton
-                || transform2DButton.Tag is ToolMode.Transform3D)
+                || !ToolFlyoutsMatch(drawingTransformTools)
+                || transformGroup.GetType().GetProperty("ActiveTool")?.GetValue(transformGroup) is not ToolMode.Transform
+                || transformParentButton.Tag is not ToolMode.Transform
+                || transformParentButton.Icon != SvgIconKind.Transform)
             {
                 throw new InvalidOperationException(
                     "Returning from 3D did not restore the 2D Transform tool, view pad, and hidden-tool state: "
@@ -547,13 +591,13 @@ internal static partial class Benchmark
                     + $"referenceDimension={stage.ReferenceDimension}, front={stage.UsesSpatialFrontProjection}, "
                     + $"reference={stage.UsesReferenceProjection}, effective={stage.EffectiveReferenceProjection}, "
                     + $"tool={toolField.GetValue(form)}, spatialPanel={spatialTransformPanel.Visible}, "
-                    + $"viewPad={referenceViewPad.Visible}, flyout={string.Join(',', VisibleFlyoutTools(selectionFlyout))}, "
-                    + $"parent={selectionGroup.GetType().GetProperty("ParentButton")?.GetValue(selectionGroup)}.");
+                    + $"viewPad={referenceViewPad.Visible}, flyout={string.Join(',', VisibleFlyoutTools(transformFlyout))}, "
+                    + $"parent={transformParentButton}, tag={transformParentButton.Tag}, icon={transformParentButton.Icon}.");
             }
 
             stage.SetReferenceViewDirection(ReferenceViewDirection.Right);
             refreshToolButtons.Invoke(form, null);
-            showToolPairFlyout.Invoke(form, [selectionGroup]);
+            ShowPinnedFlyout(selectionGroup);
             Application.DoEvents();
             var sideViewTools = VisibleFlyoutTools(selectionFlyout);
             var sideViewTransformShortcutActivated = TryShortcut(Keys.Q);
@@ -562,6 +606,8 @@ internal static partial class Benchmark
             activateTool.Invoke(form, [ToolMode.FreehandLasso]);
             var sideViewFreehandLassoActivated = toolField.GetValue(form) is ToolMode.FreehandLasso;
             if (!sideViewTools.SequenceEqual([ToolMode.ObjectSelect, ToolMode.Select])
+                || !HasScenePalette(VisiblePaletteTools())
+                || !ToolFlyoutsMatch()
                 || sideViewTransformShortcutActivated
                 || sideViewPolygonLassoActivated
                 || sideViewFreehandLassoActivated
@@ -578,11 +624,13 @@ internal static partial class Benchmark
 
             stage.SetReferenceViewDirection(ReferenceViewDirection.Top);
             refreshToolButtons.Invoke(form, null);
-            showToolPairFlyout.Invoke(form, [selectionGroup]);
+            ShowPinnedFlyout(selectionGroup);
             Application.DoEvents();
             var topViewTools = VisibleFlyoutTools(selectionFlyout);
             activateTool.Invoke(form, [ToolMode.PolygonLasso]);
             if (!topViewTools.SequenceEqual([ToolMode.ObjectSelect, ToolMode.Select])
+                || !HasScenePalette(VisiblePaletteTools())
+                || !ToolFlyoutsMatch()
                 || toolField.GetValue(form) is ToolMode.PolygonLasso)
             {
                 throw new InvalidOperationException(
@@ -592,20 +640,16 @@ internal static partial class Benchmark
 
             stage.SetReferenceViewDirection(ReferenceViewDirection.Front);
             refreshToolButtons.Invoke(form, null);
-            showToolPairFlyout.Invoke(form, [selectionGroup]);
+            ShowPinnedFlyout(selectionGroup);
             Application.DoEvents();
-            if (!VisibleFlyoutTools(selectionFlyout).ToHashSet().SetEquals(
-                    [
-                        ToolMode.ObjectSelect,
-                        ToolMode.Select,
-                        ToolMode.PolygonLasso,
-                        ToolMode.FreehandLasso,
-                        ToolMode.Transform,
-                        ToolMode.Distort
-                    ]))
+            if (!HasScenePalette(VisiblePaletteTools()) || !ToolFlyoutsMatch(drawingTransformTools))
             {
                 throw new InvalidOperationException(
-                    "Returning to the 2D Front view did not restore the lasso and transform tools.");
+                    "Returning to the 2D Front view did not restore the lasso and transform tools: "
+                    + $"tools=[{string.Join(',', VisibleFlyoutTools(transformFlyout))}], "
+                    + $"dimension={stage.ReferenceDimension}, direction={stage.Reference2DViewDirection}, "
+                    + $"front={stage.UsesSpatialFrontProjection}, reference={stage.UsesReferenceProjection}, "
+                    + $"tool={toolField.GetValue(form)}, visible={transformFlyout.Visible}.");
             }
 
             dimensionButton.PerformClick();
@@ -663,18 +707,10 @@ internal static partial class Benchmark
             Application.DoEvents();
             stage.CompleteReferenceCameraTransition();
             Application.DoEvents();
-            showToolPairFlyout.Invoke(form, [selectionGroup]);
+            ShowPinnedFlyout(selectionGroup);
             Application.DoEvents();
             if (!stage.UsesReferenceProjection
-                || !VisibleFlyoutTools(selectionFlyout).ToHashSet().SetEquals(
-                    [
-                        ToolMode.ObjectSelect,
-                        ToolMode.Select,
-                        ToolMode.PolygonLasso,
-                        ToolMode.FreehandLasso,
-                        ToolMode.Transform,
-                        ToolMode.Distort
-                    ])
+                || !ToolFlyoutsMatch(drawingTransformTools)
                 || !stage.TransformBoundsVisible)
             {
                 throw new InvalidOperationException(
@@ -903,7 +939,7 @@ internal static partial class Benchmark
                 throw new InvalidOperationException("Scene Mask could not be recreated after undo.");
             }
             Application.DoEvents();
-            showToolPairFlyout.Invoke(form, [selectionGroup]);
+            ShowPinnedFlyout(selectionGroup);
             Application.DoEvents();
             var maskPaletteTools = VisiblePaletteTools();
             var maskSelectionTools = VisibleFlyoutTools(selectionFlyout);
@@ -918,15 +954,8 @@ internal static partial class Benchmark
                 || projectionButton.Enabled
                 || referenceViewPad.Visible
                 || spatialTransformPanel.Visible
-                || !maskSelectionTools.ToHashSet().SetEquals(
-                    [
-                        ToolMode.ObjectSelect,
-                        ToolMode.Select,
-                        ToolMode.PolygonLasso,
-                        ToolMode.FreehandLasso,
-                        ToolMode.Transform,
-                        ToolMode.Distort
-                    ])
+                || !maskSelectionTools.SequenceEqual([ToolMode.ObjectSelect, ToolMode.Select])
+                || !ToolFlyoutsMatch(drawingTransformTools)
                 || !maskBrushShortcut
                 || maskActiveTool is not ToolMode.Brush
                 || !DrawingParameterHostsMatch()
@@ -936,6 +965,7 @@ internal static partial class Benchmark
                 throw new InvalidOperationException(
                     "Scene Mask editing did not enable Basic Drawing tools while disabling 3D-only controls: "
                     + $"palette=[{string.Join(',', maskPaletteTools)}], selection=[{string.Join(',', maskSelectionTools)}], "
+                    + $"transforms=[{string.Join(',', VisibleFlyoutTools(transformFlyout))}], "
                     + $"vault={vaultButton.Visible}, dimension={dimensionButton.Text}, dimensionEnabled={dimensionButton.Enabled}, "
                     + $"referencePad={referenceViewPad.Visible}, spatialPanel={spatialTransformPanel.Visible}, "
                     + $"brushShortcut={maskBrushShortcut}, activeTool={maskActiveTool}.");
@@ -1118,6 +1148,7 @@ internal static partial class Benchmark
                 || projectionButton.Visible
                 || projectionButton.Enabled
                 || selectionFlyout.Visible
+                || transformFlyout.Visible
                 || !TryShortcut(Keys.B)
                 || toolField.GetValue(form) is not ToolMode.Brush)
             {
@@ -1125,6 +1156,11 @@ internal static partial class Benchmark
                     "Returning to Basic Drawing did not restore the toolbar, flyout state, and drawing shortcuts.");
             }
 
+            if (!ToolFlyoutsMatch(drawingTransformTools))
+            {
+                throw new InvalidOperationException(
+                    "Returning to Basic Drawing did not restore both selection arrows and all transform-group tools.");
+            }
             showShapeFlyout.Invoke(form, null);
             Application.DoEvents();
             if (!shapeFlyout.Visible
@@ -1144,11 +1180,16 @@ internal static partial class Benchmark
                 .Cast<Control>()
                 .Where(control => control.Visible
                     && control.Tag is ToolMode tool
-                    && !IsSelectionTool(tool))
+                    && !IsSelectionTool(tool) && !IsLassoTool(tool) && !IsTransformTool(tool))
                 .ToArray();
             if (!HasFullDrawingPalette(VisiblePaletteTools())
-                || lockedTools.Length != 9
-                || lockedTools.Any(control => control.Enabled))
+                || lockedTools.Length != 8
+                || lockedTools.Any(control => control.Enabled)
+                || !lassoParentButton.Enabled
+                || !transformParentButton.Enabled
+                || !ToolFlyoutsMatch(drawingTransformTools)
+                || transformFlyout.Controls.Cast<Control>().Any(control => control.Visible
+                    && control.Tag is ToolMode tool && control.Enabled == (tool == ToolMode.Gradient)))
             {
                 throw new InvalidOperationException(
                     "Locking a Basic Drawing layer hid drawing tools instead of keeping them visible and disabled.");
@@ -1542,7 +1583,6 @@ internal static partial class Benchmark
                 // held-button event state explicitly so this fixture does not depend on the
                 // user's physical mouse state.
                 stageMouseMove.Invoke(stage, [new MouseEventArgs(heldButtons, 0, point.X, point.Y, 0)]);
-                Application.DoEvents();
                 return;
             }
             var wParam = 0;
@@ -1550,7 +1590,6 @@ internal static partial class Benchmark
             if ((heldButtons & MouseButtons.Right) != 0) wParam |= 0x0002;
             var coordinates = (point.X & 0xffff) | ((point.Y & 0xffff) << 16);
             SendLassoMouseMessage(stage.Handle, message, (nint)wParam, coordinates);
-            Application.DoEvents();
         }
 
         void AssertCleanup(string reason, Action finish)
@@ -2474,7 +2513,13 @@ internal static partial class Benchmark
         try
         {
             // Keep axis selection in its waiting state until the synthetic Stage move establishes a baseline.
-            Cursor.Position = Point.Empty;
+            var stageScreenBounds = stage.RectangleToScreen(stage.ClientRectangle);
+            Cursor.Position = Screen.AllScreens.SelectMany(screen => new[]
+                {
+                    screen.Bounds.Location,
+                    new Point(screen.Bounds.Right - 1, screen.Bounds.Bottom - 1)
+                })
+                .First(point => !stageScreenBounds.Contains(point));
             clearSelection.Invoke(form, [false]);
             stage.Select();
             stage.Focus();
@@ -2527,7 +2572,10 @@ internal static partial class Benchmark
             if (movePointer is null || !SameTransform(CurrentState(), initial))
             {
                 throw new InvalidOperationException(
-                    "The first no-button mouse move did not establish an unchanged modal transform baseline.");
+                    "The first no-button mouse move did not establish an unchanged modal transform baseline: "
+                    + $"pointer={movePointer is not null}, modal={ModalActive()}, axis={ModalAxis()}, initial={initial}, actual={CurrentState()}, "
+                    + $"navigation={RequireField(typeof(MainForm), "_transientViewNavigationActive").GetValue(form)}, "
+                    + $"tablet={RequireField(typeof(MainForm), "_tabletPressurePointerId").GetValue(form)}, cursor={Cursor.Position}, stage={stage.RectangleToScreen(stage.ClientRectangle)}.");
             }
             MovePointer(Point.Round(moveGeometry.Endpoints[(int)SpatialTransformAxis.X - 1]));
             var moved = CurrentState();
@@ -3493,8 +3541,37 @@ internal static partial class Benchmark
         return Math.Abs(right.X - left.X);
     }
 
+    private static void RunFilteredSelectionOccluderRegression()
+    {
+        var exposed = RequireMethod(typeof(VectorScene), "IsSelectionPointExposed",
+            [typeof(int), typeof(PointF), typeof(int), typeof(bool), typeof(Func<int, bool>)]);
+        foreach (var visibleFirst in new[] { false, true })
+        {
+            var scene = new VectorScene();
+            scene.CreateEmpty(frameCount: 1);
+            var lower = AddFill(Color.SteelBlue);
+            var visible = visibleFirst ? AddFill(Color.IndianRed) : -1;
+            for (var index = 0; index < 70; index++) AddFill(Color.White);
+            if (!visibleFirst) visible = AddFill(Color.IndianRed);
+            foreach (var prepared in new[] { false, true })
+            {
+                if (prepared) scene.PrepareSelectionOutlineBatch(Enumerable.Range(0, scene.ObjectCount).ToArray(), 0);
+                Func<int, bool> lowerOnly = candidate => candidate == lower;
+                Func<int, bool> withOccluder = candidate => candidate == lower || candidate == visible;
+                AssertTimeline(scene.HitTestElement(PointF.Empty, 0, 1, lowerOnly).Key.ObjectIndex == lower
+                    && exposed.Invoke(scene, [lower, PointF.Empty, 0, false, withOccluder]) is false,
+                    "Filtered occluders hid visible geometry or consumed the visible occluder budget.");
+            }
+
+            int AddFill(Color color) => scene.AddObject(scene.ActiveLayer, PointF.Empty,
+                new SizeF(100, 100), 0, 0, color, 4, ShapeKind.Rectangle);
+        }
+        Console.WriteLine("filtered_selection_occluders=ok,prepared=covered,budget=preserved");
+    }
+
     private static void RunSceneMaskSelectionRegression()
     {
+        RunFilteredSelectionOccluderRegression();
         var composition = new VectorScene();
         composition.CreateEmpty(frameCount: 1);
         var layer = composition.ActiveLayer;
@@ -4415,7 +4492,8 @@ internal static partial class Benchmark
         }
         void ActivateSelectionTool(ToolMode tool)
         {
-            var group = Field(form, "_selectionToolGroup");
+            var group = Field(form, tool is ToolMode.PolygonLasso or ToolMode.FreehandLasso
+                ? "_lassoToolGroup" : "_selectionToolGroup");
             var groupType = group.GetType();
             ((Button)groupType.GetProperty("ParentButton")!.GetValue(group)!).PerformClick();
             var buttons = (Dictionary<ToolMode, Button>)groupType.GetProperty("FlyoutButtons")!.GetValue(group)!;
@@ -5299,6 +5377,7 @@ internal static partial class Benchmark
             var center = new PointF(stage.CameraX, stage.CameraY);
             var index = scene.AddBitmapObject(scene.ActiveLayer, center,
                 new BitmapObjectData { ImageAssetId = asset!.Id, PlacedSize = new SizeF(3000, 2000) });
+            center = new PointF(scene.X[index], scene.Y[index]);
             RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]).Invoke(form, [index, false]);
             RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.Distort]);
             RequireMethod(typeof(MainForm), "UpdateTransformOverlay").Invoke(form, null);
@@ -7688,6 +7767,7 @@ internal static partial class Benchmark
             scene.CompleteDeferredBuild();
             form.Show();
             var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+            RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.Select]);
             stage.BindScene(scene);
             stage.SetVisibleWorldWidth(14000);
             stage.SetSelectionState(owners, owners[^1], hits, hits[^1]);
@@ -8242,6 +8322,7 @@ internal static partial class Benchmark
         {
             var anchor = new Point(stage.Width / 2 + 40, stage.Height / 2 - 20);
             var geometryBuilds = renderer.SelectionGeometryBuilds;
+            var geometryKeyBefore = RequireField(typeof(Direct2DStageRenderer), "_selectionGeometryKey").GetValue(renderer);
             var commandBuilds = renderer.SelectionCommandBuilds;
             var zoomPulse = stage.SelectionHighlightPulse;
             var commandTime = 0d;
@@ -8275,12 +8356,12 @@ internal static partial class Benchmark
                 "Dense zoom rebuilt unchanged selection commands during wheel frames.");
             AssertTimeline(stage.LastStats.TileLod && renderer.LastLodDetailObjectDraws == 0,
                 "Dense all-selected zoom bypassed tile preview or redrew selected object details.");
-            RequireMethod(typeof(StageControl), "EndZoomLodPreview").Invoke(stage, [false]);
-            stage.Invalidate();
+            RequireMethod(typeof(StageControl), "EndZoomLodPreview").Invoke(stage, [true]);
             stage.Refresh();
             Console.WriteLine($"dense_zoom_geometry_builds={renderer.SelectionGeometryBuilds - geometryBuilds},reuses={renderer.SelectionGeometryReuses}");
             Console.WriteLine($"dense_zoom_commands_ms={commandTime / timings.Count:F3},present_ms={presentTime / timings.Count:F3},details={renderer.LastLodDetailObjectDraws},tiles={stage.LastStats.TileDraws}");
-            AssertTimeline(renderer.SelectionGeometryBuilds == geometryBuilds, "Zoom rebuilt unchanged selection geometry.");
+            AssertTimeline(renderer.SelectionGeometryBuilds == geometryBuilds,
+                $"Zoom rebuilt unchanged selection geometry: before={geometryKeyBefore}, after={RequireField(typeof(Direct2DStageRenderer), "_selectionGeometryKey").GetValue(renderer)}.");
             AssertTimeline(!stage.SelectionZoomPreviewActive, "Zoom completion retained the selection navigation preview.");
             AssertTimeline(stage.LastStats.DrawnObjects == 373, "Dense all-selected zoom did not render all objects.");
             foreach (var factor in new[] { 1.12f, 0.89f, 1.6f, 0.6f })
@@ -8535,22 +8616,17 @@ internal static partial class Benchmark
             AssertTimeline(systemCursor != Cursors.Cross
                 && systemCursor.HotSpot == new Point(cursorSize / 2, cursorSize / 2),
                 "Fill did not install a system cursor with its original pointer hotspot.");
-            using (var cursorImage = new Bitmap(cursorSize, cursorSize))
-            using (var graphics = Graphics.FromImage(cursorImage))
+            foreach (var background in new[] { Color.White, Color.Magenta })
             {
-                foreach (var background in new[] { Color.White, Color.Magenta })
-                {
-                    graphics.Clear(background);
-                    systemCursor.Draw(graphics, new Rectangle(0, 0, cursorSize, cursorSize));
-                    AssertTimeline(cursorImage.GetPixel(0, 0).ToArgb() == background.ToArgb()
-                        && cursorImage.GetPixel(cursorSize - 1, cursorSize - 1).ToArgb() == background.ToArgb(),
-                        "The fill system cursor replaced its transparent background with an opaque rectangle.");
-                    var bucketPixel = cursorImage.GetPixel(cursorSize * 14 / 32, cursorSize * 7 / 32);
-                    AssertTimeline(bucketPixel.ToArgb() != background.ToArgb()
-                        && bucketPixel.R > bucketPixel.G && bucketPixel.R > bucketPixel.B
-                        && bucketPixel.B > Color.Coral.B,
-                        "The fill system cursor lost its colored bucket or alpha-blended interior.");
-                }
+                using var cursorImage = CaptureBenchmarkCursor(systemCursor, cursorSize, background);
+                AssertTimeline(cursorImage.GetPixel(0, 0).ToArgb() == background.ToArgb()
+                    && cursorImage.GetPixel(cursorSize - 1, cursorSize - 1).ToArgb() == background.ToArgb(),
+                    "The fill system cursor replaced its transparent background with an opaque rectangle.");
+                var bucketPixel = cursorImage.GetPixel(cursorSize * 14 / 32, cursorSize * 7 / 32);
+                AssertTimeline(bucketPixel.ToArgb() != background.ToArgb()
+                    && bucketPixel.R > bucketPixel.G && bucketPixel.R > bucketPixel.B
+                    && bucketPixel.B > Color.Coral.B,
+                    $"The fill system cursor lost its colored bucket or alpha-blended interior: background={background}, pixel={bucketPixel}, size={cursorSize}, dpi={cursorStage.DeviceDpi}, nativeSize={systemCursor.Size}.");
             }
             cursorStage.SetFillToolCursor(new Point(80, 90), Color.Coral);
             AssertTimeline(ReferenceEquals(cursorStage.Cursor, systemCursor)
@@ -8693,6 +8769,12 @@ internal static partial class Benchmark
 
         activate.Invoke(form, [ToolMode.Line]);
         scene.CreateEmpty();
+        stage.SetVisibleWorldWidth(stage.ClientSize.Width);
+        stage.RestoreViewState(stage.CaptureViewState() with
+        {
+            CameraX = stage.Width * 0.5f - MathF.Floor(stage.Width * 0.5f),
+            CameraY = stage.Height * 0.5f - MathF.Floor(stage.Height * 0.5f)
+        });
         var press = Screen(new PointF(-240, 0));
         var first = Screen(new PointF(0, 120));
         Pointer(down, press);
@@ -8715,7 +8797,7 @@ internal static partial class Benchmark
             && scene.TryGetLineEndpoint(0, false, out var endpoint)
             && PointsWithin(endpoint, stage.ScreenToWorld(release), 1f)
             && !stage.DrawingPreviewVisible && pending.GetValue(form) is null && !stage.Capture,
-            "A coalesced Line gesture committed an older queued position or retained its preview after release.");
+            $"A coalesced Line gesture committed an older queued position or retained its preview after release: count={scene.ObjectCount}, endpoint={(scene.TryGetLineEndpoint(0, false, out var actualEnd) ? actualEnd : PointF.Empty)}, expected={stage.ScreenToWorld(release)}, preview={stage.DrawingPreviewVisible}, pending={pending.GetValue(form)}, capture={stage.Capture}.");
 
         foreach (var corner in new[] { false, true })
         {
@@ -8892,7 +8974,7 @@ internal static partial class Benchmark
         ((DrawSettings)RequireField(typeof(MainForm), "_drawSettings").GetValue(form)!).SnapEnabled = false;
         stage.Size = new Size(960, 640);
         stage.CreateControl();
-        stage.SetVisibleWorldWidth(1200);
+        stage.SetVisibleWorldWidth(stage.ClientSize.Width);
         RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.Select]);
         scene.CreateEmpty();
         var outerStart = new PointF(-240, 0);
@@ -8907,8 +8989,10 @@ internal static partial class Benchmark
         var straightEnd = new PointF(-240, 240);
         var straight = scene.AddLineSegment(scene.ActiveLayer, PointF.Empty, straightEnd,
             12, Color.Transparent, Color.Black, 6);
-        scene.CompleteDeferredBuild();
         scene.TryGetLineCubic(cubic, out _, out var originalC1, out var originalC2, out _);
+        scene.SetLineEndpoint(cubic, true, PointF.Empty, outerEnd, originalC1, originalC2, keepStraight: false);
+        scene.SetLineEndpoint(straight, true, PointF.Empty, straightEnd, PointF.Empty, PointF.Empty, keepStraight: true);
+        scene.RebuildGeometryIndex();
         var endpointFixture = scene.CreateSnapshot();
         RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)])
             .Invoke(form, [quadratic, false]);
@@ -8937,12 +9021,13 @@ internal static partial class Benchmark
         }
         void AssertGeometry(PointF anchor)
         {
-            AssertTimeline(scene.TryGetLineEndpoint(quadratic, false, out var qAnchor)
-                && scene.TryGetLineEndpoint(cubic, true, out var cAnchor)
-                && scene.TryGetLineEndpoint(straight, true, out var sAnchor)
+            var hasQuadratic = scene.TryGetLineEndpoint(quadratic, false, out var qAnchor);
+            var hasCubic = scene.TryGetLineEndpoint(cubic, true, out var cAnchor);
+            var hasStraight = scene.TryGetLineEndpoint(straight, true, out var sAnchor);
+            AssertTimeline(hasQuadratic && hasCubic && hasStraight
                 && PointsWithin(qAnchor, anchor, 0.1f) && PointsWithin(cAnchor, anchor, 0.1f)
                 && PointsWithin(sAnchor, anchor, 0.1f),
-                "Ordinary anchor dragging did not move all connected endpoints together.");
+                $"Ordinary anchor dragging did not move all connected endpoints together: expected={anchor}, quadratic={qAnchor}, cubic={cAnchor}, straight={sAnchor}, stage={stage.ClientSize}, pixelWorld={stage.ScreenLengthToWorld(1)}.");
             AssertTimeline(scene.TryGetLineEndpoint(quadratic, true, out var qOuter)
                 && scene.TryGetLineEndpoint(cubic, false, out var cOuter)
                 && scene.TryGetLineEndpoint(straight, false, out var sOuter)
@@ -9031,8 +9116,11 @@ internal static partial class Benchmark
                 && PointsWithin(restoredC1, capturedC1, 1f) && PointsWithin(restoredC2, capturedC2, 1f),
                 "Returning an outer endpoint to its press position did not restore the curve.");
             Pointer(up, movedEndpoint);
-            AssertTimeline(scene.TryGetLineEndpoint(objectIndex, startEndpoint, out actual)
-                && PointsWithin(actual, movedEndpoint, 0.1f) && !stage.Capture,
+            var committedObjects = (IEnumerable<int>)RequireField(typeof(MainForm), "_selectedObjects").GetValue(form)!;
+            AssertTimeline(committedObjects.Any(candidate =>
+                scene.TryGetLineEndpoint(candidate, true, out var first) && PointsWithin(first, movedEndpoint, 0.1f)
+                || scene.TryGetLineEndpoint(candidate, false, out var last) && PointsWithin(last, movedEndpoint, 0.1f))
+                && !stage.Capture,
                 "Outer endpoint dragging ignored the release position or retained mouse capture.");
         }
         Console.WriteLine("connected_anchor_curve_drag=ok,corner_swing=ok,reverse_bend=ok,outer_endpoints_fixed=ok,return_to_origin=ok,outer_endpoint_reshaping=ok");
@@ -9130,11 +9218,8 @@ internal static partial class Benchmark
         startWorld.SetValue(form, pressWorld);
         AssertTimeline(RequireMethod(typeof(MainForm), "BeginArcDrag").Invoke(form, [pressWorld, line]) is true,
             "Release-only arc regression did not start.");
-        var arcSession = RequireField(typeof(MainForm), "_arcDragSession").GetValue(form)!;
-        var parameter = (float)RequireProperty(arcSession.GetType(), "Parameter",
-            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance).GetValue(arcSession)!;
-        var expectedControl = MainForm.ResolveQuadraticArcDragControl(PointF.Empty,
-            pressWorld, stage.ScreenToWorld(release), parameter);
+        var expectedControl = MainForm.ResolveArcDragControl(PointF.Empty,
+            pressWorld, stage.ScreenToWorld(release), quadratic: true);
         undoBefore = (int)undoCount.GetValue(undoStack)!;
         Pointer(up, release);
         AssertTimeline(scene.TryGetLineQuadraticControl(line, out finalControl)
@@ -9153,8 +9238,12 @@ internal static partial class Benchmark
             System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance).GetValue(cornerSession)!;
         var secondLine = (int)RequireProperty(cornerSession.GetType(), "SecondObjectIndex",
             System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance).GetValue(cornerSession)!;
+        var baseAnchor = (PointF)RequireProperty(cornerSession.GetType(), "BaseAnchor",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance).GetValue(cornerSession)!;
         Pointer(up, release);
-        var expectedAnchor = VectorUnits.Quantize(stage.ScreenToWorld(release));
+        releaseWorld = stage.ScreenToWorld(release);
+        var expectedAnchor = VectorUnits.Quantize(new PointF(
+            baseAnchor.X + releaseWorld.X - pressWorld.X, baseAnchor.Y + releaseWorld.Y - pressWorld.Y));
         AssertTimeline(scene.TryGetLineEndpoint(firstLine, false, out var firstAnchor)
             && scene.TryGetLineEndpoint(secondLine, true, out var secondAnchor)
             && PointsWithin(firstAnchor, expectedAnchor, 0.01f)
@@ -9186,12 +9275,17 @@ internal static partial class Benchmark
             AssertTimeline(!editSnap.SnappedToObject
                 && PointsWithin(editSnap.Point, VectorUnits.Quantize(distant), 0.01f)
                 && drawingSnap.SnappedToObject && PointsWithin(drawingSnap.Point, target, 0.1f),
-                "Endpoint editing inherited the drawing tool's wide magnetic radius.");
+                $"Endpoint editing inherited the drawing tool's wide magnetic radius: width={visibleWidth}, query={distant}, edit={editSnap}, drawing={drawingSnap}, target={target}, layer={scene.ActiveLayer}, frame={stage.Frame}, cacheLayer={RequireField(typeof(MainForm), "_lineEndpointSnapCacheLayer").GetValue(form)}.");
             var close = new PointF(target.X, target.Y + stage.ScreenLengthToWorld(4));
             editSnap = ((PointF Point, bool SnappedToObject))resolveSnap.Invoke(form,
                 [close, scene.ActiveLayer, true])!;
             AssertTimeline(editSnap.SnappedToObject && PointsWithin(editSnap.Point, target, 0.1f),
                 "Endpoint editing lost close-range object snapping.");
+            var midpoint = new PointF(500, 300);
+            editSnap = ((PointF Point, bool SnappedToObject))resolveSnap.Invoke(form,
+                [new PointF(midpoint.X, midpoint.Y + stage.ScreenLengthToWorld(4)), scene.ActiveLayer, true])!;
+            AssertTimeline(editSnap.SnappedToObject && PointsWithin(editSnap.Point, midpoint, 0.1f),
+                "Line snapping did not follow the actual stroke centerline.");
             RequireMethod(typeof(MainForm), "BuildLineEndpointSnapCache").Invoke(form, [scene.ActiveLayer]);
             editSnap = ((PointF Point, bool SnappedToObject))resolveSnap.Invoke(form,
                 [distant, scene.ActiveLayer, true])!;
@@ -9250,20 +9344,24 @@ internal static partial class Benchmark
         setSelection.Invoke(form, [line, false]);
         var body = Point.Round(stage.WorldToScreen(120, 0));
         updateCursor.Invoke(form, [body]);
-        AssertTimeline(stage.Cursor == Cursors.SizeAll, "Selected line body did not show the move cursor.");
+        AssertTimeline(stage.Cursor == stage.SelectionArrowCursorFor(true, StageControl.SelectionArrowCursorFeedback.Move),
+            "Selected line body did not show the white-dart move cursor.");
         var endpoint = Point.Round(stage.WorldToScreen(0, 0));
         updateCursor.Invoke(form, [endpoint]);
-        AssertTimeline(stage.Cursor == Cursors.Cross, "Line endpoint lost its editing cursor.");
+        AssertTimeline(stage.Cursor == stage.SelectionArrowCursorFor(true, StageControl.SelectionArrowCursorFeedback.Node),
+            "Line endpoint lost its dart-and-node cursor.");
 
         mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, body.X, body.Y, 0)]);
         var moved = new Point(body.X + 40, body.Y + 30);
         mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, moved.X, moved.Y, 0)]);
-        AssertTimeline(stage.Cursor == Cursors.SizeAll, "Line movement lost its cursor outside the original line.");
+        AssertTimeline(stage.Cursor == stage.SelectionArrowCursorFor(true, StageControl.SelectionArrowCursorFeedback.Move),
+            "Line movement lost its cursor outside the original line.");
         mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, moved.X, moved.Y, 0)]);
         AssertTimeline(scene.IsLineStraight(line), "Moving a selected line bent its geometry.");
         var blank = Point.Round(stage.WorldToScreen(500, 300));
         updateCursor.Invoke(form, [blank]);
-        AssertTimeline(stage.Cursor == Cursors.Default, "Move cursor remained on empty Stage space.");
+        AssertTimeline(stage.Cursor == stage.SelectionArrowCursorFor(true, StageControl.SelectionArrowCursorFeedback.None),
+            "Move feedback remained on the white dart over empty Stage space.");
 
         clearSelection.Invoke(form, [false]);
         var hasStart = scene.TryGetLineEndpoint(line, true, out var start);
@@ -9274,7 +9372,8 @@ internal static partial class Benchmark
         mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, body.X, body.Y, 0)]);
         moved = new Point(body.X, body.Y + 30);
         mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, moved.X, moved.Y, 0)]);
-        AssertTimeline(stage.Cursor == Cursors.Cross, "Unselected line bending showed a whole-object move cursor.");
+        AssertTimeline(stage.Cursor == stage.SelectionArrowCursorFor(true, StageControl.SelectionArrowCursorFeedback.Bend),
+            "Unselected line bending did not show the white-dart arc cursor.");
         mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, moved.X, moved.Y, 0)]);
         Console.WriteLine("selection_move_cursor_regression=ok");
     }

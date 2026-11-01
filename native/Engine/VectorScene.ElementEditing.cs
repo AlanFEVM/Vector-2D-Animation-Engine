@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 using Clipper2Lib;
 
 namespace VectorAnimationEngine;
@@ -25,7 +26,7 @@ internal sealed partial class VectorScene
 
             var shape = ShapeKind[objectIndex];
             if (IsWholeObjectShape(shape)
-                && HitObject(shape is VectorAnimationEngine.ShapeKind.ImportedSvg or VectorAnimationEngine.ShapeKind.Bitmap
+                && HitObject(shape == VectorAnimationEngine.ShapeKind.ImportedSvg
                     ? world
                     : sourceWorld, objectIndex, toleranceWorld))
             {
@@ -99,7 +100,7 @@ internal sealed partial class VectorScene
             if (!IsObjectSelectable(i, frame)) continue;
             if (!ObjectMayContainHitPoint(i, world, toleranceWorld)) continue;
             var hit = HitElement(world, i, eligibleCandidates, frame, toleranceWorld);
-            if (!hit.IsValid || !IsSelectionHitExposed(hit, world, frame)) continue;
+            if (!hit.IsValid || !IsSelectionHitExposed(hit, world, frame, objectFilter)) continue;
             if (IsBetterHit(hit, best)) best = hit;
         }
 
@@ -860,11 +861,25 @@ internal sealed partial class VectorScene
         ICollection<(int First, int Last)>? fittedRanges = null)
     {
         if (points.Length < 2) return;
-        FitRange(
-            0,
-            points.Length - 1,
-            UnitDirection(points[0], points[1]),
-            UnitDirection(points[^1], points[^2]));
+        if (points.Length == 2)
+        {
+            result.Add(new CubicBoundarySegment(points[0],
+                Lerp(points[0], points[1], 1f / 3f), Lerp(points[0], points[1], 2f / 3f), points[1]));
+            fittedRanges?.Add((0, 1));
+            return;
+        }
+        using var sourceDistanceIndex = new FittedPolylineDistanceIndex(points);
+        var samplingBuffer = new List<CurveSample>(32);
+        var samplePoints = ArrayPool<PointF>.Shared.Rent(32);
+        try
+        {
+            FitRange(0, points.Length - 1,
+                UnitDirection(points[0], points[1]), UnitDirection(points[^1], points[^2]));
+        }
+        finally
+        {
+            ArrayPool<PointF>.Shared.Return(samplePoints);
+        }
 
         void FitRange(int first, int last, PointF leftTangent, PointF rightTangent)
         {
@@ -879,29 +894,53 @@ internal sealed partial class VectorScene
                 return;
             }
 
-            var parameters = ChordLengthParameters(points, first, last);
-            var curve = GenerateFittedCubic(
-                points,
-                first,
-                last,
-                parameters,
-                leftTangent,
-                rightTangent);
-            var samples = SampleCubicSegment(curve);
+            var parameterCount = last - first + 1;
+            var rentedParameters = parameterCount > 256 ? ArrayPool<float>.Shared.Rent(parameterCount) : null;
+            Span<float> parameters = rentedParameters is null ? stackalloc float[parameterCount] : rentedParameters.AsSpan(0, parameterCount);
+            CubicBoundarySegment curve;
+            try
+            {
+                ChordLengthParameters(points, first, last, parameters);
+                curve = GenerateFittedCubic(points, first, last, parameters, leftTangent, rightTangent);
+            }
+            finally
+            {
+                if (rentedParameters is not null) ArrayPool<float>.Shared.Return(rentedParameters);
+            }
+            samplingBuffer.Clear();
+            samplingBuffer.Add(new CurveSample(0, curve.Start));
+            AddAdaptiveCubicSamples(samplingBuffer, curve.Start, curve.Control1, curve.Control2, curve.End, 0, 1, 0);
+            samplingBuffer.Add(new CurveSample(1, curve.End));
+            if (samplingBuffer.Count > samplePoints.Length)
+            {
+                var replacement = ArrayPool<PointF>.Shared.Rent(samplingBuffer.Count);
+                ArrayPool<PointF>.Shared.Return(samplePoints);
+                samplePoints = replacement;
+            }
+            for (var index = 0; index < samplingBuffer.Count; index++) samplePoints[index] = samplingBuffer[index].Point;
             var split = (first + last) / 2;
             var maximumPointError = 0f;
-            for (var index = first + 1; index < last; index++)
+            var followsPolyline = false;
+            using (var sampleDistanceIndex = new FittedPolylineDistanceIndex(samplePoints, samplingBuffer.Count))
             {
-                var error = DistanceToPolyline(points[index], samples);
-                if (error <= maximumPointError) continue;
-                maximumPointError = error;
-                split = index;
+                for (var index = first + 1; index < last; index++)
+                {
+                    var error = sampleDistanceIndex.DistanceTo(points[index], 0, samplingBuffer.Count - 1);
+                    if (error <= maximumPointError) continue;
+                    maximumPointError = error;
+                    split = index;
+                }
+                followsPolyline = maximumPointError <= maximumError;
+                if (followsPolyline)
+                {
+                    for (var index = 0; index < samplingBuffer.Count; index++)
+                    {
+                        if (sourceDistanceIndex.DistanceTo(samplePoints[index], first, last) <= maximumError) continue;
+                        followsPolyline = false;
+                        break;
+                    }
+                }
             }
-
-            var rangePoints = points.AsSpan(first, last - first + 1).ToArray();
-            var followsPolyline = maximumPointError <= maximumError
-                && samples.All(point =>
-                    DistanceToPolyline(point, rangePoints) <= maximumError);
             if (followsPolyline)
             {
                 result.Add(curve);
@@ -920,9 +959,190 @@ internal sealed partial class VectorScene
         }
     }
 
-    private static float[] ChordLengthParameters(PointF[] points, int first, int last)
+    private sealed class FittedPolylineDistanceIndex : IDisposable
     {
-        var result = new float[last - first + 1];
+        private const int LeafSize = 16;
+        private const float IndexedCoordinateLimit = 1e15f;
+        private readonly PointF[] _points;
+        private readonly DistanceBounds[] _nodes;
+        private readonly double _roundingPadding;
+
+        private readonly record struct DistanceBounds(float Left, float Top, float Right, float Bottom, int First, int Count);
+        private readonly record struct DistanceSegment(PointF Start, float DeltaX, float DeltaY, float LengthSquared,
+            float Left, float Top, float Right, float Bottom);
+        private readonly DistanceSegment[] _segments;
+        private int _nearestSegment;
+
+        public FittedPolylineDistanceIndex(PointF[] points) : this(points, points.Length)
+        {
+        }
+
+        public FittedPolylineDistanceIndex(PointF[] points, int pointCount)
+        {
+            _points = points;
+            _nodes = [];
+            _segments = pointCount > 2 ? ArrayPool<DistanceSegment>.Shared.Rent(pointCount - 1) : [];
+            for (var index = 0; index < pointCount - 1 && _segments.Length > 0; index++)
+            {
+                var deltaX = points[index + 1].X - points[index].X;
+                var deltaY = points[index + 1].Y - points[index].Y;
+                _segments[index] = new DistanceSegment(points[index], deltaX, deltaY, deltaX * deltaX + deltaY * deltaY,
+                    Math.Min(points[index].X, points[index + 1].X), Math.Min(points[index].Y, points[index + 1].Y),
+                    Math.Max(points[index].X, points[index + 1].X), Math.Max(points[index].Y, points[index + 1].Y));
+            }
+            if (pointCount <= LeafSize + 1) return;
+            var magnitude = 0f;
+            for (var index = 0; index < pointCount; index++)
+            {
+                var point = points[index];
+                if (!float.IsFinite(point.X) || !float.IsFinite(point.Y)) return;
+                magnitude = Math.Max(magnitude, Math.Max(Math.Abs(point.X), Math.Abs(point.Y)));
+            }
+            if (magnitude > IndexedCoordinateLimit) return;
+            _roundingPadding = Math.Max(Math.Sqrt(float.Epsilon) * 4,
+                ((double)MathF.BitIncrement(magnitude) - magnitude) * 16);
+            var segmentCount = pointCount - 1;
+            var nodeCount = 1;
+            for (var count = segmentCount; count > LeafSize; count = (count + 1) / 2)
+                nodeCount = nodeCount * 2 + 1;
+            _nodes = ArrayPool<DistanceBounds>.Shared.Rent(nodeCount);
+            Build(0, 0, segmentCount);
+        }
+
+        public void Dispose()
+        {
+            if (_nodes.Length > 0) ArrayPool<DistanceBounds>.Shared.Return(_nodes);
+            if (_segments.Length > 0) ArrayPool<DistanceSegment>.Shared.Return(_segments);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private float SegmentDistance(PointF point, int index)
+        {
+            if (_segments.Length == 0) return DistanceToSegment(point, _points[index], _points[index + 1]);
+            ref readonly var segment = ref _segments[index];
+            if (segment.LengthSquared <= 0.0001f) return Distance(point, segment.Start);
+            var amount = ((point.X - segment.Start.X) * segment.DeltaX
+                + (point.Y - segment.Start.Y) * segment.DeltaY) / segment.LengthSquared;
+            amount = Math.Clamp(amount, 0, 1);
+            return Distance(point, new PointF(segment.Start.X + segment.DeltaX * amount,
+                segment.Start.Y + segment.DeltaY * amount));
+        }
+
+        private void Build(int nodeIndex, int first, int count)
+        {
+            if (count > LeafSize)
+            {
+                var middle = count / 2;
+                var leftIndex = nodeIndex * 2 + 1;
+                var rightIndex = leftIndex + 1;
+                Build(leftIndex, first, middle);
+                Build(rightIndex, first + middle, count - middle);
+                var leftChild = _nodes[leftIndex];
+                var rightChild = _nodes[rightIndex];
+                _nodes[nodeIndex] = new DistanceBounds(
+                    Math.Min(leftChild.Left, rightChild.Left), Math.Min(leftChild.Top, rightChild.Top),
+                    Math.Max(leftChild.Right, rightChild.Right), Math.Max(leftChild.Bottom, rightChild.Bottom), first, count);
+                return;
+            }
+            var start = _points[first];
+            var left = start.X;
+            var right = start.X;
+            var top = start.Y;
+            var bottom = start.Y;
+            for (var index = first + 1; index <= first + count; index++)
+            {
+                var point = _points[index];
+                left = Math.Min(left, point.X);
+                right = Math.Max(right, point.X);
+                top = Math.Min(top, point.Y);
+                bottom = Math.Max(bottom, point.Y);
+            }
+            _nodes[nodeIndex] = new DistanceBounds(left, top, right, bottom, first, count);
+        }
+
+        public float DistanceTo(PointF point, int first, int last)
+        {
+            if (last < first) return float.MaxValue;
+            if (last == first) return Distance(point, _points[first]);
+            var distance = float.MaxValue;
+            var magnitude = Math.Max(Math.Abs(point.X), Math.Abs(point.Y));
+            if (_nodes.Length == 0 || !float.IsFinite(magnitude) || magnitude > IndexedCoordinateLimit)
+            {
+                for (var index = first; index < last; index++)
+                    distance = Math.Min(distance, SegmentDistance(point, index));
+                return distance;
+            }
+            var padding = _roundingPadding + ((double)MathF.BitIncrement(magnitude) - magnitude) * 16;
+            var nearest = Math.Clamp(_nearestSegment, first, last - 1);
+            distance = SegmentDistance(point, nearest);
+            var adjacent = nearest + 1;
+            if (adjacent < last)
+            {
+                var candidate = SegmentDistance(point, adjacent);
+                if (candidate < distance) nearest = adjacent;
+                distance = Math.Min(distance, candidate);
+            }
+            FindDistance(0, point, first, last, padding, BoundsDistanceSquared(_nodes[0], point), ref distance, ref nearest);
+            _nearestSegment = nearest;
+            return distance;
+        }
+
+        private void FindDistance(int nodeIndex, PointF point, int first, int last, double padding, double boundsDistance, ref float distance, ref int nearest)
+        {
+            ref readonly var node = ref _nodes[nodeIndex];
+            if (node.First >= last || node.First + node.Count <= first) return;
+            var radius = (double)MathF.BitIncrement(distance) + padding;
+            if (boundsDistance > radius * radius) return;
+            if (node.Count > LeafSize)
+            {
+                var leftIndex = nodeIndex * 2 + 1;
+                var rightIndex = leftIndex + 1;
+                var leftDistance = BoundsDistanceSquared(_nodes[leftIndex], point);
+                var rightDistance = BoundsDistanceSquared(_nodes[rightIndex], point);
+                if (rightDistance < leftDistance)
+                {
+                    (leftIndex, rightIndex) = (rightIndex, leftIndex);
+                    (leftDistance, rightDistance) = (rightDistance, leftDistance);
+                }
+                FindDistance(leftIndex, point, first, last, padding, leftDistance, ref distance, ref nearest);
+                FindDistance(rightIndex, point, first, last, padding, rightDistance, ref distance, ref nearest);
+                return;
+            }
+            var end = Math.Min(last, node.First + node.Count);
+            var radiusSquared = radius * radius;
+            for (var index = Math.Max(first, node.First); index < end; index++)
+            {
+                ref readonly var segment = ref _segments[index];
+                var deltaX = point.X < segment.Left ? (double)segment.Left - point.X
+                    : point.X > segment.Right ? (double)point.X - segment.Right : 0;
+                var deltaY = point.Y < segment.Top ? (double)segment.Top - point.Y
+                    : point.Y > segment.Bottom ? (double)point.Y - segment.Bottom : 0;
+                if (deltaX * deltaX + deltaY * deltaY > radiusSquared) continue;
+                var candidate = SegmentDistance(point, index);
+                if (candidate < distance)
+                {
+                    nearest = index;
+                    radius = (double)MathF.BitIncrement(candidate) + padding;
+                    radiusSquared = radius * radius;
+                }
+                distance = Math.Min(distance, candidate);
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static double BoundsDistanceSquared(in DistanceBounds node, PointF point)
+        {
+            var deltaX = point.X < node.Left ? (double)node.Left - point.X
+                : point.X > node.Right ? (double)point.X - node.Right : 0;
+            var deltaY = point.Y < node.Top ? (double)node.Top - point.Y
+                : point.Y > node.Bottom ? (double)point.Y - node.Bottom : 0;
+            return deltaX * deltaX + deltaY * deltaY;
+        }
+    }
+
+    private static void ChordLengthParameters(PointF[] points, int first, int last, Span<float> result)
+    {
+        result[0] = 0;
         for (var index = first + 1; index <= last; index++)
         {
             result[index - first] = result[index - first - 1] + Distance(points[index - 1], points[index]);
@@ -935,18 +1155,17 @@ internal sealed partial class VectorScene
             {
                 result[index] = index / (float)(result.Length - 1);
             }
-            return result;
+            return;
         }
 
         for (var index = 1; index < result.Length; index++) result[index] /= length;
-        return result;
     }
 
     private static CubicBoundarySegment GenerateFittedCubic(
         PointF[] points,
         int first,
         int last,
-        IReadOnlyList<float> parameters,
+        ReadOnlySpan<float> parameters,
         PointF leftTangent,
         PointF rightTangent)
     {
@@ -955,7 +1174,7 @@ internal sealed partial class VectorScene
         double c11 = 0;
         double x0 = 0;
         double x1 = 0;
-        for (var index = 0; index < parameters.Count; index++)
+        for (var index = 0; index < parameters.Length; index++)
         {
             var t = parameters[index];
             var mt = 1f - t;
@@ -3725,10 +3944,24 @@ internal sealed partial class VectorScene
             return;
         }
 
-        CurveControlX[objectIndex] = start.X + (2f / 3f) * (control.X - start.X);
-        CurveControlY[objectIndex] = start.Y + (2f / 3f) * (control.Y - start.Y);
-        CurveControl2X[objectIndex] = end.X + (2f / 3f) * (control.X - end.X);
-        CurveControl2Y[objectIndex] = end.Y + (2f / 3f) * (control.Y - end.Y);
+        SetLineControlPointsForPreview(objectIndex,
+            new PointF(start.X + (2f / 3f) * (control.X - start.X),
+                start.Y + (2f / 3f) * (control.Y - start.Y)),
+            new PointF(end.X + (2f / 3f) * (control.X - end.X),
+                end.Y + (2f / 3f) * (control.Y - end.Y)));
+    }
+
+    internal void SetLineControlPointsForPreview(int objectIndex, PointF control1, PointF control2)
+    {
+        if ((uint)objectIndex >= ObjectCount || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Line) return;
+        if (CurveControlX[objectIndex] == control1.X && CurveControlY[objectIndex] == control1.Y
+            && CurveControl2X[objectIndex] == control2.X && CurveControl2Y[objectIndex] == control2.Y) return;
+        CurveControlX[objectIndex] = control1.X;
+        CurveControlY[objectIndex] = control1.Y;
+        CurveControl2X[objectIndex] = control2.X;
+        CurveControl2Y[objectIndex] = control2.Y;
+        GeometryRevision++;
+        InvalidateDeferredTopologyQueries();
     }
 
 }

@@ -29,6 +29,9 @@ Use the smallest suite set that covers every changed contract, then broaden when
 .agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite Timeline,Render -Plan
 .agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite Freehand,Render
 .agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite Stress -EnforcePerformanceBudget
+.agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite GpuOptics
+.agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite SelectionPerf
+.agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite Timeline,Freehand,Render -ContinueOnFailure -EnforcePerformanceBudget
 .agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite Launcher
 .agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite Release
 ```
@@ -38,5 +41,10 @@ Use the smallest suite set that covers every changed contract, then broaden when
 - The repository has no solution, test project, or CI pipeline; `Benchmark.*.cs` is the native CLI regression harness.
 - Use `-Restore` only after dependency/project changes or missing assets, and `-NoBuild` only after an unchanged successful Release build.
 - Performance budget booleans require `-EnforcePerformanceBudget` when they are acceptance criteria.
+- Without strict enforcement, failed budget markers are reported as `PassedWithWarnings`, never a clean pass.
+- `All` includes hardware-required `GpuOptics`; `SelectionPerf` is a focused alternative to its coverage within `Render`. The external-fixture collision probe stays manual.
+- Inspect the final JSON `Results` on failure: `NotRun` is not a pass. `-ContinueOnFailure` continues suites, not individual cases, and never proceeds past a failed native build.
+- Benchmark output streams as each line arrives; the final JSON remains the only success-stream output and retains process exit codes and failed budget markers.
+- Repository regression-approval rules still apply. Runner-only checks use `scripts/test-validation-runner.ps1`, which mocks dotnet in a temporary workspace and does not build or run the product.
 - Shared regressions may fail before the named suite reaches its nominal target; follow the exception and call chain.
 - Keep generated launchers, runtimes, packages, screenshots, and validation artifacts out of the final diff.

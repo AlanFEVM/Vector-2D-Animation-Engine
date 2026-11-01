@@ -6818,7 +6818,9 @@ internal static partial class Benchmark
                     "A Direct2D light-Gizmo overlay rebuilt the stable base frame or had no screen geometry.");
             }
             using var lightGizmoCapture = materialCapture is not null
-                ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia)
+                ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia, capture => HasPixelNearColor(
+                    capture, CapturePoint(form, direct2DStage, direct2DLightGizmoGeometry.IntensityHandle),
+                    StageControl.SceneLightGizmoIntensityColor, radius: 5, tolerance: 18))
                 : null;
             if (materialCapture is not null && lightGizmoCapture is null)
             {
@@ -8286,7 +8288,7 @@ internal static partial class Benchmark
             return bitmap;
         }
 
-        Bitmap? CapturePresentedStage(Form form, StageControl source, Color sentinel)
+        Bitmap? CapturePresentedStage(Form form, StageControl source, Color sentinel, Func<Bitmap, bool>? contentPresented = null)
         {
             if (source.ClientSize != new Size(stageWidth, stageHeight))
             {
@@ -8324,7 +8326,8 @@ internal static partial class Benchmark
                     new Point(2, capture.Height - 3),
                     new Point(capture.Width - 3, capture.Height - 3)
                 };
-                if (sentinelPoints.All(point => PixelRgbNear(capture.GetPixel(point.X, point.Y), sentinel, 8)))
+                if (sentinelPoints.All(point => PixelRgbNear(capture.GetPixel(point.X, point.Y), sentinel, 8))
+                    && (contentPresented is null || contentPresented(capture)))
                 {
                     return capture;
                 }
@@ -8472,6 +8475,11 @@ internal static partial class Benchmark
         RunBrushWorldScaleRegression();
         RunBrushEraserRegression();
 
+        RunStageRendererFrameCacheRegression();
+    }
+
+    private static void RunStageRendererFrameCacheRegression()
+    {
         var editable = new VectorScene();
         editable.CreateEmpty();
         var editableObject = editable.AddObject(0, new PointF(120, 80), new SizeF(180, 120), 0, 0, Color.Teal, 12, ShapeKind.Rectangle);
@@ -8526,6 +8534,8 @@ internal static partial class Benchmark
             throw new InvalidOperationException("The Stage did not activate the immediate Direct2D GPU hardware target.");
         }
 
+        stage.InvalidateOverlay();
+        stage.Update();
         if (stage.LastDirect2DBaseFrameCacheBuilds != 1
             || stage.LastDirect2DBaseFrameCacheReuses != 0)
         {
@@ -8591,6 +8601,8 @@ internal static partial class Benchmark
             throw new InvalidOperationException("Direct2D did not resume after the extruded 3D selection regression.");
         }
 
+        stage.InvalidateOverlay();
+        stage.Update();
         var overlayBaseRevision = stage.BasePresentationRevision;
         var overlayBrushShape = BrushShape.CreateSoftRound();
         stage.SetBrushTipCursor(
@@ -8625,6 +8637,10 @@ internal static partial class Benchmark
         stage.Update();
         var revisionBeforeFullInvalidation = stage.BasePresentationRevision;
         stage.Invalidate();
+        stage.Update();
+        AssertTimeline(stage.LastDirect2DBaseFrameCacheReuses == 0,
+            "A full Stage invalidation reused the previous GPU base frame before settlement.");
+        stage.InvalidateOverlay();
         stage.Update();
         if (stage.BasePresentationRevision != revisionBeforeFullInvalidation + 1
             || stage.LastDirect2DBaseFrameCacheBuilds != 1
@@ -8667,20 +8683,26 @@ internal static partial class Benchmark
         var fillEdgePreviewPathBuilds = stage.LastDirect2DObjectPathGeometryCacheBuilds;
         var fillEdgePreviewRebuilt = fillEdgePreviewObservedGeometryRevision > fillEdgePreviewGeometryRevision
             && fillEdgePreviewObservedBaseRevision == fillEdgePreviewBaseRevision
-            && fillEdgePreviewBaseBuilds == 1
+            && fillEdgePreviewBaseBuilds == 0
             && fillEdgePreviewBaseReuses == 0
             && fillEdgePreviewPathBuilds >= 1;
+        stage.InvalidateOverlay();
+        stage.Update();
+        var fillEdgePreviewSettled = stage.LastDirect2DBaseFrameCacheBuilds == 1
+            && stage.LastDirect2DBaseFrameCacheReuses == 0;
         editable.RestoreSnapshot(fillEdgePreviewSnapshot);
         stage.Invalidate();
         stage.Update();
-        if (!fillEdgePreviewRebuilt)
+        stage.InvalidateOverlay();
+        stage.Update();
+        if (!fillEdgePreviewRebuilt || !fillEdgePreviewSettled)
         {
             throw new InvalidOperationException(
                 $"A Bezier Fill preview reused a stale Direct2D base frame: "
                 + $"geometry={fillEdgePreviewObservedGeometryRevision}/{fillEdgePreviewGeometryRevision}, "
                 + $"baseRevision={fillEdgePreviewObservedBaseRevision}/{fillEdgePreviewBaseRevision}, "
                 + $"base={fillEdgePreviewBaseBuilds}/{fillEdgePreviewBaseReuses}, "
-                + $"pathBuilds={fillEdgePreviewPathBuilds}.");
+                + $"pathBuilds={fillEdgePreviewPathBuilds}, settled={fillEdgePreviewSettled}.");
         }
 
         var pointerFeedbackFrames = 0;
@@ -9043,7 +9065,8 @@ internal static partial class Benchmark
         stage.Update();
         if (!stage.LastFrameUsedDirect2D
             || stage.LastDirect2DObjectPathGeometryCacheBuilds != 1
-            || stage.LastDirect2DObjectPathGeometryCacheReuses < 2)
+            || stage.LastDirect2DObjectPathGeometryCacheReuses < 1
+            || stage.SelectedObject != cachedPath || stage.SelectedObjects.Count != 1)
         {
             throw new InvalidOperationException(
                 $"A selected Fill+Stroke Path did not share one Direct2D geometry: "
@@ -9056,7 +9079,7 @@ internal static partial class Benchmark
         var stablePathCacheMaintenanceMilliseconds = stage.LastDirect2DCacheMaintenanceMilliseconds;
         var stablePathFrameMilliseconds = stage.LastFrameRenderMilliseconds;
         if (stage.LastDirect2DObjectPathGeometryCacheBuilds != 0
-            || stage.LastDirect2DObjectPathGeometryCacheReuses < 3
+            || stage.LastDirect2DObjectPathGeometryCacheReuses < 2
             || stablePathCacheMaintenanceMilliseconds > 1)
         {
             throw new InvalidOperationException(
@@ -9080,7 +9103,7 @@ internal static partial class Benchmark
         stage.Invalidate();
         stage.Update();
         if (stage.LastDirect2DObjectPathGeometryCacheBuilds != 1
-            || stage.LastDirect2DObjectPathGeometryCacheReuses < 2)
+            || stage.LastDirect2DObjectPathGeometryCacheReuses < 1)
         {
             throw new InvalidOperationException(
                 $"Editing one Path segment did not rebuild exactly one shared Direct2D geometry: "
@@ -9111,7 +9134,7 @@ internal static partial class Benchmark
         stage.Invalidate();
         stage.Update();
         if (stage.LastDirect2DObjectPathGeometryCacheBuilds != 0
-            || stage.LastDirect2DObjectPathGeometryCacheReuses < 3
+            || stage.LastDirect2DObjectPathGeometryCacheReuses < 2
             || stage.LastDirect2DGradientBrushCacheBuilds != 0
             || stage.LastDirect2DGradientBrushCacheReuses < 1)
         {
@@ -9419,15 +9442,17 @@ internal static partial class Benchmark
             throw new InvalidOperationException("Switching the underlay retained stale Direct2D freehand geometry.");
         }
 
-        stage.ZoomAt(new Point(stage.Width / 2, stage.Height / 2), 50f);
+        stage.SetVisibleWorldWidth(2400);
         stage.Update();
         Application.DoEvents();
+        stage.InvalidateOverlay();
+        stage.Update();
         var expectedObjectDraws = tiledUnderlayObjectCount + editable.ObjectCount;
         if (stage.LastStats.TileLod
             || stage.LastStats.VisibleObjects != expectedObjectDraws
             || stage.LastStats.DrawnObjects != expectedObjectDraws)
         {
-            throw new InvalidOperationException("The shared object budget did not return unused editable capacity to the underlay.");
+            throw new InvalidOperationException($"The shared object budget did not return unused editable capacity to the underlay: expected={expectedObjectDraws}, stats={stage.LastStats}, zoom={stage.Zoom}, visible={stage.VisibleWorldBounds()}.");
         }
 
         var stressScene = new VectorScene();

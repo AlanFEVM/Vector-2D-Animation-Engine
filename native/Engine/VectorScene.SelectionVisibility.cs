@@ -141,11 +141,12 @@ internal sealed partial class VectorScene
     // Selection visibility is derived from current paint/layer state. It must not
     // delete source contours or cache only by GeometryRevision (opacity/lock and
     // layer presentation can change independently).
-    private int[] SelectionFillOccluders(int objectIndex, int frame, RectangleF bounds, bool strokePass = false)
+    private int[] SelectionFillOccluders(
+        int objectIndex, int frame, RectangleF bounds, bool strokePass = false, Func<int, bool>? objectFilter = null)
     {
         if (!HasPreparedSelectionOccluders(frame))
         {
-            return QuerySelectionFillOccluders(objectIndex, frame, bounds, strokePass);
+            return QuerySelectionFillOccluders(objectIndex, frame, bounds, strokePass, objectFilter);
         }
 
         var objectLayer = ObjectLayer[objectIndex];
@@ -163,6 +164,7 @@ internal sealed partial class VectorScene
             if (candidateLayer == objectLayer
                 && (strokePass || CompareObjectStack(candidate, objectIndex) <= 0)) continue;
             if (!IsObjectActive(candidate, frame) || !IsOpaqueSelectionFill(candidate)) continue;
+            if (objectFilter is not null && !objectFilter(candidate)) continue;
             (matched ??= new List<int>(SelectionOccluderClipBudget)).Add(candidate);
             if (matched.Count >= SelectionOccluderClipBudget) break;
         }
@@ -170,7 +172,8 @@ internal sealed partial class VectorScene
         return matched is null ? Array.Empty<int>() : matched.ToArray();
     }
 
-    private int[] QuerySelectionFillOccluders(int objectIndex, int frame, RectangleF bounds, bool strokePass)
+    private int[] QuerySelectionFillOccluders(
+        int objectIndex, int frame, RectangleF bounds, bool strokePass, Func<int, bool>? objectFilter = null)
     {
         var candidates = QueryObjects(bounds, frame, int.MaxValue);
         List<int>? matched = null;
@@ -186,6 +189,7 @@ internal sealed partial class VectorScene
                 continue;
             }
 
+            if (objectFilter is not null && !objectFilter(candidate)) continue;
             (matched ??= new List<int>(SelectionOccluderClipBudget)).Add(candidate);
             if (matched.Count >= SelectionOccluderClipBudget) break;
         }
@@ -219,18 +223,20 @@ internal sealed partial class VectorScene
             ? GetDistortedObjectBoundaryContours(objectIndex)
             : FillWorldContours(objectIndex);
 
-    internal bool IsSelectionPointExposed(int objectIndex, PointF world, int frame, bool strokePass = false)
+    internal bool IsSelectionPointExposed(
+        int objectIndex, PointF world, int frame, bool strokePass = false, Func<int, bool>? objectFilter = null)
     {
         var bounds = new RectangleF(world.X - 1, world.Y - 1, 2, 2);
-        return !SelectionFillOccluders(objectIndex, frame, bounds, strokePass)
+        return !SelectionFillOccluders(objectIndex, frame, bounds, strokePass, objectFilter)
             .Any(candidate => FillContainsPoint(candidate, world));
     }
 
-    private bool IsSelectionHitExposed(DrawingElementHit hit, PointF world, int frame)
+    private bool IsSelectionHitExposed(
+        DrawingElementHit hit, PointF world, int frame, Func<int, bool>? objectFilter = null)
     {
         var objectIndex = hit.Key.ObjectIndex;
         if (hit.Key.Kind == DrawingElementKind.Fill)
-            return IsSelectionPointExposed(objectIndex, world, frame);
+            return IsSelectionPointExposed(objectIndex, world, frame, objectFilter: objectFilter);
         if (!TryInverseMapObjectPoint(objectIndex, world, out var sourceWorld)) return false;
         var points = hit.Key.Kind == DrawingElementKind.Stroke
             ? StrokeSamples(objectIndex).Select(sample => sample.Point).ToArray()
@@ -248,7 +254,8 @@ internal sealed partial class VectorScene
             nearest = point;
             bestDistance = distance;
         }
-        return IsSelectionPointExposed(objectIndex, MapObjectPoint(objectIndex, nearest), frame, strokePass: true);
+        return IsSelectionPointExposed(
+            objectIndex, MapObjectPoint(objectIndex, nearest), frame, strokePass: true, objectFilter: objectFilter);
     }
 
     internal PointF[][] GetVisiblePathSelectionPolylines(int objectIndex, int frame, PointF[][]? contours = null, bool closed = true)

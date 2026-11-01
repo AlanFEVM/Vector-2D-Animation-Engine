@@ -1030,7 +1030,18 @@ internal static partial class Benchmark
         }
 
         PostCameraNavigationKey(stage.Handle, Keys.Right, down: false);
-        PumpCameraNavigationMessages(UiMotion.AnimationsEnabled ? 500 : 40);
+        var releaseStarted = Stopwatch.GetTimestamp();
+        do
+        {
+            PumpCameraNavigationMessages(20);
+        }
+        while (form.ReferenceCameraKeyboardNavigationActive
+            && Stopwatch.GetElapsedTime(releaseStarted).TotalMilliseconds < 2000);
+        if (form.ReferenceCameraKeyboardNavigationActive)
+        {
+            throw new InvalidOperationException("The queued camera key-up did not settle and stop continuous navigation within two seconds.");
+        }
+        var releaseMilliseconds = Stopwatch.GetElapsedTime(releaseStarted).TotalMilliseconds;
         var stopped = stage.CaptureReferenceCameraFrameForPersistence();
         PumpCameraNavigationMessages(80);
         AssertReferenceCameraFrameNear(
@@ -1041,6 +1052,7 @@ internal static partial class Benchmark
         {
             throw new InvalidOperationException("The queued camera key-up did not stop continuous navigation.");
         }
+        Console.WriteLine($"reference_camera_key_release_settle_ms={releaseMilliseconds:0.000}");
     }
 
     private static ReferenceCameraFrame MeasureReferenceCameraKeyboardMovement(

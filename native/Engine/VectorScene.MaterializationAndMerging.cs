@@ -2669,18 +2669,18 @@ internal sealed partial class VectorScene
         var strokeColor = Color.FromArgb(StrokeArgb[source]);
         var gradientPaint = CaptureGradientPaint(source);
         var atoms = AtomCount[source];
+        var curvePieces = BuildMarqueeBezierCurvePieces(source, bounds, selectionPolygon);
+        var curveIndex = new PolylineMatchIndex(curvePieces.Select(piece => piece.Samples).ToArray(), 2f);
         var hasInsideBezierContours = TryBuildMarqueeBezierContours(
-            source,
-            bounds,
             insideContours,
-            out var insideBezierContours,
-            selectionPolygon);
+            curvePieces,
+            curveIndex,
+            out var insideBezierContours);
         var hasOutsideBezierContours = TryBuildMarqueeBezierContours(
-            source,
-            bounds,
             outsideContours,
-            out var outsideBezierContours,
-            selectionPolygon);
+            curvePieces,
+            curveIndex,
+            out var outsideBezierContours);
         var boundaryParts = Stroke[source] > 0
             ? BuildMarqueeBoundaryParts(source, bounds, activeCandidates, selectionPolygon)
                 .Where(boundary => !IsBoundaryPartHitHidden(source, boundary.Part))
@@ -2858,18 +2858,12 @@ internal sealed partial class VectorScene
         return result;
     }
 
-    private bool TryBuildMarqueeBezierContours(
+    private MarqueeBezierCurvePiece[] BuildMarqueeBezierCurvePieces(
         int source,
         RectangleF bounds,
-        PointF[][] clippedContours,
-        out PathBezierNode[][] bezierContours,
         PointF[]? selectionPolygon = null)
     {
-        bezierContours = [];
-        if (!TryGetPathBezierWorldContours(source, out var exactContours) || clippedContours.Length == 0)
-        {
-            return false;
-        }
+        if (!TryGetPathBezierWorldContours(source, out var exactContours)) return [];
 
         var curvePieces = new List<MarqueeBezierCurvePiece>();
         foreach (var exact in BuildPathBezierSegmentParts(exactContours))
@@ -2897,11 +2891,22 @@ internal sealed partial class VectorScene
                 curvePieces.Add(new MarqueeBezierCurvePiece(piece, SampleCubicSegment(piece)));
             }
         }
+        return curvePieces.ToArray();
+    }
+
+    private static bool TryBuildMarqueeBezierContours(
+        PointF[][] clippedContours,
+        IReadOnlyList<MarqueeBezierCurvePiece> curvePieces,
+        PolylineMatchIndex curveIndex,
+        out PathBezierNode[][] bezierContours)
+    {
+        bezierContours = [];
+        if (curvePieces.Count == 0 || clippedContours.Length == 0) return false;
 
         var result = new PathBezierNode[clippedContours.Length][];
         for (var contourIndex = 0; contourIndex < clippedContours.Length; contourIndex++)
         {
-            if (!TryBuildMarqueeBezierContour(clippedContours[contourIndex], curvePieces, out result[contourIndex]))
+            if (!TryBuildMarqueeBezierContour(clippedContours[contourIndex], curvePieces, curveIndex, out result[contourIndex]))
             {
                 bezierContours = [];
                 return false;
@@ -2915,6 +2920,7 @@ internal sealed partial class VectorScene
     private static bool TryBuildMarqueeBezierContour(
         PointF[] clippedContour,
         IReadOnlyList<MarqueeBezierCurvePiece> curvePieces,
+        PolylineMatchIndex curveIndex,
         out PathBezierNode[] contour)
     {
         contour = [];
@@ -2923,15 +2929,17 @@ internal sealed partial class VectorScene
 
         const float matchToleranceUnits = 2f;
         var labels = Enumerable.Repeat(-1, anchors.Length).ToArray();
+        var candidates = new List<int>();
         for (var edgeIndex = 0; edgeIndex < anchors.Length; edgeIndex++)
         {
             var start = anchors[edgeIndex];
             var end = anchors[(edgeIndex + 1) % anchors.Length];
             var midpoint = Midpoint(start, end);
             var bestScore = float.MaxValue;
-            for (var curveIndex = 0; curveIndex < curvePieces.Count; curveIndex++)
+            curveIndex.FindCandidates(start, end, candidates);
+            foreach (var candidate in candidates)
             {
-                var samples = curvePieces[curveIndex].Samples;
+                var samples = curvePieces[candidate].Samples;
                 var startDistance = DistanceToPolyline(start, samples);
                 var endDistance = DistanceToPolyline(end, samples);
                 var middleDistance = DistanceToPolyline(midpoint, samples);
@@ -2940,7 +2948,7 @@ internal sealed partial class VectorScene
                 var score = startDistance + endDistance + middleDistance;
                 if (score >= bestScore) continue;
                 bestScore = score;
-                labels[edgeIndex] = curveIndex;
+                labels[edgeIndex] = candidate;
             }
         }
 

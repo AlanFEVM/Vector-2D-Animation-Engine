@@ -84,15 +84,17 @@ internal static partial class Benchmark
             {
                 var picked = QuadraticPoint(start, q, end, t);
                 var pointerStart = new PointF(picked.X + 2, picked.Y - 3);
-                var stationary = MainForm.ResolveQuadraticArcDragControl(q, pointerStart, pointerStart, t);
+                var stationary = MainForm.ResolveArcDragControl(q, pointerStart, pointerStart, quadratic: true);
                 AssertTimeline(PointsWithin(stationary, q, 0.0001f),
                     "The first quadratic drag sample snapped its control onto the pointer.");
                 var pointer = new PointF(pointerStart.X + 7, pointerStart.Y + 11);
-                var moved = MainForm.ResolveQuadraticArcDragControl(q, pointerStart, pointer, t);
-                var movedPick = QuadraticPoint(start, moved, end, t);
-                AssertTimeline(PointsWithin(movedPick, new PointF(picked.X + 7, picked.Y + 11), 0.001f),
-                    "The grabbed quadratic curve point did not follow the pointer delta.");
-                var returned = MainForm.ResolveQuadraticArcDragControl(q, pointerStart, pointerStart, t);
+                var moved = MainForm.ResolveArcDragControl(q, pointerStart, pointer, quadratic: true);
+                var originalMidpoint = QuadraticPoint(start, q, end, 0.5f);
+                var movedMidpoint = QuadraticPoint(start, moved, end, 0.5f);
+                AssertTimeline(PointsWithin(movedMidpoint,
+                    new PointF(originalMidpoint.X + 7, originalMidpoint.Y + 11), 0.001f),
+                    "Quadratic arc response accelerated near an endpoint instead of keeping a uniform bend gain.");
+                var returned = MainForm.ResolveArcDragControl(q, pointerStart, pointerStart, quadratic: true);
                 AssertTimeline(PointsWithin(returned, q, 0.0001f),
                     "Dragging a quadratic curve back to the press point accumulated geometry drift.");
             }
@@ -1446,8 +1448,10 @@ internal static partial class Benchmark
             || MainForm.ShouldShowPencilSettings(WorkspaceView.SceneEditor, ToolMode.Pencil)
             || MainForm.ResolveSimpleFreehandSmoothing(ToolMode.Pencil, -1) != 0
             || MainForm.ResolveSimpleFreehandSmoothing(ToolMode.Pencil, 101) != 100
-            || MainForm.ResolveSimpleFreehandSmoothing(ToolMode.Brush, 0) != 64
-            || MainForm.ResolveSimpleFreehandSmoothing(ToolMode.Brush, 100) != 64
+            || MainForm.ResolveSimpleFreehandSmoothing(ToolMode.Brush, 0) != 70
+            || MainForm.ResolveSimpleFreehandSmoothing(ToolMode.Brush, 100) != 70
+            || MainForm.ResolveSimpleFreehandSmoothing(ToolMode.Brush, 52, -1) != 0
+            || MainForm.ResolveSimpleFreehandSmoothing(ToolMode.Brush, 52, 101) != 100
             || MainForm.ResolveSimpleFreehandSmoothing(ToolMode.Eraser, 0) != 52
             || MainForm.ResolveSimpleFreehandSmoothing(ToolMode.Eraser, 100) != 52)
         {

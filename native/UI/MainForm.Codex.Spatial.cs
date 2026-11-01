@@ -752,6 +752,7 @@ internal sealed partial class MainForm
         _sceneViewDimensions[scene.Id] = dimension;
         if (documentChanged) _project.TrySetSceneDimension(scene.Id, dimension);
         _stage.ConfigureReferenceView(scene, dimension, ReferenceCameraMotion.Immediate);
+        RebuildSceneComposition();
         if (dimension == SceneDimension.ThreeD && _tool is ToolMode.Transform or ToolMode.Distort)
         {
             _tool = ToolMode.Transform3D;
@@ -761,6 +762,7 @@ internal sealed partial class MainForm
             _tool = ToolMode.Transform;
         }
         if (_selectionToolGroup.Contains(_tool)) _selectionToolGroup.ActiveTool = _tool;
+        if (_transformToolGroup?.Contains(_tool) == true) _transformToolGroup.ActiveTool = _tool;
         UpdateSceneDimensionButton();
         UpdateSpatialTransformPanelState();
         RefreshSceneOpticsInspector();

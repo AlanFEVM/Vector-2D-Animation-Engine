@@ -290,6 +290,7 @@ internal static partial class Benchmark
     private static void RunBitmapRasterSourceCacheRegression()
     {
         RunTimelineScrubRefreshRegression();
+        RunTimelineFrameReadoutRegression();
         var root = CreateTemporaryDirectory("bitmap-source-cache");
         var path = Path.Combine(root, "source.bmp");
         var settings = BitmapImageImportSettings.Default;
@@ -354,7 +355,10 @@ internal static partial class Benchmark
             try
             {
                 Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", null);
-                RunShotBitmapGpuScrubRegression(path);
+                var budgetMet = RunShotBitmapGpuScrubRegression(path);
+                budgetMet &= RunShotBitmapGpuScrubRegression(path, stationary: true);
+                AssertTimeline(budgetMet,
+                    "The complete bitmap scrub path exceeded the requested frame budget; see dynamic and stationary timings.");
             }
             finally { Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", previousGpu); }
             var reduced = BitmapImageRasterizer.Decode(path, settings with { MaxSize = 256 });
@@ -449,12 +453,157 @@ internal static partial class Benchmark
         strip.Capture = false;
         AssertTimeline(!strip.IsScrubbingPlayhead && completed == 2 && strip.CurrentFrame == frame,
             "Losing pointer capture left scrubbing active, duplicated completion or changed the frame.");
-        Console.WriteLine("timeline_scrub_refresh=noop_ok,range_change_ok,release_ok,capture_loss_ok");
+        strip.CurrentFrame = 0;
+        strip.Update();
+        invalidations.Clear();
+        using var initial = new Bitmap(strip.Width, strip.Height);
+        var paintSurface = RequireMethod(typeof(TimelineStrip), "OnPaint");
+        void PaintSurface(Bitmap bitmap, Region region)
+        {
+            using var graphics = Graphics.FromImage(bitmap);
+            graphics.SetClip(region, System.Drawing.Drawing2D.CombineMode.Replace);
+            using var paint = new PaintEventArgs(graphics, Rectangle.Ceiling(region.GetBounds(graphics)));
+            paintSurface.Invoke(strip, [paint]);
+        }
+        using (var full = new Region(strip.ClientRectangle)) PaintSurface(initial, full);
+        invalidations.Clear();
+        strip.CurrentFrame = 119;
+        var timeBoundsMethod = RequireMethod(typeof(TimelineStrip), "CursorTimeBounds");
+        var previousTimeBounds = (Rectangle)timeBoundsMethod.Invoke(strip, [layout, 0])!;
+        var nextTimeBounds = (Rectangle)timeBoundsMethod.Invoke(strip, [layout, 119])!;
+        var timeBounds = Rectangle.Union(previousTimeBounds, nextTimeBounds);
+        AssertTimeline(invalidations.Count > 0
+            && invalidations.All(bounds => bounds != strip.ClientRectangle
+                && (bounds.Left >= trackLeft || !timeBounds.IsEmpty && timeBounds.Contains(bounds))),
+            $"Following the playhead repainted the pinned timeline gutter or the entire toolbar: trackLeft={trackLeft}, "
+            + $"time={timeBounds}, client={strip.ClientRectangle}, invalidations={string.Join(';', invalidations)}.");
+        using var incremental = (Bitmap)initial.Clone();
+        using (var dirty = new Region(Rectangle.Empty))
+        {
+            foreach (var bounds in invalidations) dirty.Union(bounds);
+            PaintSurface(incremental, dirty);
+        }
+        using var complete = new Bitmap(strip.Width, strip.Height);
+        using (var full = new Region(strip.ClientRectangle)) PaintSurface(complete, full);
+        var incrementalPixels = new int[strip.Width * strip.Height];
+        var completePixels = new int[incrementalPixels.Length];
+        CopyBitmapPixels(incremental, incrementalPixels);
+        CopyBitmapPixels(complete, completePixels);
+        if (!incrementalPixels.SequenceEqual(completePixels))
+        {
+            using var dirty = new Region(Rectangle.Empty);
+            foreach (var bounds in invalidations) dirty.Union(bounds);
+            using var difference = new Bitmap(strip.Width, strip.Height);
+            var differenceBounds = Rectangle.Empty;
+            var differenceCount = 0;
+            var outsideDirtyCount = 0;
+            var samples = new List<string>();
+            for (var pixelIndex = 0; pixelIndex < incrementalPixels.Length; pixelIndex++)
+            {
+                if (incrementalPixels[pixelIndex] == completePixels[pixelIndex]) continue;
+                var pixelX = pixelIndex % strip.Width;
+                var pixelY = pixelIndex / strip.Width;
+                var pixelBounds = new Rectangle(pixelX, pixelY, 1, 1);
+                differenceBounds = differenceCount == 0 ? pixelBounds : Rectangle.Union(differenceBounds, pixelBounds);
+                differenceCount++;
+                var insideDirty = dirty.IsVisible(pixelX, pixelY);
+                if (!insideDirty) outsideDirtyCount++;
+                difference.SetPixel(pixelX, pixelY, insideDirty ? Color.Red : Color.Yellow);
+                if (samples.Count < 16)
+                    samples.Add($"({pixelX},{pixelY}):incremental={incrementalPixels[pixelIndex]:X8},"
+                        + $"complete={completePixels[pixelIndex]:X8},initial={initial.GetPixel(pixelX, pixelY).ToArgb():X8},dirty={insideDirty}");
+            }
+            using var repeated = new Bitmap(strip.Width, strip.Height);
+            using (var full = new Region(strip.ClientRectangle)) PaintSurface(repeated, full);
+            var repeatedPixels = new int[completePixels.Length];
+            CopyBitmapPixels(repeated, repeatedPixels);
+            var repeatedDifferenceCount = completePixels.Where((pixel, index) => pixel != repeatedPixels[index]).Count();
+            Console.WriteLine($"timeline_scroll_pixel_difference=count:{differenceCount},bounds:{differenceBounds},"
+                + $"outside_dirty:{outsideDirtyCount},full_repeat_difference:{repeatedDifferenceCount},"
+                + $"track_left:{trackLeft},invalidations:{string.Join(';', invalidations)}");
+            Console.WriteLine($"timeline_scroll_pixel_samples={string.Join(';', samples)}");
+            Console.WriteLine($"timeline_scroll_animation=phase:{RequireField(typeof(TimelineStrip), "_editingHighlightPhase").GetValue(strip)},"
+                + $"command:{RequireField(typeof(TimelineStrip), "_commandFeedback").GetValue(strip)},"
+                + $"layer_targets:{((Array)RequireField(typeof(TimelineStrip), "_layerFeedbackTargets").GetValue(strip)!).Length},"
+                + $"first_visible:{RequireField(typeof(TimelineStrip), "_firstVisibleFrame").GetValue(strip)}");
+            try
+            {
+                var captureDirectory = Path.Combine(AppContext.BaseDirectory, "validation",
+                    $"timeline-incremental-{DateTime.UtcNow:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}");
+                Directory.CreateDirectory(captureDirectory);
+                initial.Save(Path.Combine(captureDirectory, "initial.png"), ImageFormat.Png);
+                incremental.Save(Path.Combine(captureDirectory, "incremental.png"), ImageFormat.Png);
+                complete.Save(Path.Combine(captureDirectory, "complete.png"), ImageFormat.Png);
+                repeated.Save(Path.Combine(captureDirectory, "complete-repeat.png"), ImageFormat.Png);
+                difference.Save(Path.Combine(captureDirectory, "difference-red-dirty-yellow-outside.png"), ImageFormat.Png);
+                Console.WriteLine($"timeline_scroll_pixel_artifacts={captureDirectory}");
+            }
+            catch (Exception exception)
+            {
+                Console.WriteLine($"timeline_scroll_pixel_artifacts_failed={exception}");
+            }
+        }
+        AssertTimeline(incrementalPixels.SequenceEqual(completePixels),
+            "Incremental timeline scrolling left stale pixels or omitted frame feedback.");
+        Console.WriteLine("timeline_scrub_refresh=noop_ok,range_change_ok,release_ok,capture_loss_ok,scroll_pixels_ok");
     }
 
-    private static void RunShotBitmapGpuScrubRegression(string path)
+    private static void RunTimelineFrameReadoutRegression()
     {
-        var measureBudget = Environment.GetEnvironmentVariable("VECTOR_BENCH_SHOT_180") == "1";
+        using var host = new Form
+        {
+            ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+            Location = new Point(-32000, -32000), ClientSize = new Size(760, 160)
+        };
+        using var status = new StatusStrip();
+        Theme.StyleStatusStrip(status);
+        var item = (ToolStripControlHost)RequireMethod(typeof(MainForm), "CreateTimelineFrameStatus",
+            BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, null)!;
+        status.Items.Add(item);
+        host.Controls.Add(status);
+        host.Show();
+        var readout = item.Control;
+        var setReadout = RequireMethod(readout.GetType(), "SetReadout");
+        void SetReadout(string text, string sizingText)
+        {
+            setReadout.Invoke(readout, [text, sizingText]);
+            if (item.Size != readout.Size) item.Size = readout.Size;
+            item.AccessibleName = text;
+        }
+        SetReadout("Scene Frame 0 / 119", "Scene Frame 888 / 119");
+        Application.DoEvents();
+        var bounds = item.Bounds;
+        var layoutCount = 0;
+        var invalidations = new List<Rectangle>();
+        status.Layout += (_, _) => layoutCount++;
+        status.Invalidated += (_, args) => invalidations.Add(args.InvalidRect);
+        for (var frame = 0; frame < 120; frame++)
+        {
+            var text = $"Scene Frame {frame} / 119";
+            SetReadout(text, "Scene Frame 888 / 119");
+            AssertTimeline(item.Bounds == bounds && readout.AccessibleName == text
+                && item.AccessibleName == text
+                && (string)RequireProperty(readout.GetType(), "Readout").GetValue(readout)! == text,
+                "The frame readout moved or lost its visible/accessibility value while scrubbing.");
+        }
+        AssertTimeline(layoutCount == 0 && invalidations.Count == 0,
+            "Updating the frame readout relaid out or repainted the entire status bar.");
+        using var largeFont = new Font(readout.Font.FontFamily, readout.Font.Size + 4);
+        readout.Font = largeFont;
+        AssertTimeline(readout.Height > bounds.Height,
+            $"The frame readout did not recalculate its height after a font change: original={bounds}, readout={readout.Size}, host={item.Size}, font={readout.Font.Size}, measured={TextRenderer.MeasureText("Scene Frame 888 / 119", readout.Font)}.");
+        SetReadout("很长的场景名称 Frame 99999 / 99999", "很长的场景名称 Frame 88888 / 99999");
+        AssertTimeline(readout.Width > bounds.Width && !readout.TabStop,
+            "A longer context name or frame range clipped the readout or made it steal keyboard focus.");
+        Console.WriteLine("timeline_frame_readout=stable_bounds,local_invalidation,live_text,font_resize,long_context");
+    }
+
+    private static bool RunShotBitmapGpuScrubRegression(string path, bool stationary = false)
+    {
+        var measure180 = Environment.GetEnvironmentVariable("VECTOR_BENCH_SHOT_180") == "1";
+        var measure120 = Environment.GetEnvironmentVariable("VECTOR_BENCH_SHOT_120") == "1";
+        var measureBudget = measure180 || measure120;
+        var metricPrefix = stationary ? "shot_bitmap_static_scrub" : "shot_bitmap_scrub";
         using var form = new MainForm
         {
             ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
@@ -480,8 +629,8 @@ internal static partial class Benchmark
             OrthographicSize = 1000, X = 0, Y = 0, RotationDegrees = 0
         };
         definition.UpdateShotAtFrame(shot.Id, 0, camera);
-        definition.UpdateShotAtFrame(shot.Id, 119, camera with { X = 80, RotationDegrees = 12 });
-        definition.UpdateShotMicroMotion(shot.Id, new SceneShotMicroMotionSettings { Enabled = true }
+        definition.UpdateShotAtFrame(shot.Id, 119, stationary ? camera : camera with { X = 80, RotationDegrees = 12 });
+        definition.UpdateShotMicroMotion(shot.Id, new SceneShotMicroMotionSettings { Enabled = !stationary }
             .WithHandheldDefaults(camera, stage.CanvasWorldWidth, stage.CanvasWorldHeight));
         foreach (var track in definition.Timeline.Tracks.ToArray()) definition.Timeline.SetTrackDuration(track.Id, 120);
         tabs.SelectedView = WorkspaceView.ShotDirector;
@@ -510,6 +659,8 @@ internal static partial class Benchmark
             var started = Stopwatch.GetTimestamp();
             timeline.CurrentFrame = frame;
             var setFrameMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            AssertTimeline(stage.Frame == frame && stage.RenderedFrameCount > rendered,
+                "A playhead drag deferred the requested Stage frame until a later idle paint.");
             stage.Update();
             Application.DoEvents();
             var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
@@ -520,6 +671,10 @@ internal static partial class Benchmark
                 + $"painted={stage.RenderedFrameCount - rendered}, direct2d={stage.LastFrameUsedDirect2D}, "
                 + $"gpu={stage.GpuAccelerationActive}, drawn={stage.LastStats.DrawnObjects}, "
                 + $"shot={stage.ShotWorkspacePreviewActive}, mode={stage.ShotPreviewMode}.");
+            var presented = stage.RenderedFrameCount;
+            timeline.CurrentFrame = frame;
+            AssertTimeline(stage.RenderedFrameCount == presented,
+                "Holding the same timeline frame presented a duplicate frame to inflate the render rate.");
             if (sample == -1) sourceReads = BitmapImageRasterizer.SourceReadCount;
             if (sample >= 0)
             {
@@ -562,23 +717,31 @@ internal static partial class Benchmark
         var average = samples.Average();
         var percentile95 = samples[(int)Math.Ceiling(samples.Length * 0.95) - 1];
         var maximum = samples[^1];
-        Console.WriteLine($"shot_bitmap_scrub_viewport={stage.Width}x{stage.Height}");
-        Console.WriteLine("shot_bitmap_scrub_source=1280x720");
-        Console.WriteLine($"shot_bitmap_scrub_samples={samples.Length}");
-        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_average_ms={average:0.###}"));
-        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_p95_ms={percentile95:0.###}"));
-        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_max_ms={maximum:0.###}"));
-        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_fps={1000 / average:0.###}"));
-        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_set_frame_average_ms={setFrameSamples.Average():0.###}"));
-        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_render_average_ms={renderSamples.Average():0.###}"));
-        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_gpu_commands_average_ms={commandSamples.Average():0.###}"));
-        Console.WriteLine(FormattableString.Invariant($"shot_bitmap_scrub_gpu_present_average_ms={presentSamples.Average():0.###}"));
-        if (measureBudget)
+        Console.WriteLine($"{metricPrefix}_viewport={stage.Width}x{stage.Height}");
+        Console.WriteLine($"{metricPrefix}_source=1280x720");
+        Console.WriteLine($"{metricPrefix}_samples={samples.Length}");
+        Console.WriteLine(FormattableString.Invariant($"{metricPrefix}_average_ms={average:0.###}"));
+        Console.WriteLine(FormattableString.Invariant($"{metricPrefix}_p95_ms={percentile95:0.###}"));
+        Console.WriteLine(FormattableString.Invariant($"{metricPrefix}_max_ms={maximum:0.###}"));
+        Console.WriteLine(FormattableString.Invariant($"{metricPrefix}_fps={1000 / average:0.###}"));
+        Console.WriteLine(FormattableString.Invariant($"{metricPrefix}_frame_event_average_ms={setFrameSamples.Average():0.###}"));
+        Console.WriteLine(FormattableString.Invariant($"{metricPrefix}_render_average_ms={renderSamples.Average():0.###}"));
+        Console.WriteLine(FormattableString.Invariant($"{metricPrefix}_gpu_commands_average_ms={commandSamples.Average():0.###}"));
+        Console.WriteLine(FormattableString.Invariant($"{metricPrefix}_gpu_present_average_ms={presentSamples.Average():0.###}"));
+        var budgetMet = true;
+        if (measure180)
         {
             var met = maximum <= 1000d / 180;
-            Console.WriteLine($"shot_bitmap_scrub_180_budget_met={met.ToString().ToLowerInvariant()}");
-            AssertTimeline(met, "The complete bitmap scrub path exceeded the 180 FPS (5.556 ms) frame budget.");
+            Console.WriteLine($"{metricPrefix}_180_budget_met={met.ToString().ToLowerInvariant()}");
+            budgetMet &= met;
         }
+        if (measure120)
+        {
+            var met = maximum <= 1000d / 120;
+            Console.WriteLine($"{metricPrefix}_120_budget_met={met.ToString().ToLowerInvariant()}");
+            budgetMet &= met;
+        }
+        return budgetMet;
     }
 
     private sealed class ShotScrubInputScope : IMessageFilter, IDisposable

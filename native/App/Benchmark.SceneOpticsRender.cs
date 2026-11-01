@@ -3732,6 +3732,9 @@ internal static partial class Benchmark
         var addItem = typeof(MainForm).GetField("_addSceneLightContextMenuItem", privateInstance)?.GetValue(form)
             as ToolStripMenuItem
             ?? throw new InvalidOperationException("3D light-menu regression could not find Add light.");
+        var convertItem = typeof(MainForm).GetField("_scene3DConvertToSymbolMenuItem", privateInstance)?.GetValue(form)
+            as ToolStripMenuItem
+            ?? throw new InvalidOperationException("3D light-menu regression could not find Convert to Symbol.");
         var menuIcons = typeof(MainForm).GetField("_scene3DLightMenuIcons", privateInstance)?.GetValue(form)
             as Dictionary<SceneLightKind, Bitmap>
             ?? throw new InvalidOperationException("3D light-menu regression could not inspect type icons.");
@@ -3800,12 +3803,13 @@ internal static partial class Benchmark
             SceneLightKind.Area,
             SceneLightKind.Ambient
         };
-        if (contextMenu.Items.Count != 1
-            || !ReferenceEquals(contextMenu.Items[0], addItem)
+        if (contextMenu.Items.Count != 2
+            || !ReferenceEquals(contextMenu.Items[0], convertItem)
+            || !ReferenceEquals(contextMenu.Items[1], addItem)
             || addItem.Image is null
             || addItem.DropDownItems.Count != expectedKinds.Length)
         {
-            throw new InvalidOperationException("The 3D light menu did not expose one typed Add light command.");
+            throw new InvalidOperationException("The 3D menu did not expose Convert to Symbol followed by one typed Add light command.");
         }
 
         static string KindLabel(SceneLightKind kind) => kind switch
@@ -3818,7 +3822,8 @@ internal static partial class Benchmark
 
         void AssertLanguage(UiLanguage language)
         {
-            if (addItem.Text != UiLocalization.T("Add light", language)
+            if (convertItem.Text != UiLocalization.T("Convert to Symbol", language)
+                || addItem.Text != UiLocalization.T("Add light", language)
                 || addItem.AccessibleName != UiLocalization.T("Add light", language))
             {
                 throw new InvalidOperationException($"The Add light command was not localized for {language}.");

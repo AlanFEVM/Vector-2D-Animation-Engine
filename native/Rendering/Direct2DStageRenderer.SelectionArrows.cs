@@ -21,39 +21,22 @@ internal sealed partial class Direct2DStageRenderer
         {
             _target.Transform = transform * Matrix3x2.CreateTranslation(
                 stage.WorldLengthToScreen(1) * offset.X, stage.WorldLengthToScreen(1) * offset.Y);
-            foreach (var fill in stage.ObjectArrowSelectedFills())
+            var mask = stage.GetObjectArrowStippleMask();
+            stipple.Transform = Matrix3x2.CreateTranslation(WorldToVector(stage, mask.PatternOrigin));
+            using var path = _factory!.CreatePathGeometry();
+            using (var sink = path.Open())
             {
-                stipple.Transform = Matrix3x2.CreateTranslation(WorldToVector(stage, fill.PatternOrigin));
-                using var path = _factory!.CreatePathGeometry();
-                using (var sink = path.Open())
+                sink.SetFillMode(FillMode.Alternate);
+                foreach (var contour in mask.Contours)
                 {
-                    sink.SetFillMode(FillMode.Alternate);
-                    foreach (var contour in fill.Contours)
-                    {
-                        if (contour.Length < 3) continue;
-                        sink.BeginFigure(WorldToVector(stage, contour[0]), FigureBegin.Filled);
-                        foreach (var point in contour.Skip(1)) sink.AddLine(WorldToVector(stage, point));
-                        sink.EndFigure(FigureEnd.Closed);
-                    }
-                    sink.Close();
+                    if (contour.Length < 3) continue;
+                    sink.BeginFigure(WorldToVector(stage, contour[0]), FigureBegin.Filled);
+                    foreach (var point in contour.Skip(1)) sink.AddLine(WorldToVector(stage, point));
+                    sink.EndFigure(FigureEnd.Closed);
                 }
-                _target.FillGeometry(path, stipple);
+                sink.Close();
             }
-            foreach (var stroke in stage.ObjectArrowSelectedStrokes())
-            {
-                stipple.Transform = Matrix3x2.CreateTranslation(WorldToVector(stage, stroke.PatternOrigin));
-                var strokeWidth = Math.Max(1, stage.WorldLengthToScreen(stage.Scene.Stroke[stroke.ObjectIndex]));
-                foreach (var contour in stroke.Contours)
-                {
-                    if (contour.Length > 1)
-                    {
-                        using var path = BuildSelectionPolylinePath(contour.Select(point => WorldToVector(stage, point)).ToArray());
-                        _target.DrawGeometry(path, stipple, strokeWidth, RoundStrokeStyle());
-                    }
-                    else if (contour.Length == 1)
-                        _target.FillEllipse(new Ellipse(WorldToVector(stage, contour[0]), strokeWidth / 2, strokeWidth / 2), stipple);
-                }
-            }
+            _target.FillGeometry(path, stipple);
         }
         finally { _target.Transform = transform; }
         foreach (var objectIndex in stage.SelectedObjects)

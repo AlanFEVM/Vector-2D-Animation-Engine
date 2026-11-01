@@ -5,15 +5,14 @@ internal static class ParallelBatch
     public const int DefaultMinItemsPerWorker = 4096;
     private static readonly AsyncLocal<int?> WorkerLimit = new();
 
-    public static int MaximumWorkerCount
+    public static int MaximumWorkerCount => MaximumWorkerCountFor(8);
+
+    public static int MaximumWorkerCountFor(int workerCeiling)
     {
-        get
-        {
-            var processorCount = Environment.ProcessorCount;
-            if (processorCount <= 1) return 1;
-            var maximum = Math.Min(8, Math.Max(2, processorCount - 1));
-            return Math.Min(maximum, WorkerLimit.Value ?? maximum);
-        }
+        var processorCount = Environment.ProcessorCount;
+        if (processorCount <= 1) return 1;
+        var maximum = Math.Min(Math.Max(1, workerCeiling), Math.Max(2, processorCount - 1));
+        return Math.Min(maximum, WorkerLimit.Value ?? maximum);
     }
 
     public static IDisposable PushWorkerLimit(int maximumWorkers)

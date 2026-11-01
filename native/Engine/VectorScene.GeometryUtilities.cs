@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 using Clipper2Lib;
 
 namespace VectorAnimationEngine;
@@ -173,9 +174,38 @@ internal sealed partial class VectorScene
 
     internal static PointF[] SampleOpenFreehandBezierNodes(IReadOnlyList<PathBezierNode> nodes)
     {
-        return SampleOpenFreehandBezierNodesWithParameters(nodes)
-            .Select(sample => sample.Point)
-            .ToArray();
+        if (nodes.Count < 2) return [];
+        var result = new List<PointF>(nodes.Count * 4);
+        var samples = new List<CurveSample>(32);
+        for (var segmentIndex = 0; segmentIndex < nodes.Count - 1; segmentIndex++)
+        {
+            var current = nodes[segmentIndex];
+            var next = nodes[segmentIndex + 1];
+            if (!Finite(current.Anchor) || !Finite(current.OutgoingControl)
+                || !Finite(next.IncomingControl) || !Finite(next.Anchor)) return [];
+            var curve = new CubicBoundarySegment(current.Anchor, current.OutgoingControl,
+                next.IncomingControl, next.Anchor);
+            if (Distance(curve.Control1, Lerp(curve.Start, curve.End, 1f / 3f)) <= 1f
+                && Distance(curve.Control2, Lerp(curve.Start, curve.End, 2f / 3f)) <= 1f)
+            {
+                if (segmentIndex == 0) Append(curve.Start);
+                Append(curve.End);
+                continue;
+            }
+            samples.Clear();
+            samples.Add(new CurveSample(0, curve.Start));
+            AddAdaptiveCubicSamples(samples, curve.Start, curve.Control1, curve.Control2, curve.End, 0, 1, 0);
+            samples.Add(new CurveSample(1, curve.End));
+            for (var index = segmentIndex == 0 ? 0 : 1; index < samples.Count; index++)
+                Append(samples[index].Point);
+        }
+        return result.ToArray();
+
+        void Append(PointF point)
+        {
+            point = VectorUnits.Quantize(point);
+            if (result.Count == 0 || result[^1] != point) result.Add(point);
+        }
     }
 
     private static OpenBezierSample[] SampleOpenFreehandBezierNodesWithParameters(
@@ -386,18 +416,19 @@ internal sealed partial class VectorScene
     private static PointF[] SamplePathBezierContour(IReadOnlyList<PathBezierNode> contour)
     {
         var result = new List<PointF>(contour.Count * 4);
+        var samples = new List<CurveSample>(32);
         for (var segmentIndex = 0; segmentIndex < contour.Count; segmentIndex++)
         {
             var current = contour[segmentIndex];
             var next = contour[(segmentIndex + 1) % contour.Count];
-            var samples = SampleCubicSegment(new CubicBoundarySegment(
-                current.Anchor,
-                current.OutgoingControl,
-                next.IncomingControl,
-                next.Anchor));
-            for (var sampleIndex = segmentIndex == 0 ? 0 : 1; sampleIndex < samples.Length; sampleIndex++)
+            samples.Clear();
+            samples.Add(new CurveSample(0, current.Anchor));
+            AddAdaptiveCubicSamples(samples, current.Anchor, current.OutgoingControl,
+                next.IncomingControl, next.Anchor, 0, 1, 0);
+            samples.Add(new CurveSample(1, next.Anchor));
+            for (var sampleIndex = segmentIndex == 0 ? 0 : 1; sampleIndex < samples.Count; sampleIndex++)
             {
-                result.Add(samples[sampleIndex]);
+                result.Add(samples[sampleIndex].Point);
             }
         }
 
@@ -494,6 +525,18 @@ internal sealed partial class VectorScene
 
     private static PointF[] NormalizeFreehandPoints(IReadOnlyList<PointF> points)
     {
+        if (points is PointF[] array)
+        {
+            var normalized = true;
+            for (var index = 0; index < array.Length; index++)
+            {
+                if (array[index] == VectorUnits.Quantize(array[index])
+                    && (index == 0 || array[index - 1] != array[index])) continue;
+                normalized = false;
+                break;
+            }
+            if (normalized) return array;
+        }
         var result = new List<PointF>(points.Count);
         foreach (var source in points)
         {
@@ -922,6 +965,7 @@ internal sealed partial class VectorScene
                 + t * t * (end.Y - control2.Y)));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static float DistanceToSegment(PointF point, PointF start, PointF end)
     {
         var vx = end.X - start.X;
