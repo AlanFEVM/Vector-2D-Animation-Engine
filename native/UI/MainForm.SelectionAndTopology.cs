@@ -278,6 +278,49 @@ internal sealed partial class MainForm : Form
         var startScreen = _marqueeStart ?? endScreen;
         var dx = endScreen.X - startScreen.X;
         var dy = endScreen.Y - startScreen.Y;
+        if (!sceneCompositionContext && _stage.CanvasRotation != 0 && Math.Abs(dx) + Math.Abs(dy) > 6)
+        {
+            CompleteRotatedStageMarquee(startScreen, endScreen);
+            return;
+        }
+        if (sceneCompositionContext && _stage.UsesReferenceProjection)
+        {
+            CompleteProjectedStageInstanceMarquee(startScreen, endScreen);
+            _marqueeSelecting = false;
+            _marqueeStart = null;
+            _stage.ClearMarquee();
+            UpdateInspector();
+            _stage.Invalidate();
+            return;
+        }
+        if (_subtractMarquee)
+        {
+            if (Math.Abs(dx) + Math.Abs(dy) > 6)
+            {
+                var a = _stage.ScreenToWorld(startScreen);
+                var b = _stage.ScreenToWorld(endScreen);
+                var bounds = RectangleF.FromLTRB(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Max(a.X, b.X), Math.Max(a.Y, b.Y));
+                var hits = sceneCompositionContext ? [] : _scene.QueryDrawingElementsInsideBounds(bounds, _frame)
+                    .Select(hit => hit.Key.ObjectIndex).ToArray();
+                var hitSet = hits.ToHashSet();
+                var objects = _marqueeSelectionBase.Where(i => _intersectMarquee == hitSet.Contains(i));
+                var hitInstances = FindCompositionInstancesInsideBounds(ActiveInstanceCompositionScene(),
+                    ActiveInstanceCompositionResult(), ActiveEditableInstances(), bounds,
+                    UsesFlatSceneMaskSelectionClipping(ActiveInstanceCompositionScene()) ? _stage.SceneCompositionMaskClips : null)
+                    .Select(instance => instance.Id).ToHashSet(StringComparer.Ordinal);
+                var baseIds = _marqueeInstanceSelectionBase.ToHashSet(StringComparer.Ordinal);
+                var instances = ActiveEditableInstances().Where(instance => baseIds.Contains(instance.Id)
+                    && _intersectMarquee == hitInstances.Contains(instance.Id)).ToArray();
+                SetMixedSelection(objects, instances, instances.LastOrDefault());
+            }
+            else RestoreMarqueeBaseSelection();
+            _marqueeSelecting = false;
+            _marqueeStart = null;
+            _stage.ClearMarquee();
+            UpdateInspector();
+            _stage.Invalidate();
+            return;
+        }
         if (sceneCompositionContext)
         {
             if (Math.Abs(dx) + Math.Abs(dy) > 6)
@@ -742,6 +785,7 @@ internal sealed partial class MainForm : Form
     private readonly System.Windows.Forms.Timer _viewNavigationIdleTimer = new() { Interval = 250 };
     private bool _transientViewNavigationActive;
     private long _lastViewNavigationInput;
+    private long _lastNavigationStatusUpdate;
     private bool CanvasNavigationFeedbackSuspended =>
         CanvasViewDragActive || _transientViewNavigationActive || _spacePanHeld;
 
@@ -749,11 +793,13 @@ internal sealed partial class MainForm : Form
     {
         // Preserve live drawing/edit sessions; only suppress idle tool feedback.
         if (_lastMouse is not null || _tabletPressurePointerId is not null) return;
+        var enteringNavigation = !_transientViewNavigationActive;
         _transientViewNavigationActive = true;
         _lastViewNavigationInput = Stopwatch.GetTimestamp();
-        ClearCanvasNavigationFeedback();
-        _viewNavigationIdleTimer.Stop();
-        _viewNavigationIdleTimer.Start();
+        if (enteringNavigation) ClearCanvasNavigationFeedback();
+        // The tick checks the last input timestamp. Recreating the native timer
+        // and clearing every overlay on every wheel event stalls navigation.
+        if (!_viewNavigationIdleTimer.Enabled) _viewNavigationIdleTimer.Start();
     }
 
     private void EndTransientViewNavigation(bool restoreFeedback)
@@ -761,6 +807,7 @@ internal sealed partial class MainForm : Form
         _viewNavigationIdleTimer.Stop();
         if (!_transientViewNavigationActive) return;
         _transientViewNavigationActive = false;
+        if (!IsDisposed && !Disposing) UpdateStatusBar();
         if (restoreFeedback) PostDeferredPresentationRefresh();
         if (!restoreFeedback || IsDisposed || Disposing || CanvasViewDragActive || _lastMouse is not null) return;
         var screen = _stage.PointToClient(Cursor.Position);
@@ -786,7 +833,14 @@ internal sealed partial class MainForm : Form
             else _stage.DollyReferenceCamera(e.Delta);
         }
         else _stage.ZoomAt(e.Location, MathF.Pow(1.12f, e.Delta / 120f), interactivePreview: true);
-        UpdateStatusBar();
+        // StatusStrip text changes cause a separate GDI repaint/layout. Merge
+        // those during high-rate wheel input; the settled value is exact.
+        var now = Stopwatch.GetTimestamp();
+        if (Stopwatch.GetElapsedTime(_lastNavigationStatusUpdate, now).TotalMilliseconds >= 100)
+        {
+            _lastNavigationStatusUpdate = now;
+            UpdateStatusBar();
+        }
     }
 
     private void ClearCanvasNavigationFeedback()
@@ -974,13 +1028,17 @@ internal sealed partial class MainForm : Form
     private IReadOnlyList<DrawingObjectInstanceDefinition> ActiveEditableInstances()
     {
         if (IsSceneMaskEditing()) return [];
-        if (!IsSceneCompositionContext()) return ActiveDrawingObject()?.Instances ?? [];
         var sceneDefinition = ActiveScene();
-        return sceneDefinition?.Instances.Where(instance =>
+        IReadOnlyList<DrawingObjectInstanceDefinition> instances = IsSceneCompositionContext()
+            ? sceneDefinition?.Instances ?? []
+            : ActiveDrawingObject()?.Instances ?? [];
+        return instances.Where(instance =>
         {
+            if (instance.EditorHidden || instance.EditorLocked) return false;
+            if (!IsSceneCompositionContext() || sceneDefinition is null) return true;
             var layer = Array.IndexOf(sceneDefinition.DrawingScene.LayerIds, instance.SceneLayerId);
             return layer >= 0 && !sceneDefinition.DrawingScene.IsLayerEffectivelyLocked(layer);
-        }).ToArray() ?? [];
+        }).ToArray();
     }
 
     private void RestoreTimelineInstanceSelection(
@@ -1034,7 +1092,8 @@ internal sealed partial class MainForm : Form
             out instance,
             UsesFlatSceneMaskSelectionClipping(compositionScene)
                 ? _stage.SceneCompositionMaskClips
-                : null)) return false;
+                : null,
+            _stage)) return false;
         if (IsSceneCompositionContext() && !IsSceneDrawingContext()) return true;
 
         var localHit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
@@ -1053,12 +1112,28 @@ internal sealed partial class MainForm : Form
         int frame,
         float toleranceWorld,
         out DrawingObjectInstanceDefinition instance,
-        IReadOnlyList<SceneCompositionMaskClip>? maskClips = null)
+        IReadOnlyList<SceneCompositionMaskClip>? maskClips = null,
+        StageControl? maskStage = null)
     {
         ArgumentNullException.ThrowIfNull(compositionScene);
         ArgumentNullException.ThrowIfNull(compositionResult);
         ArgumentNullException.ThrowIfNull(instances);
         instance = null!;
+        if (maskStage is not null && compositionResult.LayerMasks is { ContentsByMaskLayer.Count: > 0 } plan)
+        {
+            using var regions = new SceneCompositionMaskRegions(compositionScene, plan, frame,
+                index => maskStage.CreateCompositionMaskObjectPaths(compositionScene, index));
+            var screen = maskStage.WorldToScreen(world.X, world.Y);
+            var hit = compositionScene.HitTestElement(world, frame, toleranceWorld, objectIndex =>
+            {
+                var layer = compositionScene.ObjectLayer[objectIndex];
+                if (StageControl.IsCompositionMaskArtworkHidden(compositionScene, plan, layer)) return false;
+                using var clip = regions.CreateLayerClip(layer);
+                return clip is null || clip.IsVisible(screen);
+            });
+            return hit.IsValid && TryResolveCompositionObjectOwner(
+                compositionResult, instances, hit.Key.ObjectIndex, out instance);
+        }
         if (!SceneMaskSelectionHasClips(compositionScene, maskClips))
         {
             var hit = compositionScene.HitTestElement(world, frame, toleranceWorld);
@@ -1817,7 +1892,9 @@ internal sealed partial class MainForm : Form
         SyncSelectionToStage(deferPresentation, syncTimelineLayer);
     }
 
-    private bool SelectAllObjectsInCurrentFrame()
+    private bool SelectAllObjectsInCurrentFrame() => SelectCurrentFrameObjects(invert: false);
+
+    private bool SelectCurrentFrameObjects(bool invert)
     {
         if (IsShotDirectorContext()) return false;
         var objectIndices = Array.Empty<int>();
@@ -1841,6 +1918,11 @@ internal sealed partial class MainForm : Form
         var visibleInstances = FindVisibleCompositionInstances(
             ActiveInstanceCompositionResult(),
             editableInstances);
+        if (invert)
+        {
+            objectIndices = objectIndices.Except(_selectedObjects).ToArray();
+            visibleInstances = visibleInstances.Where(instance => !_selectedSceneInstanceIds.Contains(instance.Id)).ToArray();
+        }
         if (visibleInstances.Count > 0)
         {
             SetMixedSelection(objectIndices, visibleInstances, visibleInstances[^1]);
@@ -2689,7 +2771,7 @@ internal sealed partial class MainForm : Form
 
     private PointF SnapDrawingPoint(PointF point)
     {
-        return _drawSettings.SnapPoint(point, _stage.AdaptiveGridSnapStep);
+        return ResolveSmartDrawingPoint(point);
     }
 
     private void UpdateDrawingPreview(PointF start, PointF end, ToolMode tool)
@@ -2701,7 +2783,6 @@ internal sealed partial class MainForm : Form
         }
         else
         {
-            start = VectorUnits.Quantize(SnapDrawingPoint(start));
             end = VectorUnits.Quantize(SnapDrawingPoint(end));
             (start, end) = ResolveShapeDragBounds(
                 start,

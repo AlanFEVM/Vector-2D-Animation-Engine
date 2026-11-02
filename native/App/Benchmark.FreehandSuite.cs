@@ -11,6 +11,11 @@ internal static partial class Benchmark
         RunPressurePreviewStabilityRegression();
         RunObjectDrawingRegression();
         RunShortcutProfileExpansionRegression();
+        RunStageShortcutEditingRegression();
+        RunStageInstanceShortcutRegression();
+        RunCanvasRotationShortcutRegression();
+        RunLinePointerReleaseRegression();
+        RunConnectedAnchorCurveDragRegression();
         RunMarqueeUndoTopologyRegression();
         RunMarqueeCurvePerformanceRegression();
         RunLinkedFillBoundaryRegression();

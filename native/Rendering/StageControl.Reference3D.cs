@@ -334,6 +334,7 @@ internal readonly record struct Reference3DPlaybackPreparationState(
     GraphicsUnit FontUnit,
     bool UseGpuOptics)
 {
+    public bool ExperimentalSceneLightingEnabled { get; init; }
     public bool Experimental3DEnabled { get; init; } = true;
     public SceneCanvasPresentation? CanvasPresentation { get; init; }
 }
@@ -444,7 +445,23 @@ internal sealed partial class StageControl
         int OpticalRasterLod,
         bool GpuOpticsEnabled,
         long Epoch,
-        bool SubstituteOutlineItems);
+        bool SubstituteOutlineItems,
+        bool Unculled);
+
+    internal bool ReferenceNavigationRecording { get; set; }
+    private long _referenceNavigationContentRevision;
+
+    // Only XY navigation is removed. Depth, orientation, composition, content,
+    // visibility and viewport changes must still rebuild the retained commands.
+    internal object CreateReferenceNavigationContentKey() =>
+        CreateReference3DRenderPlanCacheKey(false) with
+        { ZoomScale = 1, TargetX = 0, TargetY = 0, Unculled = true,
+            Epoch = _referenceNavigationContentRevision, OpticalRasterLod = 0 };
+
+    internal bool CanRetainReferenceNavigation => !_referenceCameraTransitionActive
+        && !RequiresReference3DOffscreenOpticalSurfaces && !UsesSceneOpticsProjection
+        && EffectiveReferenceProjection == CameraProjection.Orthographic
+        && EffectiveReferenceYaw == 0 && EffectiveReferencePitch == 0;
 
     private readonly record struct Reference3DActiveLayerObjectCacheKey(
         VectorScene Scene,
@@ -538,6 +555,7 @@ internal sealed partial class StageControl
             _direct2DRenderer.ExplicitGpuDeviceActive
                 && ReferenceDimension == SceneDimension.ThreeD)
         {
+            ExperimentalSceneLightingEnabled = this.ExperimentalSceneLightingEnabled,
             Experimental3DEnabled = this.Experimental3DEnabled,
             CanvasPresentation = this.CanvasPresentation
         };
@@ -551,6 +569,7 @@ internal sealed partial class StageControl
         ArgumentNullException.ThrowIfNull(scene);
         ArgumentNullException.ThrowIfNull(composition);
 
+        ExperimentalSceneLightingEnabled = state.ExperimentalSceneLightingEnabled;
         Experimental3DEnabled = state.Experimental3DEnabled;
         Scene = scene;
         _frame = Math.Max(0, frame);
@@ -631,7 +650,13 @@ internal sealed partial class StageControl
         }
     }
 
-    internal bool UsesSceneOpticsProjection => Experimental3DEnabled && UsesReferenceProjection
+    internal bool ExperimentalSceneLightingEnabled
+    {
+        get => _experimentalSceneLightingEnabled;
+        set { if (_experimentalSceneLightingEnabled == value) return; _experimentalSceneLightingEnabled = value; InvalidateReference3DRenderPlanCache(); ClearGdiBaseFrameCache(); _direct2DRenderer.ReleaseTarget(); Invalidate(); }
+    }
+    private bool _experimentalSceneLightingEnabled;
+    internal bool UsesSceneOpticsProjection => ExperimentalSceneLightingEnabled && Experimental3DEnabled && UsesReferenceProjection
         && ReferenceEquals(_sceneCompositionResultScene, Scene)
         && _referenceSceneDefinition?.LightingInitialized == true;
     internal CameraProjection EffectiveReferenceProjection =>
@@ -1169,8 +1194,9 @@ internal sealed partial class StageControl
 
         var scale = 0.035f * _referenceZoomScale;
         if (scale <= 0.000001f) return false;
-        var cameraX = (screen.X - Width * 0.5f) / scale;
-        var cameraY = -(screen.Y - Height * 0.58f) / scale;
+        var unrotated = UnrotateCanvasScreenPoint(screen);
+        var cameraX = (unrotated.X - Width * 0.5f) / scale;
+        var cameraY = -(unrotated.Y - Height * 0.58f) / scale;
         Vector3 cameraOrigin;
         Vector3 cameraDirection;
         var perspectiveBlend = ReferenceProjectionBlend;
@@ -1199,19 +1225,77 @@ internal sealed partial class StageControl
         Point screen,
         float tolerancePixels,
         out int objectIndex)
+        => TryHitTestProjectedObjectFiltered(screen, tolerancePixels, out objectIndex, null);
+
+    internal IReadOnlyDictionary<int, RectangleF> GetProjectedSelectionObjectBounds()
+    {
+        var result = new Dictionary<int, RectangleF>();
+        foreach (var item in GetReference3DDrawingItems())
+        {
+            if ((uint)item.ObjectIndex >= Scene.ObjectCount || IsObjectHiddenForRendering(Scene, item.ObjectIndex)
+                || Scene.IsLayerEffectivelyLocked(Scene.ObjectLayer[item.ObjectIndex])) continue;
+            var points = item.Contours.SelectMany(contour => contour.Points).ToArray();
+            if (points.Length == 0) continue;
+            var bounds = RectangleF.FromLTRB(points.Min(point => point.X), points.Min(point => point.Y),
+                points.Max(point => point.X), points.Max(point => point.Y));
+            if (item.FragmentClip is { Length: > 0 } clip)
+            {
+                var clipPoints = clip.SelectMany(contour => contour.Points).ToArray();
+                if (clipPoints.Length == 0) continue;
+                bounds.Intersect(RectangleF.FromLTRB(clipPoints.Min(point => point.X), clipPoints.Min(point => point.Y),
+                    clipPoints.Max(point => point.X), clipPoints.Max(point => point.Y)));
+                if (bounds.IsEmpty) continue;
+            }
+            result[item.ObjectIndex] = result.TryGetValue(item.ObjectIndex, out var previous)
+                ? RectangleF.Union(previous, bounds) : bounds;
+        }
+        return result;
+    }
+
+    private Reference3DRenderItem[]? _projectedHitBoundsItems;
+    private RectangleF[] _projectedHitBounds = [];
+    private bool[] _projectedHitHasBounds = [];
+
+    internal bool TryHitTestProjectedObjectFiltered(
+        Point screen,
+        float tolerancePixels,
+        out int objectIndex,
+        Func<int, bool>? filter)
     {
         objectIndex = -1;
         tolerancePixels = Math.Max(1f, tolerancePixels);
         var drawingItems = GetReference3DDrawingItems();
+        // Render-plan arrays are immutable and replaced on view/content changes.
+        // Scan contour points once per plan rather than on every pointer move.
+        if (!ReferenceEquals(_projectedHitBoundsItems, drawingItems))
+        {
+            _projectedHitBoundsItems = drawingItems;
+            _projectedHitBounds = new RectangleF[drawingItems.Length];
+            _projectedHitHasBounds = new bool[drawingItems.Length];
+            for (var index = 0; index < drawingItems.Length; index++)
+                _projectedHitHasBounds[index] = TryGetReference3DProjectedBounds(
+                    drawingItems[index].Contours, 0, out _projectedHitBounds[index]);
+        }
         for (var itemIndex = drawingItems.Length - 1; itemIndex >= 0; itemIndex--)
         {
             var item = drawingItems[itemIndex];
+            if ((uint)item.ObjectIndex >= Scene.ObjectCount) continue;
+            var padding = item.Kind == Reference3DRenderKind.FrontStroke
+                ? tolerancePixels + GetReference3DStrokeWidth(item.ObjectIndex, Scene.Stroke[item.ObjectIndex]) * 0.5f
+                : 0;
+            var candidateBounds = _projectedHitBounds[itemIndex];
+            if (_projectedHitHasBounds[itemIndex]
+                && (screen.X < candidateBounds.Left - padding || screen.X > candidateBounds.Right + padding
+                    || screen.Y < candidateBounds.Top - padding || screen.Y > candidateBounds.Bottom + padding)) continue;
+            if (item.SharedShellObjectIndices is not { Length: > 0 }
+                && Scene.IsLayerEffectivelyLocked(Scene.ObjectLayer[item.ObjectIndex])) continue;
             if (!IsPointWithinReference3DFragment(screen, item)) continue;
 
             if (item.Kind is Reference3DRenderKind.Back or Reference3DRenderKind.Side)
             {
                 if (!PointInProjectedFill(screen, item.Contours)
-                    || !TryResolveReference3DSharedShellHit(screen, item, out objectIndex))
+                    || !TryResolveReference3DSharedShellHit(screen, item, out objectIndex)
+                    || filter is not null && !filter(objectIndex))
                 {
                     continue;
                 }
@@ -1220,6 +1304,7 @@ internal sealed partial class StageControl
 
             var candidate = item.ObjectIndex;
             if (IsObjectHiddenForRendering(Scene, candidate)
+                || filter is not null && !filter(candidate)
                 || !IsProjectedPointVisibleThroughMasks(screen, candidate))
             {
                 continue;
@@ -1257,6 +1342,7 @@ internal sealed partial class StageControl
         {
             var candidate = item.ObjectIndex;
             if ((uint)candidate >= Scene.ObjectCount
+                || Scene.IsLayerEffectivelyLocked(Scene.ObjectLayer[candidate])
                 || IsObjectHiddenForRendering(Scene, candidate)
                 || !IsProjectedPointVisibleThroughMasks(screen, candidate))
             {
@@ -1270,6 +1356,7 @@ internal sealed partial class StageControl
         foreach (var candidate in candidates)
         {
             if ((uint)candidate >= Scene.ObjectCount
+                || Scene.IsLayerEffectivelyLocked(Scene.ObjectLayer[candidate])
                 || IsObjectHiddenForRendering(Scene, candidate)
                 || !IsProjectedPointVisibleThroughMasks(screen, candidate))
             {
@@ -1317,6 +1404,18 @@ internal sealed partial class StageControl
     private bool IsProjectedPointVisibleThroughMasks(Point screen, int objectIndex)
     {
         var layer = Scene.ObjectLayer[objectIndex];
+        if (CompositionMasksFor(Scene) is { } plan)
+        {
+            if (IsCompositionMaskArtworkHidden(Scene, plan, layer)) return false;
+            // The composition plan includes inherited and nested masks. Do not
+            // also apply the local-only relationship: its root may be empty
+            // while the nested mask artwork supplies all of the coverage.
+            if (!plan.ClipsByLayer.ContainsKey(layer)) return true;
+            using var regions = new SceneCompositionMaskRegions(Scene, plan, Frame,
+                CreateProjectedCompositionMaskObjectPaths);
+            using var clip = regions.CreateLayerClip(layer);
+            return clip is null || clip.IsVisible(screen);
+        }
         if (Scene.GetLayerKind(layer) != DrawingLayerKind.Mask
             && Scene.TryGetMaskLayerIndex(layer, out var maskLayer))
         {
@@ -1535,11 +1634,18 @@ internal sealed partial class StageControl
         var backOffset = extrusion * 0.5f;
         var bodyFrontContours = ProjectReference3DContours(objectIndex, sourceContours, frontOffset);
         var backContours = ProjectReference3DContours(objectIndex, sourceContours, backOffset);
-        var (sideSurfaces, sidePlanes, sidePlaneKeys, sideSurfacePoints) = BuildReference3DSideSurfaces(
-            objectIndex,
-            sourceContours,
-            frontOffset,
-            backOffset);
+        // In an unlit orthographic front view, pure Z extrusion projects every
+        // wall to a zero-area line. Avoid allocating/projecting four vertices
+        // per source edge only to reject those walls in the render-item pass.
+        var collapsedWalls = !_referenceCameraTransitionActive
+            && !RequiresReference3DOffscreenOpticalSurfaces && !UsesSceneOpticsProjection
+            && EffectiveReferenceProjection == CameraProjection.Orthographic
+            && EffectiveReferenceYaw == 0 && EffectiveReferencePitch == 0
+            && extrusion.X == 0 && extrusion.Y == 0;
+        var (sideSurfaces, sidePlanes, sidePlaneKeys, sideSurfacePoints) = collapsedWalls
+            ? (Array.Empty<Reference3DProjectedContour>(), Array.Empty<Reference3DSurfacePlane>(),
+                Array.Empty<Reference3DSurfacePlaneKey>(), Array.Empty<Vector3>())
+            : BuildReference3DSideSurfaces(objectIndex, sourceContours, frontOffset, backOffset);
         var selectionEdges = BuildReference3DSelectionEdges(
             objectIndex,
             sourceContours,
@@ -1572,6 +1678,10 @@ internal sealed partial class StageControl
                 && !IsObjectHiddenForRendering(Scene, objectIndex))
             .ToHashSet();
         var sharpLineComponents = BuildReference3DSharpLineRenderComponents(visibleLineObjects);
+        var retainOpticalSources = RequiresReference3DOffscreenOpticalSurfaces;
+        var orthographicFront = !_referenceCameraTransitionActive
+            && EffectiveReferenceProjection == CameraProjection.Orthographic
+            && EffectiveReferenceYaw == 0f && EffectiveReferencePitch == 0f;
         for (var objectSlot = 0; objectSlot < objectIndices.Count; objectSlot++)
         {
             var objectIndex = objectIndices[objectSlot];
@@ -1663,6 +1773,15 @@ internal sealed partial class StageControl
                 for (var surfaceIndex = 0; surfaceIndex < extrusionSolid.SideSurfaces.Length; surfaceIndex++)
                 {
                     var surface = extrusionSolid.SideSurfaces[surfaceIndex];
+                    // Orthographic front views collapse extrusion walls to
+                    // lines. They have no fill coverage, but thousands of them
+                    // otherwise enter intersection and coplanar overlap tests.
+                    // Keep them for optics, where they may still cast shadows.
+                    if (!retainOpticalSources
+                        && (!HasProjectedSurfaceArea(surface)
+                            || orthographicFront && surfaceIndex < extrusionSolid.SidePlanes.Length
+                                && extrusionSolid.SidePlanes[surfaceIndex].IsValid
+                                && extrusionSolid.SidePlanes[surfaceIndex].Normal.Z == 0f)) continue;
                     items.Add(new Reference3DRenderItem(
                         objectIndex,
                         layerIndex,
@@ -1743,6 +1862,21 @@ internal sealed partial class StageControl
 
         items.Sort(CompareReference3DRenderItems);
         return items.ToArray();
+    }
+
+    private static bool HasProjectedSurfaceArea(Reference3DProjectedContour contour)
+    {
+        var points = contour.Points;
+        if (points.Length < 3) return false;
+        var origin = points[0];
+        for (var index = 1; index + 1 < points.Length; index++)
+        {
+            var a = points[index];
+            var b = points[index + 1];
+            if (((double)a.X - origin.X) * ((double)b.Y - origin.Y)
+                != ((double)a.Y - origin.Y) * ((double)b.X - origin.X)) return true;
+        }
+        return false;
     }
 
     private bool HasVisibleReference3DFill(int objectIndex, ShapeKind shape)
@@ -2334,7 +2468,7 @@ internal sealed partial class StageControl
     private Reference3DRenderPlanCacheKey CreateReference3DRenderPlanCacheKey(
         bool substituteOutlineItems)
     {
-        var layerRenderState = GetReference3DLayerRenderState(Scene, Frame);
+        var layerRenderState = GetInteractiveLayerRenderState(Scene);
         var opticsContentHash = GetReference3DOpticsContentHash();
         return new Reference3DRenderPlanCacheKey(
             Scene,
@@ -2365,7 +2499,8 @@ internal sealed partial class StageControl
             Reference3DOpticalRasterStartLod,
             Reference3DGpuOpticsEnabled,
             _reference3DRenderPlanEpoch,
-            substituteOutlineItems);
+            substituteOutlineItems,
+            ReferenceNavigationRecording);
     }
 
     private static ulong GetReference3DLayerRenderState(VectorScene scene, int frame)
@@ -2402,6 +2537,24 @@ internal sealed partial class StageControl
             AddReference3DHashInt(ref hash, exposure.SourceKeyframeFrame);
         }
         return hash;
+    }
+
+    private object? _interactiveLayerStateKey;
+    private ulong _interactiveLayerStateHash;
+
+    private ulong GetInteractiveLayerRenderState(VectorScene scene)
+    {
+        // Camera and idle refreshes preserve the content revision. Editing
+        // layer state invalidates it through ordinary stage invalidation; do
+        // not hash thousands of layer names and exposures on each idle repaint.
+        object key = (scene, scene.GeometryRevision, scene.SummaryRevision, scene.ActiveContentRevision,
+            Frame, _referenceNavigationContentRevision);
+        if (!Equals(key, _interactiveLayerStateKey))
+        {
+            _interactiveLayerStateKey = key;
+            _interactiveLayerStateHash = GetReference3DLayerRenderState(scene, Frame);
+        }
+        return _interactiveLayerStateHash;
     }
 
     internal static ulong GetReference3DWorkspaceFrameLayerRenderState(
@@ -2480,7 +2633,7 @@ internal sealed partial class StageControl
                     scene.GeometryRevision,
                     scene.SummaryRevision,
                     scene.EditFrame,
-                    GetReference3DLayerRenderState(scene, Frame));
+                    GetInteractiveLayerRenderState(scene));
         }
     }
 
@@ -2495,6 +2648,7 @@ internal sealed partial class StageControl
             layers,
             substituteOutlineItems,
             deferStrokeOcclusion: true));
+        CullOffscreenReference3DItems(result);
 
         var pathCache = new Reference3DIntersectionPathCache();
         var intersectionStarted = Stopwatch.GetTimestamp();
@@ -2531,6 +2685,7 @@ internal sealed partial class StageControl
             layers,
             substituteOutlineItems,
             deferStrokeOcclusion: true));
+        CullOffscreenReference3DItems(result);
         var pathCache = new Reference3DIntersectionPathCache();
         var intersectionStarted = Stopwatch.GetTimestamp();
         var canSkipIntersection = CanSkipReference3DIntersectionBuild(result);
@@ -2581,10 +2736,29 @@ internal sealed partial class StageControl
         }
     }
 
+    private void CullOffscreenReference3DItems(List<Reference3DRenderItem> items)
+    {
+        // Offscreen surfaces can cast visible shadows/reflections. Optical
+        // projection therefore keeps the complete source set.
+        if (ReferenceNavigationRecording || RequiresReference3DOffscreenOpticalSurfaces || ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+        var padding = LayerFilterBounds.GetPadding(Scene, ActiveViewZoom);
+        var viewport = RectangleF.FromLTRB(-padding.Left - 2, -padding.Top - 2,
+            ClientSize.Width + padding.Right + 2, ClientSize.Height + padding.Bottom + 2);
+        items.RemoveAll(item =>
+        {
+            // Include the full miter envelope, not just the stroke centerline.
+            var radius = GetReference3DRenderItemOverlapRadius(item) * 8;
+            return TryGetReference3DProjectedBounds(item.OcclusionContours ?? item.Contours, radius, out var bounds)
+                && (bounds.Right < viewport.Left || bounds.Left > viewport.Right
+                    || bounds.Bottom < viewport.Top || bounds.Top > viewport.Bottom);
+        });
+    }
+
     private static bool CanSkipReference3DIntersectionBuild(
         IReadOnlyList<Reference3DRenderItem> items)
     {
         if (items.Count < 2) return true;
+        if (AreReference3DAxisAlignedFrontPlanes(items)) return true;
 
         var planeKey = default(Reference3DSurfacePlaneKey);
         var hasPlaneKey = false;
@@ -2689,6 +2863,27 @@ internal sealed partial class StageControl
     {
         if (items.Count <= 1) return items.ToArray();
 
+        // Parallel XY faces cannot cross. In an orthographic front view each
+        // plane has one constant depth, so contour-overlap components cannot
+        // change its order. Retain the established painter order within each
+        // plane and the full path for oblique views, walls and fragments.
+        if (!_referenceCameraTransitionActive
+            && EffectiveReferenceProjection == CameraProjection.Orthographic
+            && EffectiveReferenceYaw == 0f && EffectiveReferencePitch == 0f
+            && AreReference3DAxisAlignedFrontPlanes(items))
+        {
+            var ordered = items.ToArray();
+            Array.Sort(ordered, (left, right) =>
+            {
+                var comparison = (right.Plane.Distance / (double)right.Plane.Normal.Z)
+                    .CompareTo(left.Plane.Distance / (double)left.Plane.Normal.Z);
+                if (comparison != 0) return comparison;
+                comparison = CompareReference3DSurfacePlaneKeys(left.PlaneKey, right.PlaneKey);
+                return comparison != 0 ? comparison : CompareReference3DCoplanarItems(left, right);
+            });
+            return ordered;
+        }
+
         // A set of front-only surfaces on one quantized plane has no depth
         // ordering problem: painter order is the established layer/object
         // order, while contour-overlap grouping only adds work. Keep the
@@ -2780,6 +2975,15 @@ internal sealed partial class StageControl
             result.AddRange(groupItems);
         }
         return result.ToArray();
+    }
+
+    private static bool AreReference3DAxisAlignedFrontPlanes(IReadOnlyList<Reference3DRenderItem> items)
+    {
+        return items.All(item => item.Kind is Reference3DRenderKind.FrontFill
+                or Reference3DRenderKind.FrontStroke or Reference3DRenderKind.Back
+            && item.Plane.IsValid && item.PlaneKey.IsValid
+            && item.Plane.Normal.X == 0f && item.Plane.Normal.Y == 0f && item.Plane.Normal.Z != 0f
+            && item.FragmentClip is not { Length: > 0 } && item.SecondaryObjectIndex < 0);
     }
 
     private static bool CanUseReference3DCoplanarFrontOrder(
@@ -3214,7 +3418,7 @@ internal sealed partial class StageControl
         };
     }
 
-    private static bool TryGetReference3DProjectedBounds(
+    internal static bool TryGetReference3DProjectedBounds(
         IReadOnlyList<Reference3DProjectedContour> contours,
         float overlapRadius,
         out RectangleF bounds)
@@ -4109,6 +4313,9 @@ internal sealed partial class StageControl
 
     private void InvalidateReference3DRenderPlanCache()
     {
+        _projectedHitBoundsItems = null;
+        _projectedHitBounds = [];
+        _projectedHitHasBounds = [];
         _direct2DRenderer.InvalidateReference3DOpticalSurfaceBitmapCache();
         ClearReference3DGdiLocalLightBrushCache();
         unchecked
@@ -4176,11 +4383,22 @@ internal sealed partial class StageControl
     {
         var shape = scene.ShapeKind[objectIndex];
         if ((shape is ShapeKind.Freeform or ShapeKind.BrushStroke)
-            && scene.TryGetFreehandWorldPoints(objectIndex, out var freehandCenterline))
+            && scene.TryGetFreehandLocalPoints(objectIndex, out var localCenterline))
         {
-            var centerline = freehandCenterline
-                .Select(point => MapObjectPointForRendering(scene, objectIndex, point))
-                .ToArray();
+            var centerline = new PointF[localCenterline.Length];
+            var cos = MathF.Cos(scene.Angle[objectIndex]);
+            var sin = MathF.Sin(scene.Angle[objectIndex]);
+            var x = scene.X[objectIndex];
+            var y = scene.Y[objectIndex];
+            var hasCenterlineWarp = TryGetObjectDistortionsForRendering(scene, objectIndex, out var warps);
+            for (var index = 0; index < centerline.Length; index++)
+            {
+                var local = localCenterline[index];
+                var point = new PointF(x + local.X * cos - local.Y * sin, y + local.X * sin + local.Y * cos);
+                if (hasCenterlineWarp)
+                    foreach (var warp in warps) point = warp.Map(point);
+                centerline[index] = point;
+            }
             if (shape == ShapeKind.Freeform)
             {
                 return centerline.Length > 1

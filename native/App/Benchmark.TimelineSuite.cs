@@ -4300,11 +4300,11 @@ internal static partial class Benchmark
         var normalizedMaskScene = new VectorScene();
         normalizedMaskScene.RestoreSnapshot(duplicateMaskSnapshot);
         AssertTimeline(
-            normalizedMaskScene.LayerMaskIds.Count(maskId => string.Equals(maskId, orderingMaskId, StringComparison.Ordinal)) == 1
+            normalizedMaskScene.LayerMaskIds.Count(maskId => string.Equals(maskId, orderingMaskId, StringComparison.Ordinal)) == 2
             && normalizedMaskScene.GetLayerDisplayOrder()
                 .Select(layer => normalizedMaskScene.LayerIds[layer])
                 .SequenceEqual([orderingMaskId, orderingContentId, orderingSiblingId]),
-            "Snapshot restore did not normalize duplicate mask content or its display order.");
+            "Snapshot restore did not preserve shared mask content or its display order.");
 
         orderingContent = Array.IndexOf(maskOrderingScene.LayerIds, orderingContentId);
         orderingSibling = Array.IndexOf(maskOrderingScene.LayerIds, orderingSiblingId);

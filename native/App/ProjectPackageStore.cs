@@ -126,7 +126,12 @@ internal static class ProjectPackageStore
     /// 打开单文件容器：解包到托管工作区后交给 ProjectVaultStore.Load 校验加载。
     /// </summary>
     internal static (VectorProject Project, string ManifestPath) OpenPackage(string packagePath)
+        => OpenPackage(packagePath, null);
+
+    internal static (VectorProject Project, string ManifestPath) OpenPackage(string packagePath,
+        IProgress<ProjectLoadProgress>? progress)
     {
+        progress?.Report(new("Extracting project package"));
         var fullPackagePath = NormalizePackagePath(packagePath);
         if (!File.Exists(fullPackagePath))
         {
@@ -137,7 +142,7 @@ internal static class ProjectPackageStore
         ValidateMaximumFileSize(fullPackagePath, MaxPackageBytes, "project package");
 
         var workspace = GetWorkspaceDirectory(fullPackagePath);
-        ExtractPackage(fullPackagePath, workspace);
+        ExtractPackage(fullPackagePath, workspace, progress);
 
         var manifestCandidates = Directory.EnumerateFiles(workspace, "*", SearchOption.TopDirectoryOnly)
             .Where(path => string.Equals(
@@ -152,7 +157,7 @@ internal static class ProjectPackageStore
         }
 
         var manifestPath = Path.GetFullPath(manifestCandidates[0]);
-        var project = ProjectVaultStore.Load(manifestPath);
+        var project = ProjectVaultStore.Load(manifestPath, progress);
         TouchWorkspace(workspace);
         return (project, manifestPath);
     }
@@ -265,7 +270,7 @@ internal static class ProjectPackageStore
         fileStream.CopyTo(entryStream);
     }
 
-    private static void ExtractPackage(string fullPackagePath, string workspace)
+    private static void ExtractPackage(string fullPackagePath, string workspace, IProgress<ProjectLoadProgress>? progress = null)
     {
         // 重新解包前清掉旧内容（同一容器再次打开或上次解包不完整）。该目录由本类按
         // 容器路径哈希独占管理，不会触碰用户选择的其他位置。
@@ -279,6 +284,8 @@ internal static class ProjectPackageStore
         using var archive = ZipFile.OpenRead(fullPackagePath);
         var sawManifest = false;
         var extractedTotalBytes = 0L;
+        var completedFiles = 0;
+        var totalFiles = archive.Entries.Count(entry => NormalizeEntryName(entry.FullName).Length > 0);
         foreach (var entry in archive.Entries)
         {
             var entryName = NormalizeEntryName(entry.FullName);
@@ -328,7 +335,11 @@ internal static class ProjectPackageStore
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+            progress?.Report(new("Extracting project package", completedFiles, totalFiles,
+                Path.GetFileName(entryName), RelativePath: entryName));
             entry.ExtractToFile(targetPath, overwrite: true);
+            progress?.Report(new("Extracting project package", ++completedFiles, totalFiles,
+                Path.GetFileName(entryName), RelativePath: entryName));
         }
 
         if (!sawManifest)

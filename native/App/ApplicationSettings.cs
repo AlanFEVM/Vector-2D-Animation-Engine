@@ -71,6 +71,10 @@ internal sealed record ApplicationSettings
     public bool FreeTransformShiftProportionalEnabled { get; init; } = true;
     public bool SimpleSelectionHighlightEnabled { get; init; } = false;
     public SelectionArrowSettings SelectionArrows { get; init; } = new();
+    public bool ExperimentalSceneLightingEnabled { get; init; } = false;
+    // The former experimental key is intentionally ignored on upgrade, so
+    // existing installations adopt the core feature's enabled default once.
+    public bool NavigationPreviewEnabled { get; init; } = true;
     public bool Experimental3DEnabled { get; init; } = false;
     public bool SimpleCameraStyleEnabled { get; init; } = true;
     public EnterPlaybackViewSettings EnterPlaybackView { get; init; } = new();

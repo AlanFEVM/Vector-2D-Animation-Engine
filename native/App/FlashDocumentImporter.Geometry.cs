@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -8,7 +8,7 @@ namespace VectorAnimationEngine;
 
 internal static partial class FlashDocumentImporter
 {
-    private sealed record ConvertedShape(IReadOnlyList<string> Sources, RectangleF Bounds);
+    private sealed record ConvertedShape(IReadOnlyList<string> Sources, RectangleF Bounds, int RepairedGaps = 0, float MaximumGap = 0, bool ApproximateHairline = false);
     // Even the shortest SVG line command occupies six bytes ("L 0 0 ").
     // Use the existing SVG payload budget as a bounded parsing allowance;
     // generated SVG is separately limited per path, per chunk and in total.
@@ -28,9 +28,11 @@ internal static partial class FlashDocumentImporter
     }
     // XFL edge syntax follows Adobe twips and signed 24.8 hexadecimal fixed point.
     // Reference investigated: xfl2svg/shape/edge.py (PluieElectrique); this is an independent implementation.
-    private static readonly Regex EdgeTokens = new(@"[!|/\[\]]|S[1-7]|\#[a-fA-F0-9]{1,6}\.[a-fA-F0-9]{1,2}|[+-]?(?:\d+(?:\.\d*)?|\.\d+)", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(2));
+    private static readonly Regex EdgeTokens = new(@"[!|/\[\]]|S[1-7]|\#[a-fA-F0-9]{1,6}\.[a-fA-F0-9]{1,2}|[+-]?(?:\d+(?:\.\d*)?|\.\d+)", RegexOptions.CultureInvariant | RegexOptions.Compiled, TimeSpan.FromSeconds(2));
 
-    private static ConvertedShape ConvertShape(XElement shape, string location)
+    private sealed record BitmapFillSource(string DataUri, int Width, int Height, bool Smoothing);
+
+    private static ConvertedShape ConvertShape(XElement shape, string location, Func<string, BitmapFillSource>? bitmapResolver = null)
     {
         if (Child(shape, "morphShape") is not null)
             throw Failure(location, "Morph/advanced shape geometry requires Adobe visual conversion.");
@@ -46,7 +48,7 @@ internal static partial class FlashDocumentImporter
         {
             var id = Integer(style, "index", 0, 1, 65535);
             var value = style.Elements().SingleOrDefault() ?? throw Failure(location, "Empty fill style.");
-            if (!fills.TryAdd(id, Paint(value, defs, "fill" + id, location))) throw Failure(location, "Duplicate fill style index.");
+            if (!fills.TryAdd(id, Paint(value, defs, "fill" + id, location, bitmapResolver))) throw Failure(location, "Duplicate fill style index.");
         }
         var maximumStroke = 0f;
         foreach (var style in Children(Child(shape, "strokes"), "StrokeStyle"))
@@ -58,15 +60,13 @@ internal static partial class FlashDocumentImporter
             if (Boolean(stroke, "pixelHinting", false))
                 throw Failure(location, "Pixel-hinted strokes require Adobe visual conversion to preserve screen alignment.");
             var solidStyle = Text(stroke, "solidStyle", "solid");
-            if (solidStyle == "hairline")
-                throw Failure(location, "Screen-space hairline strokes require Adobe visual conversion; no fixed-width approximation is applied.");
-            if (solidStyle != "solid") throw Failure(location, "Unsupported stroke pattern.");
-            var weight = Number(stroke, "weight", 1, 0.001f, 10000);
+            if (solidStyle is not ("solid" or "hairline")) throw Failure(location, "Unsupported stroke pattern.");
+            var weight = solidStyle == "hairline" ? 1f : Number(stroke, "weight", 1, 0.001f, 10000);
             var cap = Text(stroke, "caps", "round") switch { "round" => "round", "square" => "square", "none" => "butt", _ => throw Failure(location, "Unsupported stroke cap.") };
             var join = Text(stroke, "joints", "round");
             if (join is not ("round" or "bevel" or "miter")) throw Failure(location, "Unsupported stroke join.");
             var paint = Children(Child(stroke, "fill")).SingleOrDefault() ?? throw Failure(location, "Missing stroke paint.");
-            var strokePaint = Paint(paint, defs, "stroke" + id, location);
+            var strokePaint = Paint(paint, defs, "stroke" + id, location, bitmapResolver);
             var attributes = new XElement(svgNs + "path", new XAttribute("fill", "none"),
                 new XAttribute("stroke", strokePaint.Value), new XAttribute("stroke-opacity", Format(strokePaint.Opacity)),
                 new XAttribute("stroke-width", Format(weight)), new XAttribute("stroke-linecap", cap),
@@ -97,8 +97,8 @@ internal static partial class FlashDocumentImporter
             var stroke = Integer(edge, "strokeStyle", 0, 0, 65535);
             if (left != 0 && !fills.ContainsKey(left) || right != 0 && !fills.ContainsKey(right)
                 || stroke != 0 && !strokes.ContainsKey(stroke)) throw Failure(location, "XFL edge references a missing style.");
-            if (left == 0 && right == 0 && stroke == 0 && runs.Count != 0)
-                throw Failure(location, "Unstyled XFL edge cannot be interpreted as visible artwork.");
+            // Unpainted edges are authoring geometry, not visible artwork.
+            if (left == right && stroke == 0) continue;
             foreach (var run in runs)
             {
                 if (left != 0 && left != right) Add(filled, left, run);
@@ -111,7 +111,7 @@ internal static partial class FlashDocumentImporter
                 }
             }
         }
-        if (segmentCount == 0 || filled.Count + stroked.Count == 0) throw Failure(location, "Shape contains no supported visible geometry.");
+        if (filled.Count + stroked.Count == 0) return new(Array.Empty<string>(), RectangleF.Empty);
         var margin = maximumStroke / 2;
         var bounds = RectangleF.FromLTRB(minimumX - margin, minimumY - margin, maximumX + margin, maximumY + margin);
         if (bounds.Width <= 0 || bounds.Height <= 0 || bounds.Width > 200_000 || bounds.Height > 200_000)
@@ -119,6 +119,8 @@ internal static partial class FlashDocumentImporter
         var template = new XElement(svgNs + "svg", new XAttribute("width", Format(bounds.Width)), new XAttribute("height", Format(bounds.Height)),
             new XAttribute("viewBox", $"{Format(bounds.X)} {Format(bounds.Y)} {Format(bounds.Width)} {Format(bounds.Height)}"));
         if (defs.HasElements) template.Add(defs);
+        var repairedGaps = 0;
+        var maximumGap = 0f;
         var sources = new List<string>();
         var svg = new XElement(template);
         var baseBytes = Encoding.UTF8.GetByteCount(template.ToString(SaveOptions.DisableFormatting)) + 16;
@@ -128,7 +130,7 @@ internal static partial class FlashDocumentImporter
         foreach (var (id, runs) in filled.OrderBy(item => item.Key))
         {
             long pathBytes = 0;
-            AppendPath(new XElement(svgNs + "path", new XAttribute("d", JoinRuns(runs, true, location, ref pathBytes)),
+            AppendPath(new XElement(svgNs + "path", new XAttribute("d", JoinRuns(runs, true, location, ref pathBytes, ref repairedGaps, ref maximumGap)),
                 new XAttribute("fill", fills[id].Value), new XAttribute("fill-opacity", Format(fills[id].Opacity)),
                 new XAttribute("fill-rule", "nonzero"), new XAttribute("stroke", "none")));
         }
@@ -136,11 +138,11 @@ internal static partial class FlashDocumentImporter
         {
             long pathBytes = 0;
             var node = new XElement(strokes[id]);
-            node.Add(new XAttribute("d", JoinRuns(runs, false, location, ref pathBytes)));
+            node.Add(new XAttribute("d", JoinRuns(runs, false, location, ref pathBytes, ref repairedGaps, ref maximumGap)));
             AppendPath(node);
         }
         FinishChunk();
-        return new(sources.AsReadOnly(), bounds);
+        return new(sources.AsReadOnly(), bounds, repairedGaps, maximumGap, shape.Descendants().Any(node => node.Name.LocalName == "SolidStroke" && Text(node, "solidStyle", "solid") == "hairline"));
 
         void AppendPath(XElement node)
         {
@@ -253,10 +255,50 @@ internal static partial class FlashDocumentImporter
         return number;
     }
 
-    private static string JoinRuns(List<EdgeRun> runs, bool requireClosed, string location, ref long pathBytes)
+    private static string JoinRuns(List<EdgeRun> runs, bool requireClosed, string location, ref long pathBytes, ref int repairedGaps, ref float maximumGap)
     {
         // Join directed contour boundaries by exact coordinate identity. A branched Euler contour
         // is followed deterministically; every segment is consumed once, including shared vertices.
+        // Fill junctions can land inside an XFL run. Index each directed segment
+        // so those junctions remain available without changing curve geometry.
+        if (requireClosed)
+            runs = runs.SelectMany(run => run.Segments.Select(segment => new EdgeRun([segment]))).ToList();
+        if (requireClosed)
+        {
+            // Repair bounded gaps between degree deficits without moving existing curves.
+            var degree = new Dictionary<PointF, int>();
+            foreach (var run in runs)
+            {
+                degree[run.Start] = degree.GetValueOrDefault(run.Start) + 1;
+                degree[run.End] = degree.GetValueOrDefault(run.End) - 1;
+            }
+            var starts = degree.Where(pair => pair.Value > 0).ToArray();
+            var ends = degree.Where(pair => pair.Value < 0).ToArray();
+            if (starts.Length > 2048 || ends.Length > 2048)
+                throw Failure(location, "Too many open fill boundary endpoints.");
+            // Pair shortest gaps first, with stable coordinate tie-breaking.
+            // Four source pixels is the explicit tolerance for legacy artwork.
+            var candidates = (from end in ends from start in starts
+                let dx = end.Key.X - start.Key.X
+                let dy = end.Key.Y - start.Key.Y
+                let distance = dx * dx + dy * dy
+                where distance <= 16f
+                orderby distance, end.Key.X, end.Key.Y, start.Key.X, start.Key.Y
+                select (End: end.Key, Start: start.Key, Distance: distance)).ToArray();
+            foreach (var pair in candidates)
+            {
+                while (degree[pair.End] < 0 && degree[pair.Start] > 0)
+                {
+                    runs.Add(new EdgeRun([new EdgeSegment(pair.End, pair.Start, null)]));
+                    degree[pair.End]++;
+                    degree[pair.Start]--;
+                    repairedGaps++;
+                    maximumGap = MathF.Max(maximumGap, MathF.Sqrt(pair.Distance));
+                }
+            }
+            if (degree.Values.Any(value => value != 0))
+                throw Failure(location, "Open fill boundary exceeds the four-pixel repair tolerance.");
+        }
         var byStart = runs.GroupBy(run => run.Start).ToDictionary(group => group.Key, group => new Queue<EdgeRun>(group));
         var result = new StringBuilder();
         var bytes = pathBytes;
@@ -295,7 +337,7 @@ internal static partial class FlashDocumentImporter
 
     private readonly record struct ConvertedPaint(string Value, float Opacity = 1);
 
-    private static ConvertedPaint Paint(XElement paint, XElement defs, string id, string location)
+    private static ConvertedPaint Paint(XElement paint, XElement defs, string id, string location, Func<string, BitmapFillSource>? bitmapResolver = null)
     {
         var svgNs = defs.Name.Namespace;
         if (paint.Name.LocalName == "SolidColor")
@@ -304,6 +346,30 @@ internal static partial class FlashDocumentImporter
             var alpha = Number(paint, "alpha", 1, 0, 1);
             // Keep solid alpha as solid paint so editable SVG extraction retains curves.
             return new ConvertedPaint(color, alpha);
+        }
+        if (paint.Name.LocalName == "BitmapFill")
+        {
+            EnsureChildNames(paint, location, "matrix");
+            if (paint.Attributes().Any(attribute => !attribute.IsNamespaceDeclaration
+                && attribute.Name.LocalName is not ("bitmapPath" or "bitmapIsClipped")))
+                throw Failure(location, "Unsupported bitmap fill attributes.");
+            var clipped = Boolean(paint, "bitmapIsClipped", false);
+            var bitmap = bitmapResolver?.Invoke(Required(paint, "bitmapPath"))
+                ?? throw Failure(location, "Bitmap fill references an unavailable library image.");
+            if (Child(Child(paint, "matrix"), "Matrix") is null)
+                throw Failure(location, "A bitmap fill needs a verified mapping matrix.");
+            var bitmapMatrix = ReadMatrix(paint);
+            bitmapMatrix.M11 /= 20; bitmapMatrix.M12 /= 20; bitmapMatrix.M21 /= 20; bitmapMatrix.M22 /= 20;
+            if (MathF.Abs(bitmapMatrix.GetDeterminant()) < 1e-12f) throw Failure(location, "Singular bitmap fill matrix.");
+            defs.Add(new XElement(svgNs + "pattern", new XAttribute("id", id),
+                new XAttribute("patternUnits", "userSpaceOnUse"), new XAttribute("patternContentUnits", "userSpaceOnUse"),
+                new XAttribute("width", bitmap.Width), new XAttribute("height", bitmap.Height),
+                new XAttribute(ImportedSvgRasterizer.BitmapSamplingAttribute, (bitmap.Smoothing ? "bilinear-" : "point-") + (clipped ? "clamp" : "tile")),
+                new XAttribute("patternTransform", $"matrix({Format(bitmapMatrix.M11)} {Format(bitmapMatrix.M12)} {Format(bitmapMatrix.M21)} {Format(bitmapMatrix.M22)} {Format(bitmapMatrix.M31)} {Format(bitmapMatrix.M32)})"),
+                new XElement(svgNs + "image", new XAttribute("width", bitmap.Width), new XAttribute("height", bitmap.Height),
+                    new XAttribute("preserveAspectRatio", "none"),
+                    new XAttribute(XName.Get("href", "http://www.w3.org/1999/xlink"), bitmap.DataUri))));
+            return new ConvertedPaint("url(#" + id + ")");
         }
         if (paint.Name.LocalName is not ("LinearGradient" or "RadialGradient"))
             throw Failure(location, $"Paint type '{paint.Name.LocalName}' requires Adobe visual conversion.");

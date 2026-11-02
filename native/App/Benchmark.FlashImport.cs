@@ -1,4 +1,4 @@
-using System.IO.Compression;
+﻿using System.IO.Compression;
 using System.Buffers.Binary;
 using System.Drawing.Imaging;
 using System.Text;
@@ -66,11 +66,13 @@ internal static partial class Benchmark
                 "Saving and reopening an imported Flash project replaced stable symbol identifiers.");
             AssertFlashAnimationProject(reopened, requireEditableGeometry: true);
 
+            RunFlashFillGapToleranceRegression(root);
             RunFlashLayerOrderRegression(root);
             RunFlashErrorReportRegression();
             RunFlashGuideRegression(root);
             RunFlashDirectZipCompatibilityRegression(root);
             RunFlashBitmapRegression(root);
+            RunFlashIndexedBitmapRegression(root);
             RunFlashNativeStructureRegression(root);
             RunFlashFolderWhitespaceRegression(root);
             RunFlashFolderExposureRegression(root);
@@ -80,7 +82,14 @@ internal static partial class Benchmark
             RunFlashBlendRegression(root);
             RunFlashBlurStackImportRegression(root);
             RunFlashStaticTextRegression(root);
+            RunFlashEmptyLibraryTimelineRegression(root);
+            RunFlashRepeatedIncludeRegression(root);
+            RunFlashSharedMaskModelRegression(root);
+            RunFlashRepeatedMaskedOccurrenceRegression(root);
+            RunFlashNestedMaskPlanRegression(root);
             RunFlashEmbeddedImageRegression(root);
+            RunFlashBitmapSamplingRegression();
+            RunFlashBitmapFillImportRegression(root);
             RunFlashSymbolPlaybackRegression(root);
             RunFlashNestedPlaybackRegression(root);
             RunFlashDiagnosticRegression(root, document, symbol);
@@ -259,7 +268,7 @@ internal static partial class Benchmark
     private static void RunFlashStaticTextRegression(string root)
     {
         var path = Path.Combine(root, "StaticText.fla");
-        var xml = $"<DOMDocument xmlns='{FlashFixtureNamespace}'><timelines><DOMTimeline name='Text'><layers><DOMLayer name='Text'><frames><DOMFrame><elements><DOMStaticText width='240' height='80'><matrix><Matrix tx='12' ty='8'/></matrix><textRuns><DOMTextRun><characters>Hello&#13;Flash</characters><textAttrs><DOMTextAttrs face='V2D Missing Font Regression' size='25' fillColor='#33CCFF'/></textAttrs></DOMTextRun></textRuns></DOMStaticText></elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>";
+        var xml = $"<DOMDocument xmlns='{FlashFixtureNamespace}'><timelines><DOMTimeline name='Text'><layers><DOMLayer name='Text'><frames><DOMFrame><elements><DOMStaticText width='240' height='80'><matrix><Matrix tx='12' ty='8'/></matrix><transformationPoint><Point x='120' y='40'/></transformationPoint><textRuns><DOMTextRun><characters>Hello&#13;Flash</characters><textAttrs><DOMTextAttrs face='V2D Missing Font Regression' lineSpacing='0' size='25' fillColor='#33CCFF'/></textAttrs></DOMTextRun></textRuns></DOMStaticText></elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>";
         WriteFlashZipFixture(path, ("DOMDocument.xml", xml));
         var imported = FlashDocumentImporter.Load(path);
         AssertTimeline(imported.Diagnostics.Any(item => item.Code == "text-font-missing")
@@ -272,6 +281,32 @@ internal static partial class Benchmark
             && data.Content == "Hello\nFlash" && data.FontFamilyName == "V2D Missing Font Regression"
             && data.FontSizePoints == 18.75f, "Static text lost its content, requested font or size after Save/Open/composition.");
         Console.WriteLine("flash_static_text_import_save_composition=ok");
+        var bitmapSized = Path.Combine(root, "StaticTextBitmapSize.fla");
+        WriteFlashZipFixture(bitmapSized, ("DOMDocument.xml", xml.Replace("size='25'", "bitmapSize='720'", StringComparison.Ordinal)));
+        var bitmapSizedProject = FlashDocumentImporter.Load(bitmapSized).Project;
+        var bitmapSizedSaved = ProjectVaultStore.Save(bitmapSizedProject, Path.Combine(root, "StaticTextBitmapSizeSaved", "Text.v2dProject"));
+        var bitmapSizedReopened = ProjectVaultStore.Load(bitmapSizedSaved);
+        SceneCompositionBuilder.Build(scene, bitmapSizedReopened.Scenes[0], bitmapSizedReopened.DrawingObjects, 0, imported.Fps);
+        AssertTimeline(scene.TryGetTextObjectData(0, out var bitmapSizedData) && bitmapSizedData.FontSizePoints == 27f,
+            "Static text bitmapSize twips were ignored or lost after Save/Open.");
+        var invalidBitmapSize = Path.Combine(root, "StaticTextInvalidBitmapSize.fla");
+        WriteFlashZipFixture(invalidBitmapSize, ("DOMDocument.xml", xml.Replace("size='25'", "bitmapSize='NaN'", StringComparison.Ordinal)));
+        ExpectInvalidData(() => FlashDocumentImporter.Load(invalidBitmapSize), "Nonfinite bitmapSize was silently replaced by the default font size.");
+        Console.WriteLine("flash_static_text_bitmap_size_save_reopen=ok");
+        var spaced = Path.Combine(root, "StaticTextLineSpacing.fla");
+        WriteFlashZipFixture(spaced, ("DOMDocument.xml", xml.Replace("lineSpacing='0'", "lineSpacing='4'", StringComparison.Ordinal)));
+        ExpectInvalidData(() => FlashDocumentImporter.Load(spaced), "Unmapped text leading was silently omitted.");
+        var glowing = Path.Combine(root, "StaticTextGlow.fla");
+        WriteFlashZipFixture(glowing, ("DOMDocument.xml", xml.Replace("</DOMStaticText>",
+            "<filters><GlowFilter quality='3' blurX='6' blurY='8'/></filters></DOMStaticText>", StringComparison.Ordinal)));
+        var glowProject = FlashDocumentImporter.Load(glowing).Project;
+        var glowSaved = ProjectVaultStore.Save(glowProject, Path.Combine(root, "StaticTextGlowSaved", "Text.v2dProject"));
+        var glowReopened = ProjectVaultStore.Load(glowSaved);
+        var glowFilters = glowReopened.Scenes[0].Instances.Single().EvaluateState(0).Filters.FlashFilters;
+        AssertTimeline(glowFilters is { Count: 1 } && glowFilters[0].Kind == SymbolFlashFilterKind.Glow
+            && glowFilters[0].Quality == 3 && glowFilters[0].BlurX == 6 && glowFilters[0].BlurY == 8,
+            "Static-text glow parameters were lost after import and Save/Open.");
+        Console.WriteLine("flash_static_text_filters_save_reopen=ok");
     }
 
     private static void RunFlashBlurStackImportRegression(string root)
@@ -421,12 +456,39 @@ internal static partial class Benchmark
                 "Lossless XFL decoder changed colour channels.");
         }
         finally { FlashDocumentImporter.DeleteTemporaryImages(imported.TemporaryFiles); }
+        var alphaFlagOnly = Lossless(255, 19, 73, 201);
+        alphaFlagOnly[24] = 1;
+        File.WriteAllBytes(source, alphaFlagOnly);
+        imported = FlashDocumentImporter.Load(folder);
+        try
+        {
+            using var decoded = new Bitmap(imported.Project.ImageAssets.Single().SourcePath);
+            AssertTimeline(decoded.GetPixel(0, 0).ToArgb() == Color.FromArgb(255, 19, 73, 201).ToArgb(),
+                "An opaque bitmap with an alpha-channel flag was rejected or changed colour.");
+            var saved = ProjectVaultStore.Save(imported.Project, Path.Combine(root, "AlphaFlagBitmapSaved", "Bitmap.v2dProject"));
+            using var restored = new Bitmap(ProjectVaultStore.Load(saved).ImageAssets.Single().SourcePath);
+            AssertTimeline(restored.GetPixel(0, 0).ToArgb() == decoded.GetPixel(0, 0).ToArgb(),
+                "An alpha-flagged opaque bitmap changed after Save/Open.");
+        }
+        finally { FlashDocumentImporter.DeleteTemporaryImages(imported.TemporaryFiles); }
         File.WriteAllBytes(source, Lossless(129, 10, 20, 30));
-        ExpectInvalidData(() => FlashDocumentImporter.Load(folder), "Quantized transparency was silently accepted without its original PNG.");
+        imported = FlashDocumentImporter.Load(folder);
+        try
+        {
+            CheckPremultiplied(imported.Project);
+            AssertTimeline(imported.Diagnostics.Any(item => item.Code == "bitmap-premultiplied-decoded"),
+                "Canonical decoding of unavailable straight bitmap colours was not reported.");
+            var saved = ProjectVaultStore.Save(imported.Project, Path.Combine(root, "PartialAlphaBitmapSaved", "Bitmap.v2dProject"));
+            CheckPremultiplied(ProjectVaultStore.Load(saved));
+        }
+        finally { FlashDocumentImporter.DeleteTemporaryImages(imported.TemporaryFiles); }
+        File.WriteAllBytes(source, Lossless(17, 18, 0, 0));
+        ExpectInvalidData(() => FlashDocumentImporter.Load(folder), "An invalid premultiplied colour channel was accepted.");
+        File.WriteAllBytes(source, Lossless(129, 10, 20, 30));
         Directory.CreateDirectory(Path.Combine(folder, "LIBRARY"));
         using (var originalImage = new Bitmap(4, 3))
         {
-            for (var y = 0; y < 3; y++) for (var x = 0; x < 4; x++) originalImage.SetPixel(x, y, Color.FromArgb(128, 20, 40, 60));
+            for (var y = 0; y < 3; y++) for (var x = 0; x < 4; x++) originalImage.SetPixel(x, y, Color.FromArgb(129, 20, 40, 60));
             originalImage.Save(Path.Combine(folder, "LIBRARY", "Picture.png"), ImageFormat.Png);
         }
         File.WriteAllText(Path.Combine(folder, "DOMDocument.xml"), xml.Replace("name='Picture' bitmapDataHRef", "name='Picture' href='Picture.png' bitmapDataHRef"));
@@ -437,8 +499,31 @@ internal static partial class Benchmark
                 File.ReadAllBytes(Path.Combine(folder, "LIBRARY", "Picture.png"))), "Original transparent PNG was not preserved.");
         }
         finally { FlashDocumentImporter.DeleteTemporaryImages(imported.TemporaryFiles); }
+        File.WriteAllBytes(source, Lossless(128, 10, 20, 30));
+        imported = FlashDocumentImporter.Load(folder);
+        try
+        {
+            using var decoded = new Bitmap(imported.Project.ImageAssets.Single().SourcePath);
+            AssertTimeline(decoded.GetPixel(0, 0).A == 128
+                && imported.Diagnostics.Any(item => item.Code == "bitmap-original-mismatch"),
+                "A stale original PNG replaced the authoritative embedded bitmap or was not reported.");
+            var saved = ProjectVaultStore.Save(imported.Project, Path.Combine(root, "StaleOriginalBitmapSaved", "Bitmap.v2dProject"));
+            using var restored = new Bitmap(ProjectVaultStore.Load(saved).ImageAssets.Single().SourcePath);
+            AssertTimeline(restored.GetPixel(0, 0).ToArgb() == decoded.GetPixel(0, 0).ToArgb(),
+                "The decoded embedded bitmap changed after Save/Open.");
+        }
+        finally { FlashDocumentImporter.DeleteTemporaryImages(imported.TemporaryFiles); }
         File.WriteAllBytes(source, [3, 5, 1, 2]);
         ExpectInvalidData(() => FlashDocumentImporter.Load(folder), "Unknown Flash bitmap encoding was silently accepted.");
+
+        static void CheckPremultiplied(VectorProject project)
+        {
+            using var decoded = new Bitmap(project.ImageAssets.Single().SourcePath);
+            var pixel = decoded.GetPixel(0, 0);
+            AssertTimeline(pixel.A == 129 && (pixel.R * pixel.A + 127) / 255 == 10
+                && (pixel.G * pixel.A + 127) / 255 == 20 && (pixel.B * pixel.A + 127) / 255 == 30,
+                "Flash bitmap decoding changed alpha or the premultiplied colour channels.");
+        }
     }
 
     private static void RunFlashDirectZipCompatibilityRegression(string root)
@@ -458,9 +543,15 @@ internal static partial class Benchmark
         File.WriteAllBytes(zip, orphaned);
         AssertFlashAnimationProject(FlashDocumentImporter.Load(zip).Project);
         AssertTimeline(File.ReadAllBytes(zip).SequenceEqual(orphaned), "ZIP compatibility rewrote the source FLA.");
+        var visual = FlashVisualConversionBridge.Prepare(zip, Path.Combine(root, "AnimateDirectoryVisual"));
+        AssertTimeline(File.ReadAllBytes(visual.WorkingSourcePath).SequenceEqual(orphaned)
+            && File.ReadAllBytes(zip).SequenceEqual(orphaned),
+            "The visual bridge rejected or rewrote a compatible Animate ZIP directory.");
         orphaned[38] ^= 1;
         File.WriteAllBytes(zip, orphaned);
         ExpectInvalidData(() => FlashDocumentImporter.Load(zip), "ZIP compatibility accepted an unknown orphan payload.");
+        ExpectInvalidData(() => FlashVisualConversionBridge.Prepare(zip, Path.Combine(root, "InvalidAnimateDirectoryVisual")),
+            "The visual bridge accepted an unknown orphan ZIP payload.");
 
         var held = $"<DOMDocument xmlns='{FlashFixtureNamespace}'><symbols><Include href='Leaf.xml'/></symbols><timelines><DOMTimeline name='Held'><layers><DOMLayer name='Held'><frames><DOMFrame index='0' duration='10000'><elements><DOMSymbolInstance libraryItemName='Leaf' symbolType='graphic' loop='single frame'/></elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>";
         WriteFlashZipFixture(zip, ("DOMDocument.xml", held), ("LIBRARY/Leaf.xml", FlashSymbolFixture()));
@@ -1185,6 +1276,25 @@ internal static partial class Benchmark
             AssertFlashFramePixel(destination, frame % 2 == 0 ? Color.Blue : Color.Red);
         }
 
+        var singleFramePath = Path.Combine(root, "SingleFrameLoop.fla");
+        var singleFrameDocument = document.Replace("firstFrame=\"1\"", "firstFrame=\"14\"", StringComparison.Ordinal);
+        var singleFrameSymbol = symbol.Replace("<DOMFrame index=\"1\"><elements>" + FlashSquareFixture("#0000FF") + "</elements></DOMFrame>", "", StringComparison.Ordinal);
+        WriteFlashZipFixture(singleFramePath, ("DOMDocument.xml", singleFrameDocument), ("LIBRARY/Leaf.xml", singleFrameSymbol));
+        var singleFrame = FlashDocumentImporter.Load(singleFramePath, editableGeometry: false);
+        AssertTimeline(singleFrame.Diagnostics.Any(item => item.Code == "single-frame-loop-normalized"),
+            "A stale firstFrame offset on a one-frame loop was not reported.");
+        var singleFrameSaved = ProjectVaultStore.Save(singleFrame.Project, Path.Combine(root, "SingleFrameLoopSaved", "Loop.v2dProject"));
+        var singleFrameReopened = ProjectVaultStore.Load(singleFrameSaved);
+        for (var frame = 0; frame < 4; frame++)
+        {
+            SceneCompositionBuilder.Build(destination, singleFrameReopened.Scenes[0], singleFrameReopened.DrawingObjects, frame, singleFrame.Fps);
+            AssertFlashFramePixel(destination, Color.Red);
+        }
+        WriteFlashZipFixture(singleFramePath, ("DOMDocument.xml", singleFrameDocument.Replace("loop=\"loop\"", "loop=\"single frame\"", StringComparison.Ordinal)),
+            ("LIBRARY/Leaf.xml", singleFrameSymbol));
+        ExpectInvalidData(() => FlashDocumentImporter.Load(singleFramePath), "Unverified non-loop firstFrame overflow was accepted.");
+        Console.WriteLine("flash_single_frame_loop_offset_save_composition=ok");
+
         // A simple classic tween must visibly move between endpoints, rather than holding frame zero.
         var tweenDocument = $"""
             <DOMDocument xmlns="{FlashFixtureNamespace}" width="40" height="40" frameRate="24">
@@ -1227,6 +1337,23 @@ internal static partial class Benchmark
         var named = FlashDocumentImporter.Load(tweenPath);
         AssertTimeline(Math.Abs(VectorUnits.ToPixels(named.Project.Scenes[0].Instances.First(item => item.Name == "Leaf").EvaluateState(1).X) - 30 * 19f / 27) < 0.001f,
             "Flash cubicOut was replaced by linear easing.");
+        foreach (var (method, first, second) in new[] { ("quadIn", 1f / 9, 4f / 9), ("quadOut", 5f / 9, 8f / 9), ("quadInOut", 2f / 9, 7f / 9) })
+        {
+            WriteFlashZipFixture(tweenPath, ("DOMDocument.xml", namedDocument.Replace("cubicOut", method, StringComparison.Ordinal)),
+                ("LIBRARY/Leaf.xml", FlashSymbolFixture()));
+            var quadratic = FlashDocumentImporter.Load(tweenPath);
+            var saved = ProjectVaultStore.Save(quadratic.Project, Path.Combine(root, method, "Tween.v2dProject"));
+            foreach (var candidate in new[] { quadratic.Project, ProjectVaultStore.Load(saved) })
+            {
+                var moving = candidate.Scenes[0].Instances.First(item => item.Name == "Leaf");
+                AssertTimeline(Math.Abs(VectorUnits.ToPixels(moving.EvaluateState(1).X) - 30 * first) < 0.001f
+                    && Math.Abs(VectorUnits.ToPixels(moving.EvaluateState(2).X) - 30 * second) < 0.001f,
+                    "Flash quadratic easing changed its baked positions after import or Save/Open: " + method);
+                SceneCompositionBuilder.Build(destination, candidate.Scenes[0], candidate.DrawingObjects, 3, quadratic.Fps);
+                AssertFlashBounds(destination, 0, new RectangleF(30, 0, 10, 10));
+            }
+        }
+        Console.WriteLine("flash_quadratic_ease_baked_positions_save_reopen_endpoint=ok");
     }
 
     private static void RunFlashNestedPlaybackRegression(string root)
@@ -1307,8 +1434,10 @@ internal static partial class Benchmark
         WriteFlashZipFixture(unsupported,
             ("DOMDocument.xml", document.Replace("name=\"Animated\"", "name=\"Animated\" layerType=\"mask\"", StringComparison.Ordinal)),
             ("LIBRARY/Leaf.xml", symbol));
-        ExpectInvalidData(() => FlashDocumentImporter.Load(unsupported),
-            "Flash import silently approximated an unsupported mask layer.");
+        var maskProject = FlashDocumentImporter.Load(unsupported).Project;
+        AssertTimeline(maskProject.DrawingObjects.Any(item => Enumerable.Range(0, item.Scene.LayerCount)
+            .Any(layer => item.Scene.GetLayerKind(layer) == DrawingLayerKind.Mask && item.Scene.LayerLocked[layer])),
+            "Flash mask layer was not retained as a locked native mask.");
     }
 
     private static void RunFlashLegacyBridgeRegression(string root, string document, string symbol)
@@ -1363,6 +1492,7 @@ internal static partial class Benchmark
 
     private static void RunFlashVisualBridgeRegression(string root, string document, string symbol)
     {
+        RunFlashVisualArchiveRegression(root, document, symbol);
         var modernSource = Path.Combine(root, "视觉 'modern'.fla");
         WriteFlashZipFixture(modernSource, ("DOMDocument.xml", document), ("LIBRARY/Leaf.xml", symbol));
         var legacySource = Path.Combine(root, "视觉 'legacy'.fla");

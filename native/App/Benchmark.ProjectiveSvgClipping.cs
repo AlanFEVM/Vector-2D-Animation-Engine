@@ -7,6 +7,72 @@ namespace VectorAnimationEngine;
 
 internal static partial class Benchmark
 {
+    private static void RunReferenceSvgRasterExtentRegression()
+    {
+        const string source = """
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">
+              <rect width="100" height="100" fill="#ed3428"/>
+              <rect x="100" width="100" height="100" fill="#2879ed"/>
+            </svg>
+            """;
+        // Seed a much larger raster so subsequent views exercise cache reuse,
+        // in addition to the ordinary quantization mismatch.
+        ImportedSvgRasterizer.Rasterize(source, 1024, 512);
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var index = scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(6000, 3000), 0, source, "Extent fixture");
+        scene.Argb[index] = Color.White.ToArgb();
+        using var stage = new StageControl(scene) { Dock = DockStyle.Fill, WorldGridOpacity = 0, ExperimentalSceneLightingEnabled = false };
+        using var form = new Form { ClientSize = new Size(640, 440), TopMost = true,
+            StartPosition = FormStartPosition.CenterScreen, FormBorderStyle = FormBorderStyle.None };
+        stage.ConfigureReferenceView(null, SceneDimension.TwoD);
+        stage.SetReferenceCameraOrientation(0, 0, ReferenceCameraMotion.Immediate);
+        stage.SetSceneCompositionResult(SceneCompositionResult.Empty, scene);
+        form.Controls.Add(stage);
+        form.Show();
+        foreach (var zoom in new[] { 1.6f, 0.8f, 0.45f })
+        {
+            stage.RestoreViewState(stage.CaptureViewState() with { ReferenceZoomScale = zoom });
+            form.BringToFront(); stage.Refresh(); Application.DoEvents();
+            Thread.Sleep(60); FlushWorkspaceCapture();
+            AssertTimeline(stage.LastFrameUsedDirect2D, "SVG extent regression did not use Direct2D.");
+            using var capture = CaptureBenchmarkWindow(form);
+            capture.Save(Path.Combine("artifacts", $"svg-extent-{zoom:F2}.png"));
+            foreach (var (flat, expected) in new[] {
+                (new PointF(-1500, 0), Color.FromArgb(237, 52, 40)),
+                (new PointF(2400, 0), Color.FromArgb(40, 121, 237)) })
+            {
+                AssertTimeline(stage.TryProjectScenePoint(index, flat, out var screen, out _), "SVG sample projection failed.");
+                var color = capture.GetPixel((int)screen.X, (int)screen.Y);
+                AssertTimeline(Math.Abs(color.R - expected.R) < 12 && Math.Abs(color.G - expected.G) < 12
+                    && Math.Abs(color.B - expected.B) < 12,
+                    $"SVG texture was cropped at zoom {zoom}: sample={flat}, actual={color}, expected={expected}.");
+            }
+            var output = Path.Combine("artifacts", $"svg-extent-{zoom:F2}.png");
+            capture.Save(output);
+        }
+        scene.SetLayerBlendMode(0, LayerBlendMode.Isolate);
+        scene.SetLayerSymbolFilters(0, new SymbolFilters { ColorTransform = new() { Enabled = true,
+            RedMultiplier = 0.5f, GreenMultiplier = 0.5f, BlueMultiplier = 0.5f } });
+        foreach (var zoom in new[] { 0.45f, 1.6f, 0.8f })
+        {
+            stage.RestoreViewState(stage.CaptureViewState() with { ReferenceZoomScale = zoom });
+            stage.Refresh(); Application.DoEvents(); Thread.Sleep(60); FlushWorkspaceCapture();
+            AssertTimeline(stage.LastFrameUsedDirect2D, "RGB SVG group fell back to software.");
+            using var capture = CaptureBenchmarkWindow(form);
+            foreach (var (flat, expected) in new[] {
+                (new PointF(-1500, 0), Color.FromArgb(119, 26, 20)),
+                (new PointF(2400, 0), Color.FromArgb(20, 61, 119)) })
+            {
+                AssertTimeline(stage.TryProjectScenePoint(index, flat, out var screen, out _), "RGB SVG projection failed.");
+                var actual = capture.GetPixel((int)screen.X, (int)screen.Y);
+                AssertTimeline(Math.Abs(actual.R - expected.R) < 5 && Math.Abs(actual.G - expected.G) < 5
+                    && Math.Abs(actual.B - expected.B) < 5, $"RGB SVG changed its extent or colour at zoom {zoom}: {actual}.");
+            }
+        }
+        Console.WriteLine("reference_svg_raster_full_extent=passed");
+    }
+
     private static void RunProjectiveSvgClippingRegression()
     {
         const string source = """

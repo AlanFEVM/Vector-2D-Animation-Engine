@@ -1225,7 +1225,7 @@ internal sealed partial class VectorScene
         if ((uint)objectIndex >= ObjectCount) return objectIndex;
         if (!IsFillShape(ShapeKind[objectIndex])) return objectIndex;
         if (IsCollisionTerrainLayer(ObjectLayer[objectIndex])) return objectIndex;
-        if (FillAutoMergeProtected[objectIndex]) return objectIndex;
+        if (ObjectLocked[objectIndex] || FillAutoMergeProtected[objectIndex]) return objectIndex;
         if (HasGradient(objectIndex)) return objectIndex;
         if (!IsObjectActive(objectIndex, frame)) return objectIndex;
 
@@ -1240,7 +1240,7 @@ internal sealed partial class VectorScene
             foreach (var other in QueryObjects(mergeBounds, frame))
             {
                 if (other == current || IsCollisionTerrainLayer(ObjectLayer[other])) continue;
-                if (ObjectKeyframeFrame[other] != ObjectKeyframeFrame[current]) continue;
+                if (ObjectLocked[other] || ObjectKeyframeFrame[other] != ObjectKeyframeFrame[current]) continue;
                 if (!TryBuildSameColorFillMerge(current, other, connectNearby, mergeBounds, out var mergedPath)) continue;
                 if (!TryGetEditableFillBezierContours(current, out var currentBezierContours)
                     || !TryGetEditableFillBezierContours(other, out var otherBezierContours))
@@ -1348,6 +1348,7 @@ internal sealed partial class VectorScene
         if ((uint)objectIndex >= ObjectCount
             || !IsMatchingShapeGradientFill(this, objectIndex)
             || IsCollisionTerrainLayer(ObjectLayer[objectIndex])
+            || ObjectLocked[objectIndex]
             || FillAutoMergeProtected[objectIndex]
             || !IsObjectActive(objectIndex, frame))
         {
@@ -1366,6 +1367,7 @@ internal sealed partial class VectorScene
                     || ObjectLayer[other] != ObjectLayer[current]
                     || ObjectKeyframeFrame[other] != ObjectKeyframeFrame[current]
                     || IsCollisionTerrainLayer(ObjectLayer[other])
+                    || ObjectLocked[other]
                     || FillAutoMergeProtected[other]
                     || !MatchingShapeGradientMaterial(this, current, this, other)
                     || !TryBuildIntersectingFillUnion(current, other, mergeBounds, out var mergedPath))
@@ -1923,7 +1925,7 @@ internal sealed partial class VectorScene
                 for (var index = 1; index < cutterObjects.Length; index++) bounds = RectangleF.Union(bounds, GetObjectWorldBounds(cutterObjects[index]));
 
                 var candidates = QueryObjects(bounds, frame)
-                    .Where(source => !newObjectSet.Contains(source)
+                    .Where(source => !ObjectLocked[source] && !newObjectSet.Contains(source)
                         && ObjectLayer[source] == group.Key.Layer
                         && ObjectKeyframeFrame[source] == group.Key.Keyframe
                         && !IsCollisionTerrainLayer(ObjectLayer[source])

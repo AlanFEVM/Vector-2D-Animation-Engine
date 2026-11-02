@@ -38,10 +38,10 @@ internal sealed partial class MainForm
         {
             DrawingObjectSvgExport.Write(
                 dialog.FileName,
-                drawingObject.Id,
-                drawingObject.Name,
-                drawingObject.Scene,
-                frame);
+                drawingObject,
+                _drawingObjects,
+                frame,
+                _playbackSettings.Fps);
             AppLog.Info($"Exported symbol SVG: {dialog.FileName}");
         }
         catch (Exception ex)
@@ -74,12 +74,7 @@ internal sealed partial class MainForm
             return Math.Clamp(_frame, 0, lastFrame);
         }
 
-        for (var frame = 0; frame <= lastFrame; frame++)
-        {
-            if (scene.GetActiveObjectIndices(frame).Length > 0) return frame;
-        }
-
-        return 0;
+        return DrawingObjectSvgExport.FirstContentFrame(drawingObject);
     }
 
     /// <summary>

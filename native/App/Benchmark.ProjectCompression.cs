@@ -313,6 +313,12 @@ internal static partial class Benchmark
             var svgRelativePath = entry["svgPath"]?.GetValue<string>()
                 ?? throw new InvalidOperationException("Legacy fixture drawing has no SVG path.");
             var svgPath = ResolveProjectCompressionPath(projectRoot, svgRelativePath);
+            var legacySvgRelativePath = $".Vault/{drawingId}.svg";
+            var legacySvgPath = ResolveProjectCompressionPath(projectRoot, legacySvgRelativePath);
+            if (!string.Equals(svgPath, legacySvgPath, StringComparison.OrdinalIgnoreCase))
+                File.Move(svgPath, legacySvgPath);
+            svgPath = legacySvgPath;
+            entry["svgPath"] = legacySvgRelativePath;
             ConvertProjectCompressionSvgToLegacy(svgPath, drawingId, svgVersion);
             entry["svgSha256"] = ComputeProjectCompressionSha256(svgPath);
         }

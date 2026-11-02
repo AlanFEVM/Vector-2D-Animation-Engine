@@ -82,11 +82,14 @@ internal sealed partial class VectorScene
         return HitTestElementCore(world, frame, toleranceWorld, objectFilter);
     }
 
+    internal DrawingElementHit HitTestOccludedElement(PointF world, int frame, float toleranceWorld, Func<int, bool> objectFilter)
+        => HitTestElementCore(world, frame, toleranceWorld, objectFilter, includeOccluded: true);
+
     private DrawingElementHit HitTestElementCore(
         PointF world,
         int frame,
         float toleranceWorld,
-        Func<int, bool>? objectFilter)
+        Func<int, bool>? objectFilter, bool includeOccluded = false)
     {
         GetHitTestRange(world, toleranceWorld, out var minX, out var maxX, out var minY, out var maxY);
         var candidates = CollectHitCandidates(minX, maxX, minY, maxY, frame, sort: false);
@@ -100,7 +103,7 @@ internal sealed partial class VectorScene
             if (!IsObjectSelectable(i, frame)) continue;
             if (!ObjectMayContainHitPoint(i, world, toleranceWorld)) continue;
             var hit = HitElement(world, i, eligibleCandidates, frame, toleranceWorld);
-            if (!hit.IsValid || !IsSelectionHitExposed(hit, world, frame, objectFilter)) continue;
+            if (!hit.IsValid || !includeOccluded && !IsSelectionHitExposed(hit, world, frame, objectFilter)) continue;
             if (IsBetterHit(hit, best)) best = hit;
         }
 
@@ -396,7 +399,7 @@ internal sealed partial class VectorScene
             if (!indexedObjects.Add(objectIndex)
                 || (uint)objectIndex >= ObjectCount
                 || ObjectLayer[objectIndex] != layer
-                || !IsObjectActive(objectIndex, frame))
+                || !IsObjectSelectable(objectIndex, frame))
             {
                 return;
             }

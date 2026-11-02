@@ -320,6 +320,7 @@ internal static class EditorRestartStore
 
     private sealed class RestartStageView
     {
+        public float CanvasRotation { get; init; }
         public float CameraX { get; init; }
         public float CameraY { get; init; }
         public float Zoom { get; init; }
@@ -335,6 +336,7 @@ internal static class EditorRestartStore
 
         public static RestartStageView From(StageViewState state) => new()
         {
+            CanvasRotation = state.CanvasRotation,
             CameraX = state.CameraX,
             CameraY = state.CameraY,
             Zoom = state.Zoom,
@@ -361,7 +363,7 @@ internal static class EditorRestartStore
             ReferenceTargetY,
             ReferenceTargetZ,
             WorldGridOpacity,
-            WorldGridType);
+            WorldGridType) { CanvasRotation = float.IsFinite(CanvasRotation) ? CanvasRotation : 0 };
     }
 
     private sealed class RestartWindowBounds

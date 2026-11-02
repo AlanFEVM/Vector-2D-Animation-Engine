@@ -50,6 +50,21 @@ internal sealed partial class StageControl
 
     internal RectangleF CanvasScreenBounds()
     {
+        var points = CanvasScreenCorners();
+        return RectangleF.FromLTRB(points.Min(p => p.X), points.Min(p => p.Y), points.Max(p => p.X), points.Max(p => p.Y));
+    }
+
+    internal PointF[] CanvasScreenCorners()
+    {
+        var bounds = CanvasUnrotatedScreenBounds();
+        return new[] { RotateCanvasScreenPoint(new PointF(bounds.Left, bounds.Top)),
+            RotateCanvasScreenPoint(new PointF(bounds.Right, bounds.Top)),
+            RotateCanvasScreenPoint(new PointF(bounds.Right, bounds.Bottom)),
+            RotateCanvasScreenPoint(new PointF(bounds.Left, bounds.Bottom)) };
+    }
+
+    internal RectangleF CanvasUnrotatedScreenBounds()
+    {
         if (CanvasPresentation is not { } canvas) return RectangleF.Empty;
         if (!_renderingCanvasOutput && (ReferenceDimension == SceneDimension.ThreeD
             || Reference2DViewDirection != ReferenceViewDirection.Front))
@@ -60,14 +75,16 @@ internal sealed partial class StageControl
             var height = canvas.Settings.Height * scale;
             return new RectangleF((Width - width) * 0.5f, (Height - height) * 0.5f, width, height);
         }
-        var topLeft = WorldToScreen(-CanvasWorldWidth * 0.5f, -CanvasWorldHeight * 0.5f);
-        var bottomRight = WorldToScreen(CanvasWorldWidth * 0.5f, CanvasWorldHeight * 0.5f);
+        var topLeft = UnrotateCanvasScreenPoint(WorldToScreen(-CanvasWorldWidth * 0.5f, -CanvasWorldHeight * 0.5f));
+        var bottomRight = UnrotateCanvasScreenPoint(WorldToScreen(CanvasWorldWidth * 0.5f, CanvasWorldHeight * 0.5f));
         if (RendersReferenceProjection)
         {
             if (!TryProjectScenePosition(new System.Numerics.Vector3(-CanvasWorldWidth * 0.5f, -CanvasWorldHeight * 0.5f, 0),
                     out topLeft, out _)
                 || !TryProjectScenePosition(new System.Numerics.Vector3(CanvasWorldWidth * 0.5f, CanvasWorldHeight * 0.5f, 0),
                     out bottomRight, out _)) return RectangleF.Empty;
+            topLeft = UnrotateCanvasScreenPoint(topLeft);
+            bottomRight = UnrotateCanvasScreenPoint(bottomRight);
         }
         return RectangleF.FromLTRB(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
     }
@@ -75,11 +92,17 @@ internal sealed partial class StageControl
     internal void DrawCanvasBackgroundGdi(Graphics graphics, RectangleF? boundsOverride = null)
     {
         if (CanvasPresentation is not { } canvas) return;
-        var bounds = boundsOverride ?? CanvasScreenBounds();
-        if (bounds.Width <= 0 || bounds.Height <= 0 || !bounds.IntersectsWith(ClientRectangle)) return;
+        var bounds = boundsOverride ?? CanvasUnrotatedScreenBounds();
+        if (bounds.Width <= 0 || bounds.Height <= 0) return;
         var state = graphics.Save();
         try
         {
+            if (boundsOverride is null && PlanarCanvasRotation != 0)
+            {
+                var rotation = CanvasScreenRotationTransform;
+                using var transform = new Matrix(rotation.M11, rotation.M12, rotation.M21, rotation.M22, rotation.M31, rotation.M32);
+                graphics.MultiplyTransform(transform);
+            }
             graphics.SetClip(bounds, CombineMode.Intersect);
             if (!_renderingCanvasOutput)
             {
@@ -120,15 +143,18 @@ internal sealed partial class StageControl
         if (_renderingCanvasOutput || CanvasPresentation is not { } canvas) return;
         var bounds = CanvasScreenBounds();
         if (bounds.Width <= 0 || bounds.Height <= 0) return;
+        var corners = CanvasScreenCorners();
+        using var path = new GraphicsPath();
+        path.AddPolygon(corners);
         if (canvas.Settings.DimOutside)
         {
             using var outside = new Region(ClientRectangle);
-            outside.Exclude(bounds);
+            outside.Exclude(path);
             using var shade = new SolidBrush(Color.FromArgb(105, 0, 0, 0));
             graphics.FillRegion(shade, outside);
         }
         using var border = new Pen(Color.FromArgb(165, Theme.Muted), Math.Max(1f, DeviceDpi / 96f));
-        graphics.DrawRectangle(border, bounds.X, bounds.Y, bounds.Width, bounds.Height);
+        graphics.DrawPolygon(border, corners);
     }
 
     internal void FitCanvas()
@@ -138,14 +164,16 @@ internal sealed partial class StageControl
         EndZoomLodPreview(invalidate: false);
         CameraX = 0;
         CameraY = 0;
-        Zoom = Math.Clamp(Math.Min(Width / VectorUnits.ToPixels(CanvasWorldWidth),
-            Height / VectorUnits.ToPixels(CanvasWorldHeight)) * 0.85f, 0.02f, 64f);
+        var cosine = Math.Abs(MathF.Cos(PlanarCanvasRotation));
+        var sine = Math.Abs(MathF.Sin(PlanarCanvasRotation));
+        Zoom = Math.Clamp(Math.Min(Width / VectorUnits.ToPixels(CanvasWorldWidth * cosine + CanvasWorldHeight * sine),
+            Height / VectorUnits.ToPixels(CanvasWorldWidth * sine + CanvasWorldHeight * cosine)) * 0.85f, 0.02f, 64f);
         if (RendersReferenceProjection && ReferenceDimension == SceneDimension.TwoD
             && Reference2DViewDirection == ReferenceViewDirection.Front)
         {
             CompleteReferenceCameraTransitionForDirectInput();
-            _referenceZoomScale = Math.Clamp(Math.Min(Width / CanvasWorldWidth,
-                Height / CanvasWorldHeight) * 0.85f / 0.035f, 0.25f, 8f);
+            _referenceZoomScale = Math.Clamp(Math.Min(Width / (CanvasWorldWidth * cosine + CanvasWorldHeight * sine),
+                Height / (CanvasWorldWidth * sine + CanvasWorldHeight * cosine)) * 0.85f / 0.035f, 0.25f, 8f);
             _referenceTargetX = 0;
             _referenceTargetY = -Height * 0.08f / (0.035f * _referenceZoomScale);
             _referenceTargetZ = 0;

@@ -70,6 +70,8 @@ internal sealed partial class VectorScene
         AtomCount = [];
         Argb = [];
         StrokeArgb = [];
+        ObjectHidden = [];
+        ObjectLocked = [];
         FillAutoMergeProtected = [];
         FillBoundaryLinkDetached = [];
         QuadraticLineEditing = [];
@@ -167,6 +169,8 @@ internal sealed partial class VectorScene
         AtomCount = GC.AllocateUninitializedArray<uint>(ObjectCount);
         Argb = GC.AllocateUninitializedArray<int>(ObjectCount);
         StrokeArgb = GC.AllocateUninitializedArray<int>(ObjectCount);
+        ObjectHidden = new bool[ObjectCount];
+        ObjectLocked = new bool[ObjectCount];
         FillAutoMergeProtected = new bool[ObjectCount];
         FillBoundaryLinkDetached = new bool[ObjectCount];
         QuadraticLineEditing = new bool[ObjectCount];
@@ -676,7 +680,10 @@ internal sealed partial class VectorScene
                     ? storedName
                     : "SVG";
 
-                var extracted = ImportedSvgBreakApart.Extract(source, forceStrokeOutlines: !createDrawingLayers, requireExactGeometry);
+                // Layer creation controls organization, not paint semantics.
+                // Scene composition also disables new layers; its editable
+                // strokes must survive subsequent instance break-apart.
+                var extracted = ImportedSvgBreakApart.Extract(source, forceStrokeOutlines: false, requireExactGeometry);
                 var placementScaleX = Width[sourceObject] / extracted.IntrinsicSize.Width;
                 var placementScaleY = Height[sourceObject] / extracted.IntrinsicSize.Height;
                 if (Math.Abs(placementScaleX - placementScaleY) > Math.Max(placementScaleX, placementScaleY) * 0.001f)
@@ -1137,6 +1144,8 @@ internal sealed partial class VectorScene
         AtomCount[index] = Math.Max(3, atoms);
         Argb[index] = colorArgb;
         StrokeArgb[index] = strokeColorArgb;
+        ObjectHidden[index] = false;
+        ObjectLocked[index] = false;
         FillAutoMergeProtected[index] = IsCollisionTerrainLayer(targetLayer);
         LinearGradientEnabled[index] = false;
         GradientKinds[index] = GradientKind.Solid;
@@ -1208,6 +1217,8 @@ internal sealed partial class VectorScene
                 AtomCount[index] = Math.Max(3, item.Atoms);
                 Argb[index] = objectArgb;
                 StrokeArgb[index] = item.StrokeArgb;
+                ObjectHidden[index] = false;
+                ObjectLocked[index] = false;
                 FillAutoMergeProtected[index] = IsCollisionTerrainLayer(layer);
                 var gradientKind = item.GradientKind == GradientKind.Solid && item.LinearGradientEnabled
                     ? GradientKind.Linear
@@ -1525,6 +1536,43 @@ internal sealed partial class VectorScene
         preview.RebuildGeometryIndex();
         preview.RebuildSummaries();
         return preview;
+    }
+
+    internal VectorScene CreateClipboardScene(IReadOnlyList<int> objects)
+    {
+        var copy = new VectorScene();
+        copy.CreateEmpty(1, 1);
+        copy.EnsureObjectCapacity(objects.Count);
+        foreach (var sourceIndex in objects)
+        {
+            var index = copy.ObjectCount++;
+            copy.CopyObjectDataFrom(this, sourceIndex, index);
+            copy.ObjectLayer[index] = 0;
+            copy.ObjectKeyframeFrame[index] = 0;
+            copy.ObjectOrder[index] = ++copy._nextObjectOrder;
+            copy.VirtualAtomCount += copy.AtomCount[index];
+        }
+        copy.CompleteDeferredBuild();
+        return copy;
+    }
+
+    internal int AppendClipboardObject(VectorScene source, int sourceIndex, int layer, PointF offset)
+    {
+        if ((uint)sourceIndex >= source.ObjectCount) throw new ArgumentOutOfRangeException(nameof(sourceIndex));
+        // Allocate through the normal append path so held exposures and Auto Key retain
+        // their usual ownership. Copy the complete payload, then restore that ownership.
+        var index = AppendObject(layer, PointF.Empty, new SizeF(1, 1), 0, 0,
+            Color.Transparent, Color.Transparent, source.AtomCount[sourceIndex], VectorAnimationEngine.ShapeKind.Rectangle);
+        var destinationLayer = ObjectLayer[index];
+        var keyframe = ObjectKeyframeFrame[index];
+        var order = ObjectOrder[index];
+        CopyObjectDataFrom(source, sourceIndex, index);
+        ObjectLayer[index] = destinationLayer;
+        ObjectKeyframeFrame[index] = keyframe;
+        ObjectOrder[index] = order;
+        ObjectSubOrder[index] = 0;
+        TranslateObjectsForPreview([index], offset.X, offset.Y);
+        return index;
     }
 
     internal void InvalidateDeferredTopologyQueries()
@@ -1911,6 +1959,8 @@ internal sealed partial class VectorScene
         AtomCount[to] = source.AtomCount[from];
         Argb[to] = source.Argb[from];
         StrokeArgb[to] = source.StrokeArgb[from];
+        ObjectHidden[to] = source.ObjectHidden[from];
+        ObjectLocked[to] = source.ObjectLocked[from];
         FillAutoMergeProtected[to] = source.FillAutoMergeProtected[from];
         FillBoundaryLinkDetached[to] = source.FillBoundaryLinkDetached[from];
         QuadraticLineEditing[to] = source.QuadraticLineEditing[from];
@@ -2052,6 +2102,8 @@ internal sealed partial class VectorScene
         var atomCount = AtomCount;
         var argb = Argb;
         var strokeArgb = StrokeArgb;
+        var objectHidden = ObjectHidden;
+        var objectLocked = ObjectLocked;
         var fillAutoMergeProtected = FillAutoMergeProtected;
         var fillBoundaryLinkDetached = FillBoundaryLinkDetached;
         var quadraticLineEditing = QuadraticLineEditing;
@@ -2084,6 +2136,8 @@ internal sealed partial class VectorScene
         Array.Resize(ref atomCount, ObjectCount);
         Array.Resize(ref argb, ObjectCount);
         Array.Resize(ref strokeArgb, ObjectCount);
+        Array.Resize(ref objectHidden, ObjectCount);
+        Array.Resize(ref objectLocked, ObjectCount);
         Array.Resize(ref fillAutoMergeProtected, ObjectCount);
         Array.Resize(ref fillBoundaryLinkDetached, ObjectCount);
         Array.Resize(ref quadraticLineEditing, ObjectCount);
@@ -2116,6 +2170,8 @@ internal sealed partial class VectorScene
         AtomCount = atomCount;
         Argb = argb;
         StrokeArgb = strokeArgb;
+        ObjectHidden = objectHidden;
+        ObjectLocked = objectLocked;
         FillAutoMergeProtected = fillAutoMergeProtected;
         FillBoundaryLinkDetached = fillBoundaryLinkDetached;
         QuadraticLineEditing = quadraticLineEditing;
@@ -2154,6 +2210,8 @@ internal sealed partial class VectorScene
         var atomCount = AtomCount;
         var argb = Argb;
         var strokeArgb = StrokeArgb;
+        var objectHidden = ObjectHidden;
+        var objectLocked = ObjectLocked;
         var fillAutoMergeProtected = FillAutoMergeProtected;
         var fillBoundaryLinkDetached = FillBoundaryLinkDetached;
         var quadraticLineEditing = QuadraticLineEditing;
@@ -2186,6 +2244,8 @@ internal sealed partial class VectorScene
         Array.Resize(ref atomCount, capacity);
         Array.Resize(ref argb, capacity);
         Array.Resize(ref strokeArgb, capacity);
+        Array.Resize(ref objectHidden, capacity);
+        Array.Resize(ref objectLocked, capacity);
         Array.Resize(ref fillAutoMergeProtected, capacity);
         Array.Resize(ref fillBoundaryLinkDetached, capacity);
         Array.Resize(ref quadraticLineEditing, capacity);
@@ -2218,6 +2278,8 @@ internal sealed partial class VectorScene
         AtomCount = atomCount;
         Argb = argb;
         StrokeArgb = strokeArgb;
+        ObjectHidden = objectHidden;
+        ObjectLocked = objectLocked;
         FillAutoMergeProtected = fillAutoMergeProtected;
         FillBoundaryLinkDetached = fillBoundaryLinkDetached;
         QuadraticLineEditing = quadraticLineEditing;

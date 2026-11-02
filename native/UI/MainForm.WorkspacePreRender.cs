@@ -4,6 +4,7 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class MainForm
 {
+    private const double WorkspacePreRenderPlanBudgetMilliseconds = 8;
     private const double WorkspacePreRenderSlowFrameMilliseconds = 40;
     private const double WorkspacePreRenderCooldownMilliseconds = 500;
     private readonly VectorScene _workspacePreRenderScene = new();
@@ -13,9 +14,15 @@ internal sealed partial class MainForm
     private int _workspacePreRenderCursor = int.MinValue;
     private int _workspacePreRenderAnchorFrame = int.MinValue;
     private long _workspacePreRenderNotBefore;
+    private readonly HashSet<int> _workspacePreRenderVisited = [];
 
     private void TickWorkspacePreRender()
     {
+        if (TickPreparedWorkspaceFrames()) return;
+        // Scene composition + speculative GPU rendering is synchronous on the
+        // UI thread. A fast current frame does not bound the cost of the next
+        // invisible frame. It must not interrupt the interactive refresh loop.
+        if (_stage.ContinuousSceneRefreshEnabled && IsSceneCompositionContext()) return;
         if (_playing
             || IsDisposed
             || !IsHandleCreated
@@ -23,6 +30,9 @@ internal sealed partial class MainForm
             || !_stage.Visible
             || !_stage.IsHandleCreated
             || !_stage.RendersReferenceProjection
+            // Speculative rendering runs on the UI thread. A slow measured
+            // render plan must not be rebuilt for invisible frames during idle.
+            || _stage.LastReference3DLayerItemsMilliseconds >= WorkspacePreRenderPlanBudgetMilliseconds
             || _stage.ReferenceCameraTransitionActive
             || _stage.Reference3DOpticalInteractionPreviewActive
             || Stopwatch.GetTimestamp() < _workspacePreRenderNotBefore)
@@ -50,11 +60,13 @@ internal sealed partial class MainForm
             _workspacePreRenderRevision = revision;
             _workspacePreRenderCursor = _frame;
             _workspacePreRenderAnchorFrame = _frame;
+            _workspacePreRenderVisited.Clear();
         }
         else if (_workspacePreRenderAnchorFrame != _frame)
         {
             _workspacePreRenderCursor = _frame;
             _workspacePreRenderAnchorFrame = _frame;
+            _workspacePreRenderVisited.Clear();
         }
 
         if (!TryGetWorkspacePreRenderFrame(out var frame)) return;
@@ -110,7 +122,7 @@ internal sealed partial class MainForm
                 ? start + PositiveModulo((long)cursor - start + offset, span)
                 : cursor + offset;
             if (!_playbackSettings.LoopPlayback && candidate > end) break;
-            if (candidate == current) continue;
+            if (candidate == current || !_workspacePreRenderVisited.Add(candidate)) continue;
 
             _workspacePreRenderCursor = candidate;
             frame = candidate;

@@ -95,6 +95,8 @@ internal class DrawingObjectInstanceDefinition
     public string DrawingObjectId { get; init; } = "";
     public string SceneLayerId { get; set; } = "";
     public string Name { get; set; } = "Instance";
+    public bool EditorHidden { get; set; }
+    public bool EditorLocked { get; set; }
     public bool Visible { get; set; } = true;
     public float X { get; set; }
     public float Y { get; set; }
@@ -175,6 +177,8 @@ internal class DrawingObjectInstanceDefinition
             DrawingObjectId = DrawingObjectId,
             SceneLayerId = SceneLayerId,
             Name = Name,
+            EditorHidden = EditorHidden,
+            EditorLocked = EditorLocked,
             Visible = Visible,
             X = X,
             Y = Y,

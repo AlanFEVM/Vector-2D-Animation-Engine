@@ -14,6 +14,7 @@ internal static partial class Benchmark
     {
         RunSvgNativeStorageAndExportRegression();
         RunDrawingObjectSvgViewportRegression();
+        RunSharedMaskSvgExportRegression();
         var scene = new VectorScene();
         scene.CreateEmpty(3, 8);
 
@@ -407,6 +408,44 @@ internal static partial class Benchmark
             new RectangleF(0, 0, 1, 1),
             "An inactive exposure must not contribute to SVG bounds.");
         Console.WriteLine("symbol_svg_viewport_roundtrip_passed=true");
+    }
+
+    private static void RunSharedMaskSvgExportRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty(2, 4);
+        var mask = scene.AddMaskLayer("Shared");
+        scene.SetSharedLayerMask(2, mask);
+        for (var layer = 1; layer <= 2; layer++)
+            scene.AddObject(layer, PointF.Empty, new SizeF(100, 100), 0, 0, Color.Teal, 4, ShapeKind.Rectangle);
+        scene.AddObject(mask, PointF.Empty, new SizeF(40, 40), 0, 0, Color.White, 4, ShapeKind.Rectangle);
+        scene.LayerLocked[mask] = true;
+        var document = DrawingObjectSvgExport.CreateDocument("shared", "Shared", scene, 0);
+        AssertTimeline(document.Descendants().Count(element => element.Name.LocalName == "mask") == 1
+            && document.Descendants().Count(element => element.Attribute("mask") is not null) == 2,
+            "A locked shared mask lost clipping or generated duplicate SVG IDs.");
+        AssertSvgExportViewport(document, new RectangleF(-20, -20, 40, 40),
+            "A locked mask must still constrain the exported viewport.");
+        var visible = ImportedSvgRasterizer.Rasterize(document.ToString(), 64, 64);
+        AssertTimeline(visible.Pixels.Where((_, index) => index % 4 == 3).Any(alpha => alpha > 0),
+            "A locked shared mask lost all visible content.");
+        scene.LayerVisible[mask] = false;
+        CheckEmpty(0, "hidden");
+        scene.LayerVisible[mask] = true;
+        var track = scene.Timeline.Tracks.Single(item => item.TargetId == scene.LayerIds[mask]);
+        scene.Timeline.InsertBlankKeyframe(track.Id, 2);
+        CheckEmpty(2, "blank exposure");
+        Console.WriteLine("symbol_svg_shared_locked_hidden_blank_mask_raster=ok");
+
+        void CheckEmpty(int frame, string condition)
+        {
+            var empty = DrawingObjectSvgExport.CreateDocument("shared", "Shared", scene, frame);
+            AssertSvgExportViewport(empty, new RectangleF(0, 0, 1, 1),
+                "A " + condition + " mask leaked content into the viewport.");
+            var raster = ImportedSvgRasterizer.Rasterize(empty.ToString(), 32, 32);
+            AssertTimeline(!raster.Pixels.Where((_, index) => index % 4 == 3).Any(alpha => alpha > 0),
+                "A " + condition + " mask leaked visible pixels.");
+        }
     }
 
     private static void AssertSvgExportViewport(XDocument document, RectangleF expected, string message)

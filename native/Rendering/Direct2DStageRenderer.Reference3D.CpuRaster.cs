@@ -619,7 +619,7 @@ internal sealed partial class Direct2DStageRenderer
             LastReference3DPlaybackGdiStatus = "drag_preview";
             return false;
         }
-        if (stage.SceneCompositionMaskClips.Count > 0)
+        if (stage.SceneCompositionMaskClips.Count > 0 || stage.CompositionMasksFor(stage.Scene) is not null)
         {
             LastReference3DPlaybackGdiStatus = "composition_mask";
             return false;
@@ -1222,7 +1222,8 @@ internal sealed partial class Direct2DStageRenderer
         if (renderItems.Count < minimumCommands
             || stage.Scene.RequiresIsolatedLayerCompositing
             || stage.SceneHasDistortionsForRendering(stage.Scene)
-            || stage.HasSceneCompositionMaskClips(stage.Scene))
+            || stage.HasSceneCompositionMaskClips(stage.Scene)
+            || stage.CompositionMasksFor(stage.Scene) is not null)
         {
             LastReference3DCpuRasterFallbackReason = renderItems.Count < minimumCommands
                 ? "too_few_items"

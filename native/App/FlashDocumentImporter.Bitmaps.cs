@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 using System.Drawing.Imaging;
 using System.Buffers.Binary;
 using System.IO.Compression;
@@ -9,14 +9,20 @@ namespace VectorAnimationEngine;
 
 internal static partial class FlashDocumentImporter
 {
+    [Flags]
+    private enum BitmapDecodeResult { None = 0, PartialAlpha = 1, OriginalIgnored = 2 }
+
     private static Dictionary<string, DrawingObjectDefinition> ImportBitmaps(
-        VectorProject project, XElement document, XflSource source, Dictionary<string, string> folders, List<string> temporaryFiles)
+        VectorProject project, XElement document, XflSource source, Dictionary<string, string> folders, List<string> temporaryFiles,
+        List<FlashImportDiagnostic> diagnostics, IProgress<FlashParseProgress>? progress = null)
     {
         var result = new Dictionary<string, DrawingObjectDefinition>(StringComparer.Ordinal);
         long totalBytes = 0;
-        foreach (var item in document.Descendants().Where(node => node.Name.LocalName == "DOMBitmapItem"))
+        var items = document.Descendants().Where(node => node.Name.LocalName == "DOMBitmapItem").ToArray();
+        foreach (var item in items)
         {
             var name = Required(item, "name");
+            progress?.Report(new("Reading Flash bitmaps", result.Count, items.Length, name));
             if (result.ContainsKey(name)) throw Failure(name, "Duplicate library bitmap name.");
             var reference = XflSource.SafeRelativePath(Required(item, "bitmapDataHRef"));
             var bytes = source.ReadBytes(reference.StartsWith("bin/", StringComparison.Ordinal) ? reference : "bin/" + reference, 128L * 1024 * 1024);
@@ -26,7 +32,16 @@ internal static partial class FlashDocumentImporter
             var file = Path.Combine(Path.GetTempPath(), "v2d-flash-" + Guid.NewGuid().ToString("N") + (jpeg ? ".jpg" : ".png"));
             temporaryFiles.Add(file);
             if (jpeg) File.WriteAllBytes(file, bytes);
-            else WriteLosslessBitmap(bytes, item, source, file, name);
+            else
+            {
+                var decoded = WriteLosslessBitmap(bytes, item, source, file, name);
+                if (decoded.HasFlag(BitmapDecodeResult.PartialAlpha))
+                    diagnostics.Add(new("bitmap-premultiplied-decoded", "library/" + name,
+                        "Embedded premultiplied bitmap pixels were decoded with their stored alpha unchanged. Straight RGB uses canonical integer rounding because original straight colours are unavailable; re-premultiplication preserves the embedded 8-bit pixels."));
+                if (decoded.HasFlag(BitmapDecodeResult.OriginalIgnored))
+                    diagnostics.Add(new("bitmap-original-mismatch", "library/" + name,
+                        "The library PNG differs from the embedded bitmap. The embedded pixels used by Animate were decoded instead."));
+            }
             if (!BitmapImageRasterizer.TryProbe(file, out var width, out var height, out var density, out var error))
                 throw Failure(name, "Invalid bitmap: " + error);
             var settings = BitmapImageImportSettings.Default with
@@ -47,28 +62,41 @@ internal static partial class FlashDocumentImporter
             symbol.Scene.AddBitmapObject(0, new PointF(VectorUnits.FromPixels(width / 2f), VectorUnits.FromPixels(height / 2f)),
                 new BitmapObjectData { ImageAssetId = asset.Id, PlacedSize = new SizeF(VectorUnits.FromPixels(width), VectorUnits.FromPixels(height)) });
             result.Add(name, symbol);
+            progress?.Report(new("Reading Flash bitmaps", result.Count, items.Length, name));
         }
         return result;
     }
 
-    private static void WriteLosslessBitmap(byte[] bytes, XElement item, XflSource source, string file, string name)
+    private static BitmapDecodeResult WriteLosslessBitmap(byte[] bytes, XElement item, XflSource source, string file, string name)
     {
-        // XFL 03/05 stores ARGB rows in a length-prefixed zlib stream. Accept only
-        // this verified variant; other layouts must not be guessed.
-        if (bytes.Length < 28 || bytes[0] != 3 || bytes[1] != 5 || bytes[25] != 1 || (bytes[24] & ~1) != 0)
+        // Verified XFL variants: 03/05 ARGB, and 03/03 indexed rows with an
+        // uncompressed ARGB palette. Both use length-prefixed zlib chunks.
+        if (bytes.Length < 28 || bytes[0] != 3 || bytes[1] is not (3 or 5) || (bytes[24] & ~1) != 0)
             throw Failure(name, "Unsupported XFL lossless bitmap encoding.");
+        var indexed = bytes[1] == 3;
         var width = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(4, 2));
         var height = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(6, 2));
+        var rowStride = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(2, 2));
         if (!BitmapImageFormats.TryValidateDecodedBudget(width, height, out var error)
-            || BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(2, 2)) != width * 4)
+            || rowStride != (indexed ? (width + 3) & ~3 : width * 4))
             throw Failure(name, "Invalid lossless bitmap dimensions or row stride: " + error);
         if (BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(8, 4)) != 0
             || BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(16, 4)) != 0
             || BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(12, 4)) != width * 20u
             || BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(20, 4)) != height * 20u)
             throw Failure(name, "Nonstandard lossless bitmap bounds are not supported.");
+        var paletteCount = 0;
+        var compressionOffset = 25;
+        if (indexed)
+        {
+            paletteCount = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(25, 2));
+            if (paletteCount is < 1 or > 256) throw Failure(name, "Invalid indexed bitmap palette size.");
+            compressionOffset = 27 + paletteCount * 4;
+        }
+        if (compressionOffset >= bytes.Length || bytes[compressionOffset] != 1)
+            throw Failure(name, "Unsupported or truncated lossless bitmap compression/palette data.");
         using var compressed = new MemoryStream();
-        var offset = 26;
+        var offset = compressionOffset + 1;
         while (true)
         {
             if (offset + 2 > bytes.Length) throw Failure(name, "Truncated bitmap chunk length.");
@@ -82,14 +110,31 @@ internal static partial class FlashDocumentImporter
         if (offset != bytes.Length) throw Failure(name, "Unexpected trailing bitmap data.");
         compressed.Position = 0;
         var pixels = new byte[checked(width * height * 4)];
-        using (var inflater = new ZLibStream(compressed, CompressionMode.Decompress, leaveOpen: true))
+        try
         {
-            inflater.ReadExactly(pixels);
+            using var inflater = new ZLibStream(compressed, CompressionMode.Decompress, leaveOpen: true);
+            if (indexed)
+            {
+                var row = new byte[rowStride];
+                for (var y = 0; y < height; y++)
+                {
+                    inflater.ReadExactly(row);
+                    for (var x = 0; x < width; x++)
+                    {
+                        var index = row[x];
+                        if (index >= paletteCount) throw Failure(name, "Indexed bitmap pixel exceeds its palette size.");
+                        bytes.AsSpan(27 + index * 4, 4).CopyTo(pixels.AsSpan((y * width + x) * 4, 4));
+                    }
+                }
+            }
+            else inflater.ReadExactly(pixels);
             if (inflater.ReadByte() != -1) throw Failure(name, "Oversized decoded bitmap data.");
         }
+        catch (EndOfStreamException) { throw Failure(name, "Truncated decoded bitmap data."); }
         var hasAlpha = (bytes[24] & 1) != 0;
-        // A stored PNG can retain straight-alpha colours that Flash's /256
-        // premultiplication quantized. Verify it matches the embedded data.
+        // Library source PNGs may be stale. Retain one only when its alpha and
+        // rounded premultiplied colours match the authoritative embedded pixels.
+        var result = BitmapDecodeResult.None;
         var href = Text(item, "href", "");
         if (href.Length > 0 && source.HasEntry("LIBRARY/" + XflSource.SafeRelativePath(href))
             && Path.GetExtension(href).Equals(".png", StringComparison.OrdinalIgnoreCase))
@@ -104,31 +149,43 @@ internal static partial class FlashDocumentImporter
             using var stream = new MemoryStream(original);
             using var image = new Bitmap(stream);
             if (image.Width != width || image.Height != height) throw Failure(name, "Original PNG dimensions differ from the Flash bitmap.");
-            for (var y = 0; y < height; y++)
+            var matches = true;
+            for (var y = 0; y < height && matches; y++)
                 for (var x = 0; x < width; x++)
                 {
                     var color = image.GetPixel(x, y);
                     var i = (y * width + x) * 4;
-                    var alpha = hasAlpha ? color.A : 255;
-                    var storedAlpha = alpha is > 0 and < 255 ? alpha + 1 : alpha;
-                    if (pixels[i] != storedAlpha
-                        || pixels[i + 1] != (alpha == 255 ? color.R : color.R * alpha / 256)
-                        || pixels[i + 2] != (alpha == 255 ? color.G : color.G * alpha / 256)
-                        || pixels[i + 3] != (alpha == 255 ? color.B : color.B * alpha / 256))
-                        throw Failure(name, "Original PNG does not match the Flash bitmap data.");
+                    var alpha = hasAlpha ? pixels[i] : 255;
+                    if (color.A != alpha
+                        || pixels[i + 1] != (color.R * alpha + 127) / 255
+                        || pixels[i + 2] != (color.G * alpha + 127) / 255
+                        || pixels[i + 3] != (color.B * alpha + 127) / 255)
+                    {
+                        matches = false;
+                        break;
+                    }
                 }
-            File.WriteAllBytes(file, original);
-            return;
+            if (matches)
+            {
+                File.WriteAllBytes(file, original);
+                return result;
+            }
+            result |= BitmapDecodeResult.OriginalIgnored;
         }
         var bgra = new byte[pixels.Length];
+        var partialAlpha = false;
         for (var i = 0; i < pixels.Length; i += 4)
         {
             var alpha = hasAlpha ? pixels[i] : 255;
-            if (hasAlpha && alpha != 0) // Stored alpha 255 is also ambiguous with original alpha 254.
-                throw Failure(name, "This bitmap has quantized partial transparency and no matching original PNG; exact restoration cannot be guaranteed.");
-            bgra[i] = pixels[i + 3];
-            bgra[i + 1] = pixels[i + 2];
-            bgra[i + 2] = pixels[i + 1];
+            // Embedded pixels/palette entries are premultiplied ARGB, not an inverse of the original
+            // author's PNG. Keep alpha, and choose straight bytes whose rounded
+            // re-premultiplication reproduces every embedded channel exactly.
+            if (hasAlpha && (pixels[i + 1] > alpha || pixels[i + 2] > alpha || pixels[i + 3] > alpha))
+                throw Failure(name, "Invalid premultiplied bitmap: a colour channel exceeds alpha.");
+            partialAlpha |= alpha is > 0 and < 255;
+            bgra[i] = Straight(pixels[i + 3], alpha);
+            bgra[i + 1] = Straight(pixels[i + 2], alpha);
+            bgra[i + 2] = Straight(pixels[i + 1], alpha);
             bgra[i + 3] = (byte)alpha;
         }
         using var decoded = new Bitmap(width, height, PixelFormat.Format32bppArgb);
@@ -139,6 +196,10 @@ internal static partial class FlashDocumentImporter
         }
         finally { decoded.UnlockBits(locked); }
         decoded.Save(file, ImageFormat.Png);
+        return partialAlpha ? result | BitmapDecodeResult.PartialAlpha : result;
+
+        static byte Straight(byte channel, int alpha) => alpha == 0 ? (byte)0
+            : (byte)((channel * 255 + alpha / 2) / alpha);
     }
 
     internal static void DeleteTemporaryImages(IReadOnlyList<string>? files)

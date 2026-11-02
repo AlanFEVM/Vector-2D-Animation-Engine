@@ -87,7 +87,8 @@ internal sealed partial class VectorScene
 
             for (var entryIndex = range.Start; entryIndex < range.Start + range.Count; entryIndex++)
             {
-                _activeObjectIndices[count++] = _activeObjectKeyframeEntries[entryIndex].ObjectIndex;
+                var objectIndex = _activeObjectKeyframeEntries[entryIndex].ObjectIndex;
+                if (!ObjectHidden[objectIndex]) _activeObjectIndices[count++] = objectIndex;
             }
         }
 

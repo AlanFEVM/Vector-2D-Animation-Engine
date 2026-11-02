@@ -2192,7 +2192,7 @@ internal sealed partial class MainForm : Form
         {
             if (_scene.ShapeKind[i] != ShapeKind.Line
                 || _scene.ObjectLayer[i] != layer
-                || !_scene.IsObjectActive(i, _frame))
+                || !_scene.IsObjectSelectable(i, _frame))
             {
                 continue;
             }
@@ -2270,12 +2270,14 @@ internal sealed partial class MainForm : Form
         var selectedStarts = _activeHandle == EditHandleKind.LineStart;
         var primaryEditIndex = _lineEndpointEditStarts.FindIndex(edit =>
             edit.ObjectIndex == _selectedObject && edit.StartEndpoint == selectedStarts);
-        var originalAnchor = _lineEndpointEditStarts[
-            primaryEditIndex >= 0 ? primaryEditIndex : 0].OriginalEndpoint;
+        var primaryEdit = _lineEndpointEditStarts[primaryEditIndex >= 0 ? primaryEditIndex : 0];
+        var originalAnchor = primaryEdit.OriginalEndpoint;
         var adjusted = MoveHandleWithPointer(originalAnchor, pointerStart, world);
-        var snapped = world == pointerStart
-            ? originalAnchor
-            : ResolveLineEndpointSnap(adjusted, layer, excludeEditedLines: true).Point;
+        var resolution = ResolveLineEndpointSnap(adjusted, layer, excludeEditedLines: true);
+        var connecting = (GetKeyState((int)Keys.C) & 0x8000) != 0;
+        var snapped = world == pointerStart ? originalAnchor
+            : resolution.SnappedToObject || connecting ? resolution.Point
+            : ApplyDrawingLineAngleSnap(primaryEdit.OppositeEndpoint, resolution.Point, temporarilySnapAngle: IsShiftPressed());
 
         var sharedAnchor = _lineEndpointEditStarts.Count > 1;
         foreach (var edit in _lineEndpointEditStarts)
@@ -2343,26 +2345,31 @@ internal sealed partial class MainForm : Form
         bool excludeEditedLines)
     {
         // Ctrl selects the corner gesture; it must not also force object snapping during it.
-        var temporarilySnapToObjects = _cornerDragSession is null && IsControlPressed();
+        if (excludeEditedLines && (GetKeyState((int)Keys.C) & 0x8000) != 0)
+        {
+            // C connects endpoints even when ordinary object/grid snapping is disabled.
+            return TrySnapToNearbyLineEndpoint(world, layer, true, out var connectedEndpoint)
+                ? (connectedEndpoint, true)
+                : (world, false);
+        }
         PointF? objectCandidate = null;
         if (EndpointSnappingRequested())
         {
             if (TrySnapToNearbyLineEndpoint(world, layer, excludeEditedLines, out var nearbyEndpoint))
                 objectCandidate = nearbyEndpoint;
-            if (TrySnapToNearbyPathPoint(world, layer, excludeEditedLines, out var nearbyPath)
-                && (objectCandidate is null || Distance(world, nearbyPath) < Distance(world, objectCandidate.Value)))
+            if (objectCandidate is null && TrySnapToNearbyPathPoint(world, layer, excludeEditedLines, out var nearbyPath))
             {
                 objectCandidate = nearbyPath;
             }
         }
 
-        return (
-            _drawSettings.ResolvePointSnap(
-                world,
-                objectCandidate,
-                temporarilySnapToObjects,
-                _stage.AdaptiveGridSnapStep),
-            objectCandidate.HasValue);
+        if (objectCandidate is { } target)
+        {
+            _stage.ClearSmartSnapLines();
+            return (target, true);
+        }
+        var resolved = ResolveSmartDrawingPointCore(world, GetLineEndpointSnapExclusions(excludeEditedLines));
+        return (VectorUnits.Quantize(resolved), _stage.SmartSnapLines.Count > 0);
     }
 
     private PointF ApplyDrawingLineAngleSnap(PointF start, PointF end, bool temporarilySnapAngle)
@@ -2372,6 +2379,8 @@ internal sealed partial class MainForm : Form
         var length = MathF.Sqrt(dx * dx + dy * dy);
         if (length <= DrawingTopologyRules.UnitIntersectionTolerance) return end;
         var angle = _drawSettings.SnapAngle(MathF.Atan2(dy, dx), temporarilySnapAngle);
+        if (!temporarilySnapAngle && !(_drawSettings.SnapEnabled && _drawSettings.AngleSnapEnabled))
+            angle = _drawSettings.SnapTightFitAngle(angle, length, SmartSnapTolerance);
         return VectorUnits.Quantize(new PointF(
             start.X + MathF.Cos(angle) * length,
             start.Y + MathF.Sin(angle) * length));
@@ -2652,7 +2661,6 @@ internal sealed partial class MainForm : Form
         }
         else
         {
-            start = VectorUnits.Quantize(SnapDrawingPoint(start));
             end = VectorUnits.Quantize(SnapDrawingPoint(end));
             (start, end) = ResolveShapeDragBounds(
                 start,

@@ -108,6 +108,7 @@ internal static class Program
         };
         startInfo.EnvironmentVariables["V2D_LOG_DIR"] = Path.Combine(root, "logs");
         startInfo.EnvironmentVariables["V2D_DEV_HOT_RELOAD"] = "0";
+        startInfo.EnvironmentVariables["V2D_ASSOCIATION_EXECUTABLE"] = Application.ExecutablePath;
 
         try
         {

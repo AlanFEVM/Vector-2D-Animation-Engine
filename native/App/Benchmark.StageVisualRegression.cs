@@ -13,6 +13,462 @@ internal static partial class Benchmark
     [System.Runtime.InteropServices.DllImport("dwmapi.dll", EntryPoint = "DwmFlush")]
     private static extern int FlushWorkspaceCapture();
 
+    private static void RunReferenceNavigationGeometryRegression()
+    {
+        RunReferenceColorGroupRegression();
+        RunReferenceTextNavigationRegression();
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var color = Color.FromArgb(255, 237, 52, 40);
+        for (var row = 0; row < 2; row++)
+            scene.AddFreehandStroke(0, [new PointF(-2000, row * 1200 - 600),
+                new PointF(0, row * 1200 - 600), new PointF(2000, row * 1200 - 600)],
+                180, color, brushStroke: false, atoms: 8);
+        scene.AddFreehandStroke(0, [new PointF(14000, 0), new PointF(16000, 0)],
+            180, color, brushStroke: false, atoms: 8);
+        scene.AddPathObjectContours(0,
+            [[new PointF(-1000, -300), new PointF(1000, -300), new PointF(1000, 300), new PointF(-1000, 300)]],
+            0, Color.Blue, Color.Transparent, 4);
+        using var stage = new StageControl(scene) { Dock = DockStyle.Fill, WorldGridOpacity = 0,
+            ExperimentalSceneLightingEnabled = false };
+        stage.ConfigureReferenceView(null, SceneDimension.TwoD);
+        stage.SetSceneCompositionResult(new SceneCompositionResult(
+            [new("one", "drawing"), new("two", "drawing"), new("offscreen", "drawing")],
+            [new(System.Numerics.Matrix4x4.Identity, new(0, 0, 200)),
+                new(System.Numerics.Matrix4x4.Identity, new(0, 0, 200)),
+                new(System.Numerics.Matrix4x4.Identity, new(0, 0, 200))]), scene);
+        using var form = new Form { ClientSize = new Size(640, 440), FormBorderStyle = FormBorderStyle.None };
+        form.Controls.Add(stage);
+        form.Show(); Application.DoEvents();
+        scene.TryGetFreehandWorldPoints(0, out var expectedPoints);
+        AssertTimeline(stage.GetReference3DSourceContours(0)[0].Points.AsSpan().SequenceEqual(expectedPoints),
+            "Batched source-point conversion changed the authored stroke coordinates.");
+        var renderer = (Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!;
+        var initialBuilds = renderer.ReferenceNavigationBuilds;
+        RequireMethod(typeof(Direct2DStageRenderer), "ClearBrushCache").Invoke(renderer, null);
+        foreach (var zoom in new[] { 1f, 0.8f, 1.5f, 8f, 0.25f })
+        {
+            stage.RestoreViewState(stage.CaptureViewState() with { ReferenceZoomScale = zoom, ReferenceTargetX = 250 });
+            stage.Refresh(); Application.DoEvents();
+            AssertTimeline(stage.LastFrameUsedDirect2D, "Navigation cache did not use Direct2D.");
+            using var capture = CaptureNavigation();
+            AssertTimeline(stage.TryProjectScenePoint(3, PointF.Empty, out var fillPoint, out _),
+                "Fill sample projection failed.");
+            var fillPixel = capture.GetPixel((int)fillPoint.X, (int)fillPoint.Y);
+            AssertTimeline(fillPixel.B > 240 && fillPixel.R < 10 && fillPixel.G < 10,
+                "Retained filled path changed its coverage or colour.");
+            foreach (var y in new[] { -600f, 600f })
+            {
+                AssertTimeline(stage.TryProjectScenePoint(0, new PointF(500, y), out var point, out _), "Stroke sample projection failed.");
+                var pixel = capture.GetPixel((int)point.X, (int)point.Y);
+                AssertTimeline(Math.Abs(pixel.R - color.R) < 10 && Math.Abs(pixel.G - color.G) < 10
+                    && Math.Abs(pixel.B - color.B) < 10, $"Retained stroke coverage changed: zoom={zoom}, sample={point}, pixel={pixel}, builds={renderer.ReferenceNavigationBuilds}, reuses={renderer.ReferenceNavigationReuses}.");
+            }
+            AssertTimeline(stage.GetReference3DProjectedSolid(0).SideSurfaces.Length == 0,
+                "Unlit front view constructed zero-area extrusion walls.");
+        }
+        AssertTimeline(renderer.ReferenceNavigationBuilds == initialBuilds
+            && renderer.ReferenceNavigationReuses >= 2,
+            "Zoom rebuilt retained navigation commands.");
+        stage.RestoreViewState(stage.CaptureViewState() with { ReferenceTargetX = 15000 });
+        stage.Refresh(); Application.DoEvents();
+        using (var capture = CaptureNavigation())
+        {
+            AssertTimeline(stage.TryProjectScenePoint(2, new PointF(15000, 0), out var point, out _),
+                "Offscreen stroke projection failed.");
+            var pixel = capture.GetPixel((int)point.X, (int)point.Y);
+            AssertTimeline(Math.Abs(pixel.R - color.R) < 10 && Math.Abs(pixel.G - color.G) < 10,
+                "Navigation cache culled artwork outside the original viewport.");
+        }
+        AssertTimeline(renderer.ReferenceNavigationBuilds == initialBuilds,
+            "Pan rebuilt retained navigation commands.");
+        scene.AddFreehandStroke(0, [new PointF(14000, 400), new PointF(16000, 400)],
+            180, Color.Lime, brushStroke: false, atoms: 8);
+        stage.Invalidate();
+        stage.Refresh(); Application.DoEvents();
+        AssertTimeline(renderer.ReferenceNavigationBuilds > initialBuilds,
+            "Content edits did not invalidate retained navigation commands.");
+        var viewBeforePreview = stage.CaptureViewState();
+        stage.NavigationPreviewEnabled = true;
+        stage.Refresh(); Application.DoEvents();
+        using (var settled = CaptureNavigation())
+        {
+            var reuses = renderer.NavigationPreviewReuses;
+            stage.PanReferenceCamera(5, 3);
+            stage.Refresh();
+            stage.ZoomReferenceCamera(1.05f);
+            stage.Refresh();
+            AssertTimeline(stage.ReferenceNavigationPreviewActive && renderer.NavigationPreviewReuses >= reuses + 2,
+                "Opt-in navigation did not reuse its expanded preview.");
+            var buildsAtSettle = renderer.NavigationPreviewBuilds;
+            RequireMethod(typeof(StageControl), "EndZoomLodPreview").Invoke(stage, [true]);
+            stage.Refresh();
+            AssertTimeline(!stage.ReferenceNavigationPreviewActive, "Navigation preview did not settle.");
+            AssertTimeline(renderer.NavigationPreviewBuilds == buildsAtSettle,
+                "Settling rebuilt an already covered preview image.");
+            var settledReuses = renderer.NavigationPreviewReuses;
+            stage.Refresh();
+            AssertTimeline(renderer.NavigationPreviewReuses == settledReuses,
+                "Settled rendering consumed the interactive preview.");
+            stage.NavigationPreviewEnabled = false;
+            using var native = CaptureNavigation();
+            stage.NavigationPreviewEnabled = true;
+            using var enabled = CaptureNavigation();
+            var maximumDifference = 0;
+            for (var y = 0; y < native.Height; y++)
+                for (var x = 0; x < native.Width; x++)
+                {
+                    var a = native.GetPixel(x, y); var b = enabled.GetPixel(x, y);
+                    maximumDifference = Math.Max(maximumDifference, Math.Max(Math.Abs(a.R - b.R),
+                        Math.Max(Math.Abs(a.G - b.G), Math.Abs(a.B - b.B))));
+                }
+            AssertTimeline(maximumDifference <= 2,
+                $"Opt-in preview changed settled vector pixels: {maximumDifference}.");
+            // Cross the overscan boundary with opaque artwork spanning both
+            // reused pixels and the newly exposed strip.
+            scene.AddPathObjectContours(0,
+                [[new PointF(-200000, -10000), new PointF(200000, -10000),
+                    new PointF(200000, 10000), new PointF(-200000, 10000)]],
+                0, Color.Purple, Color.Transparent, 4);
+            stage.Invalidate(); stage.Refresh();
+            var scrolls = renderer.NavigationPreviewScrolls;
+            var painted = renderer.NavigationPreviewPaintedPixels;
+            stage.PanReferenceCamera(stage.Width * 0.6f, 0);
+            stage.Refresh();
+            AssertTimeline(renderer.NavigationPreviewScrolls == scrolls + 1,
+                "Navigation cache did not scroll its overlapping pixels.");
+            AssertTimeline(renderer.NavigationPreviewPaintedPixels > painted
+                && renderer.NavigationPreviewPaintedPixels - painted < (long)stage.Width * stage.Height * 4,
+                "Scrolling repainted the full expanded image instead of exposed strips.");
+            using (var preview = CaptureNavigation())
+            {
+                foreach (var x in new[] { stage.Width / 4, stage.Width * 3 / 4 })
+                {
+                    var pixel = preview.GetPixel(x, stage.Height / 2);
+                    AssertTimeline(Math.Abs(pixel.R - Color.Purple.R) < 3
+                        && Math.Abs(pixel.B - Color.Purple.B) < 3 && pixel.G < 3,
+                        "Scroll preview lost reused or newly exposed artwork.");
+                }
+            }
+            stage.PanReferenceCamera(-stage.Width * 1.2f - 0.375f, 0);
+            stage.Refresh();
+            AssertTimeline(renderer.NavigationPreviewScrolls == scrolls + 2,
+                "Reverse fractional navigation failed to preserve its integer pixel overlap.");
+            using (var preview = CaptureNavigation())
+            {
+                var pixel = preview.GetPixel(stage.Width / 2, stage.Height / 2);
+                AssertTimeline(Math.Abs(pixel.R - Color.Purple.R) < 3
+                    && Math.Abs(pixel.B - Color.Purple.B) < 3 && pixel.G < 3,
+                    "Reverse scrolling lost the filled artwork.");
+            }
+            buildsAtSettle = renderer.NavigationPreviewBuilds;
+            RequireMethod(typeof(StageControl), "EndZoomLodPreview").Invoke(stage, [true]);
+            stage.Refresh();
+            AssertTimeline(!stage.ReferenceNavigationPreviewActive
+                && renderer.NavigationPreviewBuilds == buildsAtSettle,
+                "Settled scroll rebuilt its image or retained preview mode.");
+        }
+        var previewBuildsBeforeReset = renderer.NavigationPreviewBuilds;
+        renderer.ReleaseTarget(); stage.Refresh();
+        AssertTimeline(stage.LastFrameUsedDirect2D && renderer.NavigationPreviewBuilds > previewBuildsBeforeReset,
+            "Device reset retained a stale navigation image.");
+        stage.NavigationPreviewEnabled = false;
+        var buildsBeforeReset = renderer.ReferenceNavigationBuilds;
+        renderer.ReleaseTarget();
+        stage.Refresh(); Application.DoEvents();
+        AssertTimeline(stage.LastFrameUsedDirect2D && renderer.ReferenceNavigationBuilds > buildsBeforeReset,
+            "Device recreation reused stale navigation commands.");
+        stage.RestoreViewState(viewBeforePreview);
+        stage.ConfigureReferenceView(null, SceneDimension.ThreeD);
+        stage.SetReferenceCameraOrientation(0.5f, 0.4f);
+        AssertTimeline(stage.GetReference3DProjectedSolid(0).SideSurfaces.Length > 0,
+            "Angled projection lost visible extrusion walls.");
+        renderer.ReleaseTarget();
+        RunNavigationCompleteContentRegression();
+        Console.WriteLine("reference_navigation_collapsed_walls=passed");
+        Bitmap CaptureNavigation()
+        {
+            for (var present = 0; present < 3; present++)
+            {
+                stage.Refresh(); FlushWorkspaceCapture(); Application.DoEvents();
+                Thread.Sleep(20);
+            }
+            FlushWorkspaceCapture();
+            return CaptureBenchmarkWindow(form);
+        }
+    }
+
+    private static void RunReferenceColorGroupRegression()
+    {
+        var scene = new VectorScene(); scene.CreateEmpty();
+        var folder = scene.AddFolderLayer("RGB group");
+        scene.SetLayerParent(0, folder);
+        scene.SetLayerBlendMode(folder, LayerBlendMode.Isolate);
+        var filters = new SymbolFilters { ColorTransform = new() { Enabled = true,
+            RedMultiplier = 0.5f, GreenMultiplier = 0.5f, BlueMultiplier = 0.5f } };
+        scene.SetLayerSymbolFilters(folder, filters);
+        scene.AddPathObjectContours(0,
+            [[new PointF(-1000, -1000), new PointF(1000, -1000), new PointF(1000, 1000), new PointF(-1000, 1000)]],
+            0, Color.Red, Color.Transparent, 4);
+        scene.AddPathObjectContours(0,
+            [[new PointF(-500, -500), new PointF(1500, -500), new PointF(1500, 500), new PointF(-500, 500)]],
+            0, Color.FromArgb(128, 0, 0, 255), Color.Transparent, 4);
+        using var stage = new StageControl(scene) { Dock = DockStyle.Fill, WorldGridOpacity = 0,
+            ExperimentalSceneLightingEnabled = false };
+        stage.ConfigureReferenceView(null, SceneDimension.TwoD);
+        stage.SetSceneCompositionResult(new SceneCompositionResult([new("base", "drawing"), new("overlap", "drawing")],
+            [new(System.Numerics.Matrix4x4.Identity, System.Numerics.Vector3.Zero),
+                new(System.Numerics.Matrix4x4.Identity, System.Numerics.Vector3.Zero)]), scene);
+        using var form = new Form { ClientSize = new Size(640, 440), FormBorderStyle = FormBorderStyle.None };
+        form.Controls.Add(stage); form.Show(); Application.DoEvents();
+        var renderer = (Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!;
+        var builds = renderer.ReferenceNavigationBuilds;
+        foreach (var zoom in new[] { 1f, 0.5f, 2f })
+        {
+            stage.RestoreViewState(stage.CaptureViewState() with { ReferenceZoomScale = zoom });
+            stage.Refresh(); FlushWorkspaceCapture(); Application.DoEvents();
+            AssertTimeline(stage.LastFrameUsedDirect2D, $"RGB-only isolated group fell back to software: eligible={Direct2DStageRenderer.CanDrawReferenceColorGroups(stage)}, reason={renderer.ReferenceNavigationFallbackReason}, {string.Join(" | ", AppLog.RecentEntries.TakeLast(4))}");
+            using var expected = new Bitmap(stage.Width, stage.Height);
+            using (var graphics = Graphics.FromImage(expected))
+                RequireMethod(typeof(StageControl), "DrawGdiReferenceBase").Invoke(stage, [graphics]);
+            stage.Refresh(); FlushWorkspaceCapture(); Thread.Sleep(30);
+            using var actual = CaptureBenchmarkWindow(form);
+            foreach (var point in new[] { new PointF(-750, 0), new PointF(0, 0) })
+            {
+                AssertTimeline(stage.TryProjectScenePoint(0, point, out var projected, out _), "RGB sample projection failed.");
+                var x = (int)projected.X; var y = (int)projected.Y;
+                var a = actual.GetPixel(x, y);
+                // The hardware renderer uses the same premultiplied SourceOver
+                // as its ordinary path pass. GDI HighQuality gamma-corrects
+                // translucent overlap, so compare that sample analytically.
+                var b = point == PointF.Empty ? Color.FromArgb(64, 0, 64) : expected.GetPixel(x, y);
+                AssertTimeline(Math.Abs(a.R - b.R) <= 3 && Math.Abs(a.G - b.G) <= 3 && Math.Abs(a.B - b.B) <= 3,
+                    $"RGB group changed overlapping/translucent colours: {a} versus {b}.");
+            }
+        }
+        AssertTimeline(renderer.ReferenceNavigationBuilds == builds, "RGB navigation rebuilt the group commands.");
+        scene.SetLayerSymbolFilters(folder, filters with { ColorTransform = filters.ColorTransform with { RedMultiplier = 0.25f } });
+        stage.Invalidate(); stage.Refresh();
+        AssertTimeline(renderer.ReferenceNavigationBuilds > builds, "Colour edits did not invalidate group commands.");
+        AssertTimeline(stage.TryProjectScenePoint(0, new PointF(-750, 0), out var lockSample, out _), "Lock sample projection failed.");
+        var pointer = Point.Round(lockSample);
+        AssertTimeline(stage.TryHitTestProjectedObject(pointer, 7, out _), "Unlocked projected artwork was not selectable.");
+        scene.SetLayerLocked(folder, true);
+        stage.Invalidate();
+        AssertTimeline(!stage.TryHitTestProjectedObject(pointer, 7, out _)
+            && stage.GetProjectedSelectionObjectBounds().Count == 0,
+            "Locked parent folder remained selectable by projected point or marquee selection.");
+        scene.SetLayerLocked(folder, false);
+        stage.Invalidate();
+        AssertTimeline(stage.TryHitTestProjectedObject(pointer, 7, out _), "Unlock did not restore projected selection.");
+        stage.NavigationPreviewEnabled = true;
+        stage.Refresh();
+        var revisionBeforeMove = scene.GeometryRevision;
+        var preparedGroupBuilds = renderer.ReferenceNavigationBuilds;
+        AssertTimeline(stage.BeginInstanceMovePreview([0]), "Planar instance move preview did not start.");
+        stage.UpdateInstanceMovePreview(new System.Numerics.Vector3(2000, 0, 0));
+        stage.Refresh(); Application.DoEvents(); FlushWorkspaceCapture(); Thread.Sleep(30);
+        AssertTimeline(stage.LastFrameUsedDirect2D && scene.GeometryRevision == revisionBeforeMove,
+            "Instance move preview mutated geometry or fell back to software.");
+        AssertTimeline(renderer.ReferenceNavigationBuilds == preparedGroupBuilds,
+            "Starting a whole-instance move re-recorded the prepared scene commands.");
+        using (var moved = CaptureBenchmarkWindow(form))
+        {
+            stage.TryProjectScenePosition(new System.Numerics.Vector3(2000, 0, 0), out var projectedMove, out _);
+            var movedPixel = moved.GetPixel((int)projectedMove.X, (int)projectedMove.Y);
+            AssertTimeline(movedPixel.R > 40 && movedPixel.B < 10, $"Moved RGB group lost its source colour: {movedPixel}.");
+            stage.TryProjectScenePosition(System.Numerics.Vector3.Zero, out var originalPosition, out _);
+            var vacated = moved.GetPixel((int)originalPosition.X, (int)originalPosition.Y);
+            AssertTimeline(vacated.R < 40 && vacated.B > 40,
+                $"Moving the instance left a ghost or erased the stationary overlap: {vacated}.");
+        }
+        var moveTimes = new List<double>();
+        for (var sample = 0; sample < 120; sample++)
+        {
+            var started = Stopwatch.GetTimestamp();
+            stage.UpdateInstanceMovePreview(new System.Numerics.Vector3(2000 + sample, sample, 0));
+            stage.Refresh();
+            moveTimes.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+        }
+        moveTimes.Sort();
+        Console.WriteLine($"instance_move_preview_mean_ms={moveTimes.Average():F3} p95_ms={moveTimes[113]:F3} max_ms={moveTimes[^1]:F3}");
+        stage.EndInstanceMovePreview(); stage.Refresh();
+        AssertTimeline(stage.InstanceMovePreviewObjects is null && scene.GeometryRevision == revisionBeforeMove,
+            "Cancelling the instance move preview changed the scene.");
+        AssertTimeline(renderer.ReferenceNavigationBuilds == preparedGroupBuilds,
+            "Cancelling a display-only move discarded the prepared scene commands.");
+        using (var preparedBitmap = stage.PrepareWorkspaceBaseBitmap().Bitmap)
+        {
+            stage.UsePreparedWorkspaceBaseBitmap(preparedBitmap, stage.LastStats);
+            stage.Refresh();
+            AssertTimeline(!stage.LastFrameUsedDirect2D, "Prepared frame fixture did not use its software snapshot.");
+            AssertTimeline(stage.BeginInstanceMovePreview([0]), "Prepared scene frame blocked the GPU move preview.");
+            stage.UpdateInstanceMovePreview(new System.Numerics.Vector3(2000, 0, 0)); stage.Refresh();
+            AssertTimeline(stage.LastFrameUsedDirect2D, "Moving a prepared frame remained on software presentation.");
+            stage.EndInstanceMovePreview(); stage.Refresh();
+        }
+        scene.SetLayerSymbolFilters(folder, filters with { Blur = new() { Enabled = true, BlurX = 4, BlurY = 4 } });
+        stage.Invalidate(); stage.Refresh(); FlushWorkspaceCapture(); Application.DoEvents();
+        AssertTimeline(Direct2DStageRenderer.CanDrawReferenceColorGroups(stage) && stage.LastFrameUsedDirect2D,
+            "A filtered group sent the entire planar scene back to software composition.");
+        using (var expected = new Bitmap(stage.Width, stage.Height))
+        {
+            using (var graphics = Graphics.FromImage(expected))
+                RequireMethod(typeof(StageControl), "DrawGdiReferenceBase").Invoke(stage, [graphics]);
+            stage.Refresh(); FlushWorkspaceCapture(); Thread.Sleep(30);
+            using var actual = CaptureBenchmarkWindow(form);
+            stage.TryProjectScenePoint(0, new PointF(-750, 0), out var sample, out _);
+            var a = actual.GetPixel((int)sample.X, (int)sample.Y);
+            var b = expected.GetPixel((int)sample.X, (int)sample.Y);
+            AssertTimeline(Math.Abs(a.R - b.R) <= 3 && Math.Abs(a.G - b.G) <= 3 && Math.Abs(a.B - b.B) <= 3,
+                $"Retained filter changed the isolated colour: {a} versus {b}.");
+        }
+        AssertTimeline(!stage.BeginInstanceMovePreview([0]), "A partial filtered group was frozen during its internal move.");
+        preparedGroupBuilds = renderer.ReferenceNavigationBuilds;
+        AssertTimeline(stage.BeginInstanceMovePreview([0, 1]), "A complete filtered group could not use local move updates.");
+        stage.UpdateInstanceMovePreview(new System.Numerics.Vector3(300, 0, 0)); stage.Refresh();
+        AssertTimeline(stage.LastFrameUsedDirect2D, "Filtered group translation fell back to software.");
+        AssertTimeline(renderer.ReferenceNavigationBuilds == preparedGroupBuilds,
+            "Translating a complete filtered group rebuilt immutable filter inputs.");
+        stage.EndInstanceMovePreview();
+        scene.SetLayerSymbolFilters(folder, filters with { ColorTransform = filters.ColorTransform with { AlphaMultiplier = 0.5f } });
+        stage.Invalidate(); stage.Refresh();
+        AssertTimeline(stage.LastFrameUsedDirect2D, "Instance alpha sent the entire scene to software composition.");
+        FlushWorkspaceCapture(); Thread.Sleep(30);
+        using (var actual = CaptureBenchmarkWindow(form))
+        {
+            stage.TryProjectScenePoint(0, new PointF(-750, 0), out var sample, out _);
+            var pixel = actual.GetPixel((int)sample.X, (int)sample.Y);
+            AssertTimeline(Math.Abs(pixel.R - 73) <= 3 && Math.Abs(pixel.G - 10) <= 3 && Math.Abs(pixel.B - 11) <= 3,
+                $"Group alpha was applied to RGB or coverage twice: {pixel}.");
+        }
+        stage.ContinuousSceneRefreshEnabled = true; stage.Refresh();
+        var refreshCount = stage.RenderedFrameCount;
+        var lastPresentation = (long)RequireField(typeof(StageControl), "_lastFramePresentedAt").GetValue(stage)!;
+        RequireField(typeof(StageControl), "_sceneRefreshPostedPresentation").SetValue(stage, lastPresentation - 1);
+        RequireMethod(typeof(StageControl), "PresentSceneRefresh").Invoke(stage, null);
+        AssertTimeline(stage.RenderedFrameCount == refreshCount,
+            "A queued idle refresh drew again after input had already presented a newer frame.");
+        var refreshClock = Stopwatch.StartNew();
+        while (refreshClock.ElapsedMilliseconds < 250) { Application.DoEvents(); Thread.Sleep(1); }
+        AssertTimeline(stage.RenderedFrameCount >= refreshCount + 4, "Visible idle scene did not keep presenting cached frames.");
+        stage.ContinuousSceneRefreshEnabled = false; stage.Refresh();
+        refreshCount = stage.RenderedFrameCount;
+        refreshClock.Restart();
+        while (refreshClock.ElapsedMilliseconds < 50) { Application.DoEvents(); Thread.Sleep(1); }
+        AssertTimeline(stage.RenderedFrameCount == refreshCount, "Stopped scene refresh kept posting render work.");
+        Console.WriteLine("reference_color_groups=passed");
+    }
+
+    private static void RunReferenceTextNavigationRegression()
+    {
+        var imported = new TextObjectData("100111100", "Helvetica", 26.25f, TextFontStyle.Regular,
+            TextHorizontalAlignment.Center, new SizeF(4701.25f, 977.49994f));
+        AssertTimeline(TextGeometry.TryCreateWorldContours(imported, PointF.Empty, imported.LayoutSize, 0, out var recovered)
+            && recovered.Length > 0, "An imported short text box lost its entire glyph outline.");
+        var scene = new VectorScene(); scene.CreateEmpty();
+        var text = scene.AddTextObject(0, PointF.Empty, new TextObjectData("O", "Segoe UI", 72,
+            TextFontStyle.Regular, TextHorizontalAlignment.Center, new SizeF(2400, 2400)), Color.Coral);
+        using var stage = new StageControl(scene) { Dock = DockStyle.Fill, WorldGridOpacity = 0,
+            ExperimentalSceneLightingEnabled = false, NavigationPreviewEnabled = true };
+        stage.ConfigureReferenceView(null, SceneDimension.TwoD);
+        stage.SetSceneCompositionResult(new SceneCompositionResult([new("text", "drawing")],
+            [SceneCompositionObjectPose.Identity]), scene);
+        using var form = new Form { ClientSize = new Size(640, 440), FormBorderStyle = FormBorderStyle.None };
+        form.Controls.Add(stage); form.Show(); Application.DoEvents(); stage.Refresh();
+        AssertTimeline(stage.LastFrameUsedDirect2D && Direct2DStageRenderer.CanDrawReferenceColorGroups(stage),
+            "Editable text disabled retained scene rendering.");
+        using var expected = new Bitmap(stage.Width, stage.Height);
+        using (var graphics = Graphics.FromImage(expected))
+            RequireMethod(typeof(StageControl), "DrawGdiReferenceBase").Invoke(stage, [graphics]);
+        stage.Refresh(); FlushWorkspaceCapture(); Thread.Sleep(30);
+        using var actual = CaptureBenchmarkWindow(form);
+        var samples = 0;
+        for (var y = 3; y < stage.Height - 3; y += 3)
+        for (var x = 3; x < stage.Width - 3; x += 3)
+        {
+            if (expected.GetPixel(x, y).ToArgb() != Color.Coral.ToArgb()
+                || expected.GetPixel(x + 1, y).ToArgb() != Color.Coral.ToArgb()) continue;
+            var pixel = actual.GetPixel(x, y);
+            AssertTimeline(Math.Abs(pixel.R - Color.Coral.R) <= 3 && Math.Abs(pixel.G - Color.Coral.G) <= 3
+                && Math.Abs(pixel.B - Color.Coral.B) <= 3, "Retained text changed glyph coverage or colour.");
+            samples++;
+        }
+        AssertTimeline(samples > 10, "Retained text comparison did not sample visible glyph interiors.");
+        var renderer = (Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!;
+        var builds = renderer.ReferenceNavigationBuilds;
+        AssertTimeline(stage.BeginInstanceMovePreview([text]), "Editable text blocked instance movement caching.");
+        stage.UpdateInstanceMovePreview(new System.Numerics.Vector3(400, 0, 0)); stage.Refresh();
+        stage.EndInstanceMovePreview(); stage.Refresh();
+        AssertTimeline(renderer.ReferenceNavigationBuilds == builds && scene.TryGetTextObjectData(text, out _),
+            "Moving text rebuilt the scene or discarded its editable payload.");
+        Console.WriteLine("reference_text_navigation=passed");
+    }
+
+    private static void RunNavigationCompleteContentRegression()
+    {
+        var scene = new VectorScene(); scene.CreateEmpty();
+        scene.AddPathObjectContours(0,
+            [[new PointF(-1000, -1000), new PointF(1000, -1000), new PointF(1000, 1000), new PointF(-1000, 1000)]],
+            0, Color.Blue, Color.Transparent, 4);
+        using var stage = new StageControl(scene) { Dock = DockStyle.Fill, WorldGridOpacity = 0,
+            NavigationPreviewEnabled = true, ExperimentalSceneLightingEnabled = false };
+        stage.ConfigureReferenceView(null, SceneDimension.TwoD);
+        stage.SetSceneCompositionResult(new SceneCompositionResult([new("small", "drawing")],
+            [new(System.Numerics.Matrix4x4.Identity, new(0, 0, 200))]), scene);
+        using var form = new Form { ClientSize = new Size(640, 440), FormBorderStyle = FormBorderStyle.None };
+        form.Controls.Add(stage); form.Show(); Application.DoEvents();
+        stage.Refresh();
+        var renderer = (Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!;
+        AssertTimeline(renderer.NavigationPreviewContainsContent, $"Small scene was not fully contained: builds={renderer.ReferenceNavigationBuilds}, preview={renderer.NavigationPreviewBuilds}, reason={renderer.ReferenceNavigationFallbackReason}, d2d={stage.LastFrameUsedDirect2D}.");
+        var builds = renderer.NavigationPreviewBuilds;
+        stage.PanReferenceCamera(2000, 0); stage.Refresh();
+        stage.PanReferenceCamera(-2000, 0); stage.Refresh();
+        AssertTimeline(renderer.NavigationPreviewBuilds == builds,
+            "Panning a completely cached scene rebuilt empty surrounding space.");
+        for (var i = 0; i < 3; i++) { stage.Refresh(); FlushWorkspaceCapture(); Application.DoEvents(); Thread.Sleep(20); }
+        using (var image = CaptureBenchmarkWindow(form))
+        {
+            AssertTimeline(stage.TryProjectScenePoint(0, PointF.Empty, out var center, out _), "Small scene projection failed.");
+            var pixel = image.GetPixel((int)center.X, (int)center.Y);
+            AssertTimeline(pixel.B > 240 && pixel.R < 10 && pixel.G < 10,
+                $"Complete-content navigation lost artwork after returning: {pixel}, point={center}.");
+        }
+        scene.AddPathObjectContours(0,
+            [[new PointF(200000, -100), new PointF(201000, -100),
+                new PointF(201000, 100), new PointF(200000, 100)]],
+            0, Color.Lime, Color.Transparent, 4);
+        stage.Invalidate(); stage.Refresh();
+        AssertTimeline(!renderer.NavigationPreviewContainsContent,
+            "Editing distant content retained a stale complete-content claim.");
+        renderer.ReleaseTarget();
+    }
+
+    private static void RunWorkspaceSchedulingRegression()
+    {
+        using var form = new MainForm();
+        var settings = (PlaybackSettingsPanel)RequireField(typeof(MainForm), "_playbackSettings").GetValue(form)!;
+        settings.LoopPlayback = true;
+        settings.SetFrameRange(0, 3, notifyChanged: false);
+        RequireField(typeof(MainForm), "_frame").SetValue(form, 0);
+        RequireField(typeof(MainForm), "_workspacePreRenderCursor").SetValue(form, 0);
+        var next = RequireMethod(typeof(MainForm), "TryGetWorkspacePreRenderFrame");
+        var seen = new HashSet<int>();
+        for (var index = 0; index < 3; index++)
+        {
+            object?[] arguments = [0];
+            if (!(bool)next.Invoke(form, arguments)! || !seen.Add((int)arguments[0]!) || (int)arguments[0]! == 0)
+                throw new InvalidOperationException("Workspace pre-render repeated or omitted a candidate.");
+        }
+        for (var index = 0; index < 5; index++)
+        {
+            object?[] arguments = [0];
+            if ((bool)next.Invoke(form, arguments)!)
+                throw new InvalidOperationException("Workspace pre-render restarted its completed idle sweep.");
+        }
+        Console.WriteLine("workspace_prerender_bounded_sweep=passed");
+    }
+
     private static void RunWorkspacePreRenderTargetRegression()
     {
         const int initialWidth = 640;

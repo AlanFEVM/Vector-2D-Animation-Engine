@@ -87,6 +87,7 @@ internal sealed class DrawingObjectSnapPointRestartSnapshot
 
 internal sealed class SceneRestartSnapshot
 {
+    public RulerGuide[] RulerGuides { get; init; } = [];
     public string Id { get; init; } = "";
     public string Name { get; init; } = "Scene";
     public string Detail { get; init; } = "Scene composition context";
@@ -129,6 +130,8 @@ internal sealed class InstanceRestartSnapshot
     public string DrawingObjectId { get; init; } = "";
     public string SceneLayerId { get; init; } = "";
     public string Name { get; init; } = "Instance";
+    public bool EditorHidden { get; init; }
+    public bool EditorLocked { get; init; }
     public bool Visible { get; init; } = true;
     public float X { get; init; }
     public float Y { get; init; }

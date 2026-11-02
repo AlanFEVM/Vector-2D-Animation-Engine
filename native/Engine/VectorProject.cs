@@ -614,6 +614,17 @@ internal sealed partial class VectorProject
         }
     }
 
+    internal bool TryRestoreHistoryDrawingObject(DrawingObjectDefinition drawing, int index)
+    {
+        var existing = FindDrawingObject(drawing.Id);
+        if (existing is not null) return ReferenceEquals(existing, drawing);
+        if (!IsValidRestartId(drawing.Id) || drawing.Instances.Any(instance => instance.DrawingObjectId == drawing.Id
+            || FindDrawingObject(instance.DrawingObjectId) is null)) return false;
+        _drawingObjects.Insert(Math.Clamp(index, 0, _drawingObjects.Count), drawing);
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
     public bool TryRemoveDrawingObject(string drawingObjectId, out DrawingObjectDefinition? removed)
     {
         removed = null;
@@ -1100,6 +1111,7 @@ internal sealed partial class VectorProject
                     Dimension = scene.Dimension,
                     Camera = CloneCamera(scene.Camera),
                     Canvas = scene.Canvas,
+                    RulerGuides = RulerGuideValidation.Copy(scene.RulerGuides),
                     CanvasWelcomeDismissed = scene.CanvasWelcomeDismissed,
                     Lights = scene.Lights.Select(CreateLightRestartSnapshot).ToArray(),
                     CreatedAt = scene.CreatedAt,
@@ -1199,6 +1211,7 @@ internal sealed partial class VectorProject
             };
             scene.RestoreLights(CreateRestartLights(item), item.Lights is not null);
             scene.RestoreCanvas(item.Canvas, item.CanvasWelcomeDismissed);
+            scene.RulerGuides.AddRange(RulerGuideValidation.Copy(item.RulerGuides));
             if (scene.Canvas is { ImageAssetId.Length: > 0 } canvas
                 && project.FindImageAsset(canvas.ImageAssetId) is null)
             {
@@ -1249,6 +1262,8 @@ internal sealed partial class VectorProject
                     DrawingObjectId = restored.DrawingObjectId,
                     SceneLayerId = restored.SceneLayerId,
                     Name = restored.Name,
+                    EditorHidden = restored.EditorHidden,
+                    EditorLocked = restored.EditorLocked,
                     Visible = restored.Visible,
                     X = restored.X,
                     Y = restored.Y,
@@ -1348,6 +1363,8 @@ internal sealed partial class VectorProject
             DrawingObjectId = instance.DrawingObjectId,
             SceneLayerId = instance.SceneLayerId,
             Name = instance.Name,
+            EditorHidden = instance.EditorHidden,
+            EditorLocked = instance.EditorLocked,
             Visible = instance.Visible,
             X = instance.X,
             Y = instance.Y,
@@ -1393,6 +1410,8 @@ internal sealed partial class VectorProject
             DrawingObjectId = snapshot.DrawingObjectId,
             SceneLayerId = snapshot.SceneLayerId,
             Name = snapshot.Name,
+            EditorHidden = snapshot.EditorHidden,
+            EditorLocked = snapshot.EditorLocked,
             Visible = snapshot.Visible,
             X = snapshot.X,
             Y = snapshot.Y,
@@ -1749,6 +1768,8 @@ internal sealed partial class VectorProject
                 ?? source.DrawingObjectId,
             SceneLayerId = source.SceneLayerId,
             Name = source.Name,
+            EditorHidden = source.EditorHidden,
+            EditorLocked = source.EditorLocked,
             Visible = source.Visible,
             X = source.X,
             Y = source.Y,

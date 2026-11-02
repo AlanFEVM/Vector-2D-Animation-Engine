@@ -16,7 +16,7 @@ internal sealed partial class VectorScene
     {
         mergedPath = Array.Empty<PointF[]>();
         if ((uint)a >= ObjectCount || (uint)b >= ObjectCount) return false;
-        if (FillAutoMergeProtected[a] || FillAutoMergeProtected[b]) return false;
+        if (ObjectLocked[a] || ObjectLocked[b] || FillAutoMergeProtected[a] || FillAutoMergeProtected[b]) return false;
         if (ObjectLayer[a] != ObjectLayer[b] || Argb[a] != Argb[b]) return false;
         if (!IsFillShape(ShapeKind[a]) || !IsFillShape(ShapeKind[b])) return false;
         if (HasGradient(a) || HasGradient(b)) return false;

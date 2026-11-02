@@ -1,4 +1,5 @@
 using Vortice.Direct2D1;
+using System.Numerics;
 using D2DRect = Vortice.Mathematics.Rect;
 using GdiColor = System.Drawing.Color;
 
@@ -9,10 +10,20 @@ internal sealed partial class Direct2DStageRenderer
     private void DrawCanvasBackground(StageControl stage)
     {
         if (_target is null || stage.CanvasPresentation is not { } canvas) return;
-        var bounds = stage.CanvasScreenBounds();
-        var visible = System.Drawing.RectangleF.Intersect(bounds, stage.ClientRectangle);
+        var bounds = stage.CanvasUnrotatedScreenBounds();
+        var rotated = stage.PlanarCanvasRotation != 0;
+        var visible = rotated ? bounds : System.Drawing.RectangleF.Intersect(bounds, stage.ClientRectangle);
         if (visible.Width <= 0 || visible.Height <= 0) return;
-        _target.PushAxisAlignedClip(CanvasRect(visible), AntialiasMode.Aliased);
+        var old = _target.Transform;
+        using var mask = _factory!.CreateRectangleGeometry(CanvasRect(bounds));
+        using var layer = _target.CreateLayer();
+        _target.PushLayer(new LayerParameters
+        {
+            ContentBounds = CanvasRect(stage.ClientRectangle), GeometricMask = mask,
+            MaskAntialiasMode = AntialiasMode.PerPrimitive, MaskTransform = stage.CanvasScreenRotationTransform,
+            Opacity = 1f, LayerOptions = LayerOptions.None
+        }, layer);
+        _target.Transform = stage.CanvasScreenRotationTransform;
         try
         {
             if (!stage.RenderingCanvasOutput && (canvas.Settings.BackgroundKind == SceneBackgroundKind.None
@@ -39,7 +50,8 @@ internal sealed partial class Direct2DStageRenderer
         }
         finally
         {
-            _target.PopAxisAlignedClip();
+            _target.Transform = old;
+            _target.PopLayer();
         }
     }
 
@@ -48,6 +60,40 @@ internal sealed partial class Direct2DStageRenderer
         if (_target is null || stage.CanvasPresentation is not { } canvas) return;
         var bounds = stage.CanvasScreenBounds();
         if (bounds.Width <= 0 || bounds.Height <= 0) return;
+        if (stage.PlanarCanvasRotation != 0)
+        {
+            using var path = _factory!.CreatePathGeometry();
+            using (var sink = path.Open())
+            {
+                sink.SetFillMode(FillMode.Alternate);
+                var corners = stage.CanvasScreenCorners();
+                sink.BeginFigure(new Vector2(corners[0].X, corners[0].Y), FigureBegin.Filled);
+                foreach (var point in corners.Skip(1)) sink.AddLine(new Vector2(point.X, point.Y));
+                sink.EndFigure(FigureEnd.Closed);
+                sink.Close();
+            }
+            if (canvas.Settings.DimOutside)
+            {
+                using var outside = _factory.CreatePathGeometry();
+                using (var sink = outside.Open())
+                {
+                    sink.SetFillMode(FillMode.Alternate);
+                    sink.BeginFigure(Vector2.Zero, FigureBegin.Filled);
+                    sink.AddLine(new Vector2(stage.Width, 0));
+                    sink.AddLine(new Vector2(stage.Width, stage.Height));
+                    sink.AddLine(new Vector2(0, stage.Height));
+                    sink.EndFigure(FigureEnd.Closed);
+                    var corners = stage.CanvasScreenCorners();
+                    sink.BeginFigure(new Vector2(corners[0].X, corners[0].Y), FigureBegin.Filled);
+                    foreach (var point in corners.Skip(1)) sink.AddLine(new Vector2(point.X, point.Y));
+                    sink.EndFigure(FigureEnd.Closed);
+                    sink.Close();
+                }
+                _target.FillGeometry(outside, BrushFor(GdiColor.FromArgb(105, 0, 0, 0).ToArgb()));
+            }
+            _target.DrawGeometry(path, BrushFor(GdiColor.FromArgb(165, Theme.Muted).ToArgb()), Math.Max(1f, stage.DeviceDpi / 96f));
+            return;
+        }
         if (canvas.Settings.DimOutside)
         {
             var shade = BrushFor(GdiColor.FromArgb(105, 0, 0, 0).ToArgb());

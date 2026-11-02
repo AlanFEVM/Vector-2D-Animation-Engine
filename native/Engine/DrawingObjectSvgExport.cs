@@ -24,7 +24,7 @@ namespace VectorAnimationEngine;
 ///    visible, folder layers never contribute geometry, and masked content is
 ///    clipped through an SVG mask built from the visible mask-layer objects.
 /// </summary>
-internal static class DrawingObjectSvgExport
+internal static partial class DrawingObjectSvgExport
 {
     private const string SvgVersion = "1.1";
     private const string SvgNamespaceUri = "http://www.w3.org/2000/svg";
@@ -44,7 +44,8 @@ internal static class DrawingObjectSvgExport
         string drawingObjectId,
         string name,
         VectorScene scene,
-        int frame)
+        int frame,
+        SceneCompositionMaskPlan? compositionMasks = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(drawingObjectId);
         ArgumentNullException.ThrowIfNull(scene);
@@ -52,6 +53,9 @@ internal static class DrawingObjectSvgExport
         {
             throw new InvalidOperationException("The symbol has too many objects to export.");
         }
+        if (compositionMasks is not null && Enumerable.Range(0, scene.LayerCount).Any(layer =>
+                scene.IsLayerEffectivelyVisible(layer) && scene.GetLayerSymbolFilters(layer).HasEnabled))
+            throw new InvalidOperationException("Portable SVG export cannot preserve this symbol's filters. Save the V2D project to retain the appearance.");
         if (Enumerable.Range(0, scene.LayerCount).Any(layer =>
                 scene.IsLayerEffectivelyVisible(layer) && (scene.LayerBlendModes[layer] == LayerBlendMode.Invert
                     || scene.GetLayerKind(layer) == DrawingLayerKind.Folder
@@ -62,7 +66,7 @@ internal static class DrawingObjectSvgExport
         // works from a snapshot. Active-set and visibility decisions use the live
         // scene so the export matches what the stage actually shows.
         var snapshot = scene.CreateSnapshot();
-        var layout = new ExportLayout(snapshot, index => scene.IsObjectActive(index, frame));
+        var layout = new ExportLayout(snapshot, index => scene.IsObjectActive(index, frame), compositionMasks);
         var root = new XElement(
             Svg + "svg",
             new XAttribute("version", SvgVersion),
@@ -94,6 +98,11 @@ internal static class DrawingObjectSvgExport
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var document = CreateDocument(drawingObjectId, name, scene, frame);
+        WriteDocument(path, document);
+    }
+
+    private static void WriteDocument(string path, XDocument document)
+    {
         var directory = Path.GetDirectoryName(Path.GetFullPath(path));
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
 
@@ -121,15 +130,18 @@ internal static class DrawingObjectSvgExport
     /// Precomputed per-export view over a scene snapshot: effective layer
     /// visibility, the frame's active objects, and their paint order.
     /// </summary>
-    private sealed class ExportLayout
+    private sealed partial class ExportLayout
     {
         private readonly VectorSceneSnapshot _snapshot;
         private readonly int[][] _objectsByLayer;
         private readonly int[][] _maskObjectsByLayer;
 
-        internal ExportLayout(VectorSceneSnapshot snapshot, Func<int, bool> isObjectActive)
+        internal ExportLayout(VectorSceneSnapshot snapshot, Func<int, bool> isObjectActive,
+            SceneCompositionMaskPlan? compositionMasks = null)
         {
             _snapshot = snapshot;
+            _compositionMasks = compositionMasks;
+            var coverage = new List<int>();
             var active = new List<int>(snapshot.ObjectCount);
             var maskObjects = new List<int>(snapshot.ObjectCount);
             for (var index = 0; index < snapshot.ObjectCount; index++)
@@ -138,6 +150,9 @@ internal static class DrawingObjectSvgExport
                 // active exposure, but it still admits folder and mask layers, which
                 // own no directly drawn content here and are filtered explicitly.
                 if (!isObjectActive(index)) continue;
+                if (compositionMasks is not null) coverage.Add(index);
+                if (compositionMasks?.ContainersByLayer.ContainsKey(snapshot.ObjectLayer[index]) == true) continue;
+                if (compositionMasks is not null && IsCompositionLayerTransparent(snapshot.ObjectLayer[index])) continue;
                 switch (LayerKind(snapshot.ObjectLayer[index]))
                 {
                     case DrawingLayerKind.Drawing:
@@ -155,6 +170,8 @@ internal static class DrawingObjectSvgExport
             OrderedObjects = active.ToArray();
             _maskObjectsByLayer = BucketByLayer(maskObjects, snapshot);
             _objectsByLayer = BucketByLayer(OrderedObjects, snapshot);
+            _coverageObjectsByLayer = compositionMasks is null ? [] : BucketByLayer(coverage, snapshot);
+            ValidateCompositionMasks();
         }
 
         private static int[][] BucketByLayer(IReadOnlyList<int> objects, VectorSceneSnapshot snapshot)
@@ -192,10 +209,15 @@ internal static class DrawingObjectSvgExport
             var maskBounds = new Dictionary<int, RectangleF?>();
             for (var layer = 0; layer < _snapshot.LayerCount; layer++)
             {
+                if (_objectsByLayer[layer].Length == 0) continue;
                 if (document.GetElementById($"v2d-layer-{layer.ToString(CultureInfo.InvariantCulture)}") is not { } group) continue;
                 var bounds = MeasurePaintBounds(group, renderer);
                 if (bounds is null) continue;
-                if (TryGetUsableMask(layer, out var maskLayer))
+                if (_compositionMasks is not null)
+                {
+                    bounds = ClipCompositionBounds(layer, bounds, document, renderer, maskBounds, []);
+                }
+                else if (TryGetUsableMask(layer, out var maskLayer))
                 {
                     if (!maskBounds.TryGetValue(maskLayer, out var mask))
                     {
@@ -301,14 +323,21 @@ internal static class DrawingObjectSvgExport
         /// <summary>
         /// Emits one group per visible layer, highest layer index first so the
         /// bottom-most layer lands at the start of the document. Layers the stage
-        /// skips (folders, hidden layers, mask layers, locked/absent masks) are
+        /// skips (folders, hidden layers and mask layers) are
         /// omitted or clipped.
         /// </summary>
         internal void AppendLayers(XElement content)
         {
+            if (_compositionMasks is not null)
+            {
+                AppendCompositionLayers(content);
+                return;
+            }
             for (var layer = _snapshot.LayerCount - 1; layer >= 0; layer--)
             {
                 if (_objectsByLayer[layer].Length == 0) continue;
+                if (TryGetUsableMask(layer, out var boundMask) && _maskObjectsByLayer[boundMask].Length == 0)
+                    continue;
 
                 var group = new XElement(
                     Svg + "g",
@@ -337,18 +366,25 @@ internal static class DrawingObjectSvgExport
         /// </summary>
         internal void AddMaskDefinitions(XElement root)
         {
+            if (_compositionMasks is not null)
+            {
+                AddCompositionMaskDefinitions(root);
+                return;
+            }
             var definitions = root.Element(Svg + "defs");
             if (definitions is null) return;
+            var emittedMasks = new HashSet<int>();
             for (var layer = 0; layer < _snapshot.LayerCount; layer++)
             {
                 if (_objectsByLayer[layer].Length == 0) continue;
                 if (!TryGetUsableMask(layer, out var maskLayer)) continue;
+                if (!emittedMasks.Add(maskLayer)) continue;
 
                 var maskObjects = _maskObjectsByLayer[maskLayer];
-                if (maskObjects.Length == 0) continue;
 
                 var mask = new XElement(
                     Svg + "mask",
+                    new XAttribute("data-v2d-geometric-mask", "1"),
                     new XAttribute("id", $"v2d-mask-{maskLayer.ToString(CultureInfo.InvariantCulture)}"),
                     new XAttribute("maskUnits", "userSpaceOnUse"),
                     new XAttribute("maskContentUnits", "userSpaceOnUse"));
@@ -367,11 +403,10 @@ internal static class DrawingObjectSvgExport
                     }
                 }
 
-                if (maskPaint.HasElements)
-                {
-                    mask.Add(maskPaint);
-                    definitions.Add(mask);
-                }
+                // An empty or hidden mask must still resolve to transparent coverage,
+                // rather than an undefined URL that exposes the unclipped content.
+                mask.Add(maskPaint);
+                definitions.Add(mask);
             }
         }
 
@@ -435,8 +470,8 @@ internal static class DrawingObjectSvgExport
             string.Equals(attribute?.Value, "none", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
-        /// Resolves a usable mask for a layer: it must exist, be a mask layer, be
-        /// effectively visible and unlocked, and hold visible content.
+        /// Resolves a mask binding. Visibility and exposure filter its geometry;
+        /// locking hides the mask's artwork but does not disable its clipping.
         /// </summary>
         private bool TryGetUsableMask(int layer, out int maskLayer)
         {
@@ -448,8 +483,6 @@ internal static class DrawingObjectSvgExport
 
             var candidate = Array.IndexOf(_snapshot.LayerIds, maskId);
             if (candidate < 0 || LayerKind(candidate) != DrawingLayerKind.Mask) return false;
-            if (!IsLayerEffectivelyVisible(candidate)) return false;
-            if (_snapshot.LayerLocked.Length > candidate && _snapshot.LayerLocked[candidate]) return false;
             maskLayer = candidate;
             return true;
         }

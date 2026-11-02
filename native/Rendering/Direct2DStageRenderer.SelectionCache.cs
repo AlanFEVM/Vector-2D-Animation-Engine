@@ -23,7 +23,7 @@ internal sealed partial class Direct2DStageRenderer
 
     private readonly record struct SelectionCommandKey(
         StageControl Stage, VectorScene Scene, long Revision, long Geometry, long Summary,
-        long ActiveContent, int Frame, Size Size, float Pulse, ulong Layers, int ObjectAccent, int Dpi, float PatternZoom);
+        long ActiveContent, int Frame, Size Size, float Pulse, float Rotation, ulong Layers, int ObjectAccent, int Dpi, float PatternZoom);
 
     private bool TryDrawCachedSelection(StageControl stage)
     {
@@ -43,7 +43,7 @@ internal sealed partial class Direct2DStageRenderer
             : stage.SelectionHighlightPulse;
         var key = new SelectionCommandKey(stage, stage.Scene, stage.SelectionRenderRevision,
             stage.Scene.GeometryRevision, stage.Scene.SummaryRevision, stage.Scene.ActiveContentRevision,
-            stage.Frame, stage.ClientSize, pulse,
+            stage.Frame, stage.ClientSize, pulse, stage.PlanarCanvasRotation,
             StageControl.GetReference3DWorkspaceFrameLayerRenderState(stage.Scene, stage.Frame),
             stage.UsesObjectSelectionOverlay ? Theme.Accent.ToArgb() : 0, stage.DeviceDpi,
             stage.UsesObjectSelectionOverlay ? stage.Zoom : 0);
@@ -94,15 +94,15 @@ internal sealed partial class Direct2DStageRenderer
         else SelectionCommandReuses++;
 
         var dragOffset = stage.SelectionDragPreviewOffset;
-        var dragTranslateX = VectorUnits.ToPixels(dragOffset.X) * stage.Zoom;
-        var dragTranslateY = VectorUnits.ToPixels(dragOffset.Y) * stage.Zoom;
+        var cos = MathF.Cos(stage.PlanarCanvasRotation);
+        var sin = MathF.Sin(stage.PlanarCanvasRotation);
+        var worldX = ((double)_selectionCommandCamera.X - stage.CameraX + dragOffset.X) / VectorUnits.UnitsPerPixel * stage.Zoom;
+        var worldY = ((double)_selectionCommandCamera.Y - stage.CameraY + dragOffset.Y) / VectorUnits.UnitsPerPixel * stage.Zoom;
         var scale = stage.Zoom / _selectionCommandZoom;
         var translateX = stage.Width * 0.5f * (1f - scale)
-            + VectorUnits.ToPixels(_selectionCommandCamera.X - stage.CameraX) * stage.Zoom
-            + dragTranslateX;
+            + (float)(worldX * cos - worldY * sin);
         var translateY = stage.Height * 0.5f * (1f - scale)
-            + VectorUnits.ToPixels(_selectionCommandCamera.Y - stage.CameraY) * stage.Zoom
-            + dragTranslateY;
+            + (float)(worldX * sin + worldY * cos);
         var transform = context.Transform;
         try
         {

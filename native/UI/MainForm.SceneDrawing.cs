@@ -41,15 +41,15 @@ internal sealed partial class MainForm
         return true;
     }
 
-    private List<DrawingObjectInstanceDefinition> PasteSceneDrawingInstances(SceneDefinition scene)
+    private List<DrawingObjectInstanceDefinition> PasteSceneDrawingInstances(SceneDefinition scene, PointF offset)
     {
         var pasted = new List<DrawingObjectInstanceDefinition>();
         foreach (var item in _clipboardDrawingObjectInstances)
         {
             var state = item.BaseState with
             {
-                X = VectorUnits.Quantize(item.BaseState.X + PasteOffsetUnits),
-                Y = VectorUnits.Quantize(item.BaseState.Y + PasteOffsetUnits)
+                X = VectorUnits.Quantize(item.BaseState.X + offset.X),
+                Y = VectorUnits.Quantize(item.BaseState.Y + offset.Y)
             };
             if (!_project.TryAddSceneInstance(scene.Id, item.DrawingObjectId, state.Position, state.Z,
                 scene.ActiveLayerId, out var instance) || instance is null) continue;
@@ -59,8 +59,8 @@ internal sealed partial class MainForm
             {
                 State = keyframe.State with
                 {
-                    X = VectorUnits.Quantize(keyframe.State.X + PasteOffsetUnits),
-                    Y = VectorUnits.Quantize(keyframe.State.Y + PasteOffsetUnits)
+                    X = VectorUnits.Quantize(keyframe.State.X + offset.X),
+                    Y = VectorUnits.Quantize(keyframe.State.Y + offset.Y)
                 }
             }));
             pasted.Add(instance);

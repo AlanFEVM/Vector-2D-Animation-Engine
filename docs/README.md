@@ -4,6 +4,8 @@ This directory separates current product behavior from version-specific history.
 
 ## Current Documentation
 
+- [中文图文使用手册（HTML）](manual/index.html): practical workflows with real application screenshots; [portable single-file edition](manual/用户使用手册-单文件版.html).
+
 - [User Guide](USER_GUIDE.md): current source behavior, workflows, shortcuts, troubleshooting, and limitations.
 - [UI Composition and Layout Contracts](UI_COMPOSITION.md): component boundaries, inspector field sizing, typography, spacing, and screenshot acceptance.
 - [Release Manager](RELEASE_MANAGER.md): source version, bilingual in-app release notes, visibility, preview, and formal packaging.
@@ -13,6 +15,7 @@ This directory separates current product behavior from version-specific history.
 
 | Version | Release notes |
 | --- | --- |
+| 0.3.0 | [RELEASE_NOTES_0.3.0.md](RELEASE_NOTES_0.3.0.md) |
 | 0.2.7 | [RELEASE_NOTES_0.2.7.md](RELEASE_NOTES_0.2.7.md) |
 | 0.1.12 | [RELEASE_NOTES_0.1.12.md](RELEASE_NOTES_0.1.12.md) |
 | 0.1.11 | [RELEASE_NOTES_0.1.11.md](RELEASE_NOTES_0.1.11.md) |

@@ -1,4 +1,4 @@
-namespace VectorAnimationEngine;
+﻿namespace VectorAnimationEngine;
 
 internal enum ShortcutCommandKind
 {
@@ -85,6 +85,39 @@ internal static class ShortcutCommandIds
     public const string SaveProject = "file.save";
     public const string SaveProjectAs = "file.save-as";
     public const string Undo = "edit.undo";
+    public const string Deselect = "stage.deselect";
+    public const string InvertSelection = "stage.invertselection";
+    public const string Duplicate = "stage.duplicate";
+    public const string PasteInPlace = "stage.pasteinplace";
+    public const string FitStage = "stage.fitstage";
+    public const string ActualSize = "stage.actualsize";
+    public const string ZoomIn = "stage.zoomin";
+    public const string ZoomOut = "stage.zoomout";
+    public const string ZoomSelection = "stage.zoomselection";
+    public const string BreakApart = "stage.breakapart";
+    public const string LinkedDuplicate = "stage.linkedduplicate";
+    public const string TogglePanels = "stage.togglepanels";
+    public const string ParentSymbol = "stage.parentsymbol";
+    public const string FlipHorizontal = "stage.fliphorizontal";
+    public const string FlipVertical = "stage.flipvertical";
+    public const string ConvertLineToFill = "stage.convertlinetofill";
+    public const string MergeLines = "stage.mergelines";
+    public const string HideSelected = "stage.hideselected";
+    public const string ShowAll = "stage.showall";
+    public const string IsolateSelected = "stage.isolateselected";
+    public const string LockSelected = "stage.lockselected";
+    public const string UnlockAll = "stage.unlockall";
+    public const string ChildSymbol = "stage.childsymbol";
+    public const string CopyAppearance = "stage.copyappearance";
+    public const string PasteAppearance = "stage.pasteappearance";
+    public const string SelectSame = "stage.selectsame";
+    public const string GrowSelection = "stage.growselection";
+    public const string ShrinkSelection = "stage.shrinkselection";
+    public const string Redo = "stage.redo";
+    public const string NumericMove = "stage.numericmove";
+    public const string NumericRotate = "stage.numericrotate";
+    public const string NumericScale = "stage.numericscale";
+    public const string RotateCanvas = "stage.rotatecanvas";
     public const string SelectAll = "edit.select-all";
     public const string Cut = "edit.cut";
     public const string Copy = "edit.copy";
@@ -111,7 +144,7 @@ internal static class ShortcutProfiles
 {
     public const int SchemaVersion = 1;
     public const int MaximumCustomProfiles = 32;
-    public const int MaximumBindingsPerProfile = 64;
+    public const int MaximumBindingsPerProfile = 128;
     public const int MaximumGesturesPerCommand = 8;
     public const int MaximumProfileNameLength = 80;
     public const string TraditionalFlashProfileId = "builtin.traditional-flash.v1";
@@ -157,6 +190,39 @@ internal static class ShortcutProfiles
         Workbench(ShortcutCommandIds.SaveProject, "Save Project", Keys.Control | Keys.S),
         Workbench(ShortcutCommandIds.SaveProjectAs, "Save Project As", Keys.Control | Keys.Shift | Keys.S),
         Workbench(ShortcutCommandIds.Undo, "Undo", Keys.Control | Keys.Z),
+        Workbench(ShortcutCommandIds.Deselect, "Deselect All", Keys.Alt | Keys.A),
+        Workbench(ShortcutCommandIds.InvertSelection, "Invert Selection", Keys.Control | Keys.Shift | Keys.I),
+        Workbench(ShortcutCommandIds.Duplicate, "Duplicate in Place", Keys.Control | Keys.D),
+        Workbench(ShortcutCommandIds.PasteInPlace, "Paste in Place", Keys.Control | Keys.Shift | Keys.V),
+        Workbench(ShortcutCommandIds.FitStage, "Fit Stage", Keys.Home),
+        Workbench(ShortcutCommandIds.ActualSize, "Actual Size", Keys.Control | Keys.D0),
+        Workbench(ShortcutCommandIds.ZoomIn, "Zoom In", Keys.Control | Keys.Oemplus),
+        Workbench(ShortcutCommandIds.ZoomOut, "Zoom Out", Keys.Control | Keys.OemMinus),
+        Workbench(ShortcutCommandIds.ZoomSelection, "Zoom to Selection", Keys.Shift | Keys.D2),
+        Workbench(ShortcutCommandIds.BreakApart, "Break Apart", Keys.Control | Keys.B),
+        Workbench(ShortcutCommandIds.LinkedDuplicate, "Linked Duplicate", Keys.Alt | Keys.D),
+        Workbench(ShortcutCommandIds.TogglePanels, "Toggle Panel Group", Keys.Control | Keys.Shift | Keys.H),
+        Workbench(ShortcutCommandIds.ParentSymbol, "Parent Symbol", Keys.PageUp),
+        Workbench(ShortcutCommandIds.FlipHorizontal, "Flip Horizontal", Keys.None),
+        Workbench(ShortcutCommandIds.FlipVertical, "Flip Vertical", Keys.None),
+        Workbench(ShortcutCommandIds.ConvertLineToFill, "Convert Line to Fill", Keys.None),
+        Workbench(ShortcutCommandIds.MergeLines, "Merge Lines", Keys.None),
+        Workbench(ShortcutCommandIds.HideSelected, "Hide Selected", Keys.H),
+        Workbench(ShortcutCommandIds.ShowAll, "Show All Objects", Keys.Alt | Keys.H),
+        Workbench(ShortcutCommandIds.IsolateSelected, "Isolate Selected", Keys.Shift | Keys.H),
+        Workbench(ShortcutCommandIds.LockSelected, "Lock Selected", Keys.None),
+        Workbench(ShortcutCommandIds.UnlockAll, "Unlock All Objects", Keys.None),
+        Workbench(ShortcutCommandIds.ChildSymbol, "Enter Symbol", Keys.PageDown),
+        Workbench(ShortcutCommandIds.CopyAppearance, "Copy Appearance", Keys.Control | Keys.Alt | Keys.C),
+        Workbench(ShortcutCommandIds.PasteAppearance, "Paste Appearance", Keys.Control | Keys.Alt | Keys.V),
+        Workbench(ShortcutCommandIds.SelectSame, "Select Same", Keys.Shift | Keys.G),
+        Workbench(ShortcutCommandIds.GrowSelection, "Grow Selection", Keys.Control | Keys.Add),
+        Workbench(ShortcutCommandIds.ShrinkSelection, "Shrink Selection", Keys.Control | Keys.Subtract),
+        Workbench(ShortcutCommandIds.Redo, "Redo", Keys.Control | Keys.Y),
+        Workbench(ShortcutCommandIds.NumericMove, "Numeric Move", Keys.Control | Keys.Shift | Keys.G),
+        Workbench(ShortcutCommandIds.NumericRotate, "Numeric Rotate", Keys.Control | Keys.Shift | Keys.R),
+        Workbench(ShortcutCommandIds.NumericScale, "Numeric Scale", Keys.None),
+        Workbench(ShortcutCommandIds.RotateCanvas, "Rotate Canvas", Keys.Shift | Keys.Space),
         Workbench(ShortcutCommandIds.SelectAll, "Select All", Keys.Control | Keys.A),
         Workbench(ShortcutCommandIds.Cut, "Cut", Keys.Control | Keys.X),
         Workbench(ShortcutCommandIds.Copy, "Copy", Keys.Control | Keys.C),
@@ -191,7 +257,7 @@ internal static class ShortcutProfiles
             Bind(ShortcutCommandIds.ToolObjectSelect, Keys.V),
             Bind(ShortcutCommandIds.ToolSelect, Keys.A),
             Bind(ShortcutCommandIds.ToolTransform, Keys.Q),
-            Bind(ShortcutCommandIds.ToolHand, Keys.H),
+            Bind(ShortcutCommandIds.ToolHand),
             Bind(ShortcutCommandIds.ToolRectangle, Keys.R),
             Bind(ShortcutCommandIds.ToolEllipse, Keys.O),
             Bind(ShortcutCommandIds.ToolLine, Keys.N),
@@ -213,6 +279,8 @@ internal static class ShortcutProfiles
         Name = "Number Keys",
         Bindings =
         [
+            Bind(ShortcutCommandIds.ToolObjectSelect, Keys.V),
+            Bind(ShortcutCommandIds.ToolSelect, Keys.A),
             Bind(ShortcutCommandIds.SelectionGroup, Keys.D1, Keys.NumPad1),
             Bind(ShortcutCommandIds.ShapeGroup, Keys.D2, Keys.NumPad2),
             Bind(ShortcutCommandIds.LineGroup, Keys.D3, Keys.NumPad3),
@@ -615,13 +683,16 @@ internal static class ShortcutProfiles
         var commandId = ToolShortcutMap.ResolveCommandId(profile, keyData);
         if (TryGetCommand(commandId, out var command) && command.Kind == ShortcutCommandKind.Workbench)
             return command.DefaultKey;
-        return CommandCatalog.Any(candidate => candidate.DefaultKey == keyData && keyData != Keys.None)
+        return keyData == (Keys.Control | Keys.Shift | Keys.Z)
+            || CommandCatalog.Any(candidate => candidate.DefaultKey == keyData && keyData != Keys.None)
             ? Keys.None
             : keyData;
     }
 
     public static string FormatCommandGestures(ShortcutProfileRecord profile, string commandId)
     {
+        if (commandId == ShortcutCommandIds.ToolObjectSelect) return "V";
+        if (commandId == ShortcutCommandIds.ToolSelect) return "A";
         return FormatGestures(profile.Bindings.FirstOrDefault(binding => binding.CommandId == commandId)?.Gestures ?? []);
     }
 
@@ -656,7 +727,13 @@ internal static class ShortcutProfiles
             if (bindings.Any(binding => binding.CommandId == command.Id)) continue;
             var occupied = bindings.Any(binding => binding.Gestures.Any(gesture =>
                 TryGetKeyData(gesture, out var keyData) && keyData == command.DefaultKey));
-            bindings.Add(occupied ? new ShortcutBindingRecord { CommandId = command.Id } : Bind(command.Id, command.DefaultKey));
+            var binding = occupied || command.DefaultKey == Keys.None
+                ? new ShortcutBindingRecord { CommandId = command.Id } : Bind(command.Id, command.DefaultKey);
+            if (command.Id == ShortcutCommandIds.Redo && !bindings.Any(existing => existing.Gestures.Any(gesture =>
+                TryGetKeyData(gesture, out var key) && key == (Keys.Control | Keys.Shift | Keys.Z))))
+                binding = Bind(command.Id, occupied ? [Keys.Control | Keys.Shift | Keys.Z]
+                    : [command.DefaultKey, Keys.Control | Keys.Shift | Keys.Z]);
+            bindings.Add(binding);
         }
         return profile with { Bindings = bindings.ToArray() };
     }

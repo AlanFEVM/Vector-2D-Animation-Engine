@@ -24,6 +24,15 @@ internal sealed class DrawSettings
     public bool SnapToObjects { get; set; }
     public bool AdhesionEnabled { get; set; }
     public bool AlignmentEnabled { get; set; }
+    public bool SnapToGuides { get; set; } = true;
+    public bool SnapToCanvas { get; set; } = true;
+    public bool SnapToGaps { get; set; } = true;
+    private float _snapTolerancePixels = 8;
+    public float SnapTolerancePixels
+    {
+        get => _snapTolerancePixels;
+        set => _snapTolerancePixels = float.IsFinite(value) ? Math.Clamp(value, 2, 24) : 8;
+    }
     public bool AngleSnapEnabled { get; set; }
     public bool KeepAspectRatio { get; set; }
     public bool EraseLines { get; set; } = true;
@@ -122,6 +131,30 @@ internal sealed class DrawSettings
     }
 
     public void NotifyChanged() => Changed?.Invoke(this, EventArgs.Empty);
+
+    internal float SnapTightFitAngle(float radians, float length, float tolerance)
+    {
+        if (!SnapEnabled || !AdhesionEnabled || !float.IsFinite(radians)
+            || !float.IsFinite(length) || length <= 0 || !float.IsFinite(tolerance) || tolerance <= 0) return radians;
+        var degrees = radians * 180f / MathF.PI;
+        var sign = MathF.CopySign(1, degrees);
+        var absolute = Math.Abs(degrees);
+        ReadOnlySpan<float> preferred = [0, 15, 30, 45, 60, 90, 120, 135, 150, 165, 180];
+        var best = absolute;
+        var distance = float.PositiveInfinity;
+        foreach (var angle in preferred)
+        {
+            var difference = Math.Abs(absolute - angle);
+            if (difference >= distance) continue;
+            best = angle;
+            distance = difference;
+        }
+        var delta = distance * MathF.PI / 180f;
+        // Both tests are needed: short segments must not acquire a wide angular
+        // capture cone, and long segments must not jump many screen pixels.
+        return distance <= 4 && 2 * length * MathF.Sin(delta / 2) <= tolerance
+            ? sign * best * MathF.PI / 180f : radians;
+    }
 
     private static float SnapValue(float value, float step)
     {

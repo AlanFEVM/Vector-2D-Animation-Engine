@@ -32,3 +32,6 @@ data/
 # OS metadata
 Thumbs.db
 Desktop.ini
+
+# Local Flash import fixtures
+/V2dImportTest/

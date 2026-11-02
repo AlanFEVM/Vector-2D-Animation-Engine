@@ -27,6 +27,7 @@ internal sealed partial class Direct2DStageRenderer
         long ActiveContentRevision,
         int Frame,
         long VisibilityHash,
+        float Rotation,
         System.Drawing.Size Size);
 
     private void DrawLayerContentHighlight(StageControl stage)
@@ -56,6 +57,7 @@ internal sealed partial class Direct2DStageRenderer
             stage.Scene.ActiveContentRevision,
             stage.Frame,
             ComputeLayerContentHighlightVisibilityHash(stage),
+            stage.PlanarCanvasRotation,
             stage.Size);
         if (_layerContentHighlightCommands is null || key != _layerContentHighlightCommandKey)
         {
@@ -95,10 +97,12 @@ internal sealed partial class Direct2DStageRenderer
         }
 
         var scale = stage.Zoom / _layerContentHighlightCommandZoom;
+        var offset = stage.WorldOffsetToScreen(new PointF(_layerContentHighlightCommandCamera.X - stage.CameraX,
+            _layerContentHighlightCommandCamera.Y - stage.CameraY));
         var translateX = stage.Width * 0.5f * (1f - scale)
-            + VectorUnits.ToPixels(_layerContentHighlightCommandCamera.X - stage.CameraX) * stage.Zoom;
+            + offset.X;
         var translateY = stage.Height * 0.5f * (1f - scale)
-            + VectorUnits.ToPixels(_layerContentHighlightCommandCamera.Y - stage.CameraY) * stage.Zoom;
+            + offset.Y;
         var transform = context.Transform;
         try
         {

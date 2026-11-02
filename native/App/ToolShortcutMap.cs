@@ -1,4 +1,4 @@
-namespace VectorAnimationEngine;
+﻿namespace VectorAnimationEngine;
 
 internal readonly record struct ToolShortcutDisplay(string Tool, string Shortcut);
 
@@ -35,6 +35,8 @@ internal static class ToolShortcutMap
 
     public static string? ResolveCommandId(ShortcutProfileRecord profile, Keys keyData)
     {
+        if (keyData == Keys.V) return ShortcutCommandIds.ToolObjectSelect;
+        if (keyData == Keys.A) return ShortcutCommandIds.ToolSelect;
         if (!ShortcutProfiles.TryCreateGesture(keyData, out var expected)) return null;
         foreach (var binding in profile.Bindings)
         {

@@ -99,9 +99,8 @@ internal sealed partial class StageControl
     private void DrawBitmapDistortResult(Graphics target, BitmapDistortRaster result, BitmapSampling sampling, float opacity)
     {
         var bounds = result.WorldBounds;
-        var first = WorldToScreen(bounds.Left, bounds.Top);
-        var last = WorldToScreen(bounds.Right, bounds.Bottom);
-        var destination = new RectangleF(first.X, first.Y, last.X - first.X, last.Y - first.Y);
+        var destination = new[] { WorldToScreen(bounds.Left, bounds.Top), WorldToScreen(bounds.Right, bounds.Top),
+            WorldToScreen(bounds.Left, bounds.Bottom) };
         using var bitmap = result.Raster.AcquireBitmap();
         using var attributes = new ImageAttributes();
         attributes.SetWrapMode(WrapMode.Clamp);
@@ -115,8 +114,7 @@ internal sealed partial class StageControl
             target.InterpolationMode = sampling == BitmapSampling.Point
                 ? InterpolationMode.NearestNeighbor : InterpolationMode.HighQualityBicubic;
             target.DrawImage(bitmap.Bitmap,
-                [new PointF(destination.Left, destination.Top), new PointF(destination.Right, destination.Top),
-                    new PointF(destination.Left, destination.Bottom)],
+                destination,
                 new RectangleF(0, 0, result.Raster.PixelWidth, result.Raster.PixelHeight), GraphicsUnit.Pixel, attributes);
         }
         finally { target.Restore(saved); }

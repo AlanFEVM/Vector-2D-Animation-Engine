@@ -5,12 +5,17 @@ using System.Text.Json;
 
 namespace VectorAnimationEngine;
 
+internal sealed record ProjectLoadProgress(string Stage, int Completed = 0, int Total = 0, string Item = "",
+    string Operation = "", string RelativePath = "");
+
+internal sealed record ProjectSaveProgress(string Stage, int Completed = 0, int Total = 0, string Item = "");
+
 internal static class ProjectVaultStore
 {
     internal const string ProjectExtension = ".v2dProject";
 
     private const int MinimumReadableManifestFormatVersion = 1;
-    private const int ManifestFormatVersion = 7;
+    private const int ManifestFormatVersion = 8;
     /// <summary>
     /// Format 5 added the managed image asset library (.Vault/Images).
     /// </summary>
@@ -66,8 +71,11 @@ internal static class ProjectVaultStore
 
     private static readonly UTF8Encoding Utf8WithoutBom = new(encoderShouldEmitUTF8Identifier: false);
 
-    internal static string Save(VectorProject project, string manifestPath)
+    internal static string Save(VectorProject project, string manifestPath) => Save(project, manifestPath, null);
+
+    internal static string Save(VectorProject project, string manifestPath, IProgress<ProjectSaveProgress>? progress)
     {
+        progress?.Report(new("Preparing project"));
         ArgumentNullException.ThrowIfNull(project);
         var fullManifestPath = NormalizeManifestPath(manifestPath);
         var projectRoot = Path.GetDirectoryName(fullManifestPath)!;
@@ -99,36 +107,67 @@ internal static class ProjectVaultStore
             Directory.CreateDirectory(stagingDrawingTimelines);
             Directory.CreateDirectory(stagingSceneTimelines);
 
-            var drawingEntries = new List<DrawingManifestEntry>(snapshot.DrawingObjects.Length);
-            foreach (var drawing in snapshot.DrawingObjects)
+            var namedPaths = BuildNamedDrawingPaths(snapshot.DrawingObjects.Select(d => (d.Id, d.Name, d.AssetFolderId)),
+                snapshot.AssetFolders.Select(f => (f.Id, f.Name, f.ParentFolderId)),
+                relative => Directory.CreateDirectory(Path.Combine(stagingRoot, relative)));
+            foreach (var relative in namedPaths.Values) Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(stagingRoot, relative))!);
+            // Snapshot objects are independent and immutable during staging.
+            // Bound concurrency to two so compression and SVG preview trees
+            // cannot multiply peak memory with the machine's core count.
+            var drawingEntries = new DrawingManifestEntry[snapshot.DrawingObjects.Length];
+            var progressGate = new object();
+            var completedFiles = 0;
+            var totalFiles = snapshot.DrawingObjects.Length + snapshot.Scenes.Length
+                + snapshot.ImageAssets.Length + snapshot.ExternalSvgAssets.Length;
+            void FileCompleted(string name)
             {
-                var svgRelativePath = DrawingSvgRelativePath(drawing.Id);
-                var timelineRelativePath = DrawingTimelineRelativePath(drawing.Id, ManifestFormatVersion);
-                var svgPath = ResolveExpectedRelativePath(stagingRoot, svgRelativePath, svgRelativePath);
-                var timelinePath = ResolveExpectedRelativePath(stagingRoot, timelineRelativePath, timelineRelativePath);
-
-                DrawingObjectSvgCodec.Write(svgPath, drawing.Id, drawing.Scene);
-                FlushFileToDisk(svgPath);
-                WriteCompressedJson(timelinePath, DrawingTimelineDocument.From(drawing));
-                ValidateMaximumFileSize(svgPath, MaxSvgAssetBytes, "drawing SVG");
-                ValidateMaximumFileSize(timelinePath, MaxTimelineBytes, "drawing timeline");
-                drawingEntries.Add(new DrawingManifestEntry
+                lock (progressGate)
+                    progress?.Report(new("Generating project files", ++completedFiles, totalFiles, name));
+            }
+            progress?.Report(new("Generating project files", 0, totalFiles));
+            try
+            {
+                Parallel.For(0, snapshot.DrawingObjects.Length,
+                    new ParallelOptions { MaxDegreeOfParallelism = Math.Min(2, Environment.ProcessorCount) }, drawingIndex =>
                 {
-                    Id = drawing.Id,
-                    Name = drawing.Name,
-                    Kind = drawing.Kind,
-                    Detail = drawing.Detail,
-                    AssetFolderId = drawing.AssetFolderId,
-                    AssetTagIds = drawing.AssetTagIds,
-                    AnchorX = drawing.AnchorX,
-                    AnchorY = drawing.AnchorY,
-                    SnapPoints = drawing.SnapPoints,
-                    CreatedAt = drawing.CreatedAt,
-                    SvgPath = svgRelativePath,
-                    SvgSha256 = ComputeSha256(svgPath),
-                    TimelinePath = timelineRelativePath,
-                    TimelineSha256 = ComputeSha256(timelinePath)
+                    var drawing = snapshot.DrawingObjects[drawingIndex];
+                    var svgRelativePath = namedPaths[drawing.Id];
+                    var timelineRelativePath = DrawingTimelineRelativePath(drawing.Id, ManifestFormatVersion);
+                    var svgPath = ResolveExpectedRelativePath(stagingRoot, svgRelativePath, svgRelativePath);
+                    var timelinePath = ResolveExpectedRelativePath(stagingRoot, timelineRelativePath, timelineRelativePath);
+
+                    DrawingObjectSvgCodec.Write(svgPath, drawing.Id, drawing.Scene);
+                    FlushFileToDisk(svgPath);
+                    WriteCompressedJson(timelinePath, DrawingTimelineDocument.From(drawing));
+                    ValidateMaximumFileSize(svgPath, MaxSvgAssetBytes, "drawing SVG");
+                    ValidateMaximumFileSize(timelinePath, MaxTimelineBytes, "drawing timeline");
+                    drawingEntries[drawingIndex] = new DrawingManifestEntry
+                    {
+                        Id = drawing.Id,
+                        Name = drawing.Name,
+                        Kind = drawing.Kind,
+                        Detail = drawing.Detail,
+                        AssetFolderId = drawing.AssetFolderId,
+                        AssetTagIds = drawing.AssetTagIds,
+                        AnchorX = drawing.AnchorX,
+                        AnchorY = drawing.AnchorY,
+                        SnapPoints = drawing.SnapPoints,
+                        CreatedAt = drawing.CreatedAt,
+                        SvgPath = svgRelativePath,
+                        SvgSha256 = ComputeSha256(svgPath),
+                        TimelinePath = timelineRelativePath,
+                        TimelineSha256 = ComputeSha256(timelinePath)
+                    };
+                    FileCompleted(drawing.Name);
                 });
+            }
+            catch (AggregateException exception)
+            {
+                // All workers have stopped before staging cleanup. Preserve
+                // the existing storage exception contract for callers.
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(
+                    exception.Flatten().InnerExceptions[0]).Throw();
+                throw;
             }
 
             var sceneEntries = new List<SceneManifestEntry>(snapshot.Scenes.Length);
@@ -149,6 +188,7 @@ internal static class ProjectVaultStore
                     TimelinePath = timelineRelativePath,
                     TimelineSha256 = ComputeSha256(timelinePath)
                 });
+                FileCompleted(scene.Name);
             }
 
             var stagingImages = Path.Combine(stagingVault, VaultImageDirectoryName);
@@ -194,6 +234,7 @@ internal static class ProjectVaultStore
                     ImportSettings = imageAsset.ImportSettings,
                     CreatedAt = imageAsset.CreatedAt
                 });
+                FileCompleted(imageAsset.Name);
             }
 
             var svgEntries = new List<ExternalSvgAssetDescriptor>();
@@ -216,6 +257,7 @@ internal static class ProjectVaultStore
                     OriginalSourcePath = asset.OriginalSourcePath,
                     ProjectRelativePath = relative, LastKnownSha256 = hash, CreatedAt = asset.CreatedAt
                 });
+                FileCompleted(asset.Name);
             }
 
             var manifest = new ProjectManifest
@@ -248,7 +290,9 @@ internal static class ProjectVaultStore
             var stagingManifest = Path.Combine(stagingRoot, Path.GetFileName(fullManifestPath));
             WriteJson(stagingManifest, manifest);
             ValidateMaximumFileSize(stagingManifest, MaxManifestBytes, "project manifest");
+            progress?.Report(new("Validating generated project"));
             _ = LoadValidatedProject(stagingManifest);
+            progress?.Report(new("Committing project"));
             CommitManagedFiles(stagingRoot, backupRoot, projectRoot, fullManifestPath, snapshot.Id);
             foreach (var asset in project.ImageAssets)
                 asset.SourcePath = Path.Combine(projectRoot, asset.ProjectRelativePath.Replace('/', Path.DirectorySeparatorChar));
@@ -259,6 +303,7 @@ internal static class ProjectVaultStore
                 asset.LastKnownSha256 = entry.LastKnownSha256;
                 asset.SourcePath = Path.Combine(projectRoot, entry.ProjectRelativePath.Replace('/', Path.DirectorySeparatorChar));
             }
+            progress?.Report(new("Project generation complete", 1, 1));
             return fullManifestPath;
         }
         catch (ProjectSaveRecoveryException)
@@ -276,8 +321,11 @@ internal static class ProjectVaultStore
         }
     }
 
-    internal static VectorProject Load(string manifestPath)
+    internal static VectorProject Load(string manifestPath) => Load(manifestPath, null);
+
+    internal static VectorProject Load(string manifestPath, IProgress<ProjectLoadProgress>? progress)
     {
+        progress?.Report(new("Checking project recovery"));
         var fullManifestPath = NormalizeManifestPath(manifestPath);
         var projectRoot = Path.GetDirectoryName(fullManifestPath)!;
         if (Directory.Exists(projectRoot))
@@ -285,10 +333,10 @@ internal static class ProjectVaultStore
             RejectReparsePoint(projectRoot);
             RecoverInterruptedSave(projectRoot, fullManifestPath);
         }
-        return LoadValidatedProject(fullManifestPath);
+        return LoadValidatedProject(fullManifestPath, progress);
     }
 
-    private static VectorProject LoadValidatedProject(string fullManifestPath)
+    private static VectorProject LoadValidatedProject(string fullManifestPath, IProgress<ProjectLoadProgress>? progress = null)
     {
         var projectRoot = Path.GetDirectoryName(fullManifestPath)!;
         if (!File.Exists(fullManifestPath))
@@ -298,19 +346,24 @@ internal static class ProjectVaultStore
 
         RejectReparsePoint(projectRoot);
         RejectReparsePoint(fullManifestPath);
+        progress?.Report(new("Reading project manifest", Item: Path.GetFileName(fullManifestPath)));
         var manifest = ReadJson<ProjectManifest>(fullManifestPath, MaxManifestBytes);
         ValidateManifest(manifest, projectRoot);
         var projectBytes = new FileInfo(fullManifestPath).Length;
         var decodedTimelineBytesTotal = 0L;
 
+        var drawingIdsForValidation = manifest.DrawingObjects.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         var drawings = new DrawingObjectRestartSnapshot[manifest.DrawingObjects.Length];
+        progress?.Report(new("Loading project symbols", 0, drawings.Length));
         for (var index = 0; index < manifest.DrawingObjects.Length; index++)
         {
             var entry = manifest.DrawingObjects[index];
-            var expectedSvgPath = DrawingSvgRelativePath(entry.Id);
+            var expectedSvgPath = ExpectedDrawingSvgPath(manifest, entry);
             var expectedTimelinePath = DrawingTimelineRelativePath(entry.Id, manifest.FormatVersion);
             var svgPath = ResolveExpectedRelativePath(projectRoot, entry.SvgPath, expectedSvgPath);
             var timelinePath = ResolveExpectedRelativePath(projectRoot, entry.TimelinePath, expectedTimelinePath);
+            progress?.Report(new("Loading project symbols", index, drawings.Length, entry.Name,
+                "Verifying file checksums", entry.SvgPath));
             projectBytes = AddProjectBytes(
                 projectBytes,
                 ValidateFile(svgPath, entry.SvgSha256, MaxSvgAssetBytes, "drawing SVG"));
@@ -318,13 +371,17 @@ internal static class ProjectVaultStore
                 projectBytes,
                 ValidateFile(timelinePath, entry.TimelineSha256, MaxTimelineBytes, "drawing timeline"));
 
+            progress?.Report(new("Loading project symbols", index, drawings.Length, entry.Name,
+                "Decoding drawing data", entry.SvgPath));
             var sceneSnapshot = DrawingObjectSvgCodec.Read(svgPath, entry.Id);
+            progress?.Report(new("Loading project symbols", index, drawings.Length, entry.Name,
+                "Reading timeline data", entry.TimelinePath));
             var timeline = ReadTimeline<DrawingTimelineDocument>(
                 timelinePath,
                 manifest.FormatVersion,
                 out var timelineDecodedBytes);
             decodedTimelineBytesTotal = AddDecodedTimelineBytes(decodedTimelineBytesTotal, timelineDecodedBytes);
-            ValidateDrawingTimeline(timeline, sceneSnapshot, entry.Id, manifest.DrawingObjects);
+            ValidateDrawingTimeline(timeline, sceneSnapshot, entry.Id, drawingIdsForValidation);
             drawings[index] = new DrawingObjectRestartSnapshot
             {
                 Id = entry.Id,
@@ -340,9 +397,11 @@ internal static class ProjectVaultStore
                 Scene = CopyWithTimeline(sceneSnapshot, timeline.Timeline),
                 Instances = timeline.Instances
             };
+            progress?.Report(new("Loading project symbols", index + 1, drawings.Length, entry.Name));
         }
 
         var imageAssets = new ImageAssetRestartSnapshot[manifest.ImageAssets.Length];
+        progress?.Report(new("Loading project images", 0, imageAssets.Length));
         for (var index = 0; index < manifest.ImageAssets.Length; index++)
         {
             var entry = manifest.ImageAssets[index];
@@ -351,6 +410,8 @@ internal static class ProjectVaultStore
             var expectedImagePath = ImageAssetRelativePath(entry.Id)
                 + Path.GetExtension(entry.ProjectRelativePath);
             var imagePath = ResolveExpectedRelativePath(projectRoot, entry.ProjectRelativePath, expectedImagePath);
+            progress?.Report(new("Loading project images", index, imageAssets.Length, entry.Name,
+                "Verifying file checksums", entry.ProjectRelativePath));
             projectBytes = AddProjectBytes(
                 projectBytes,
                 ValidateFile(imagePath, entry.Sha256, MaxImageAssetBytes, "image asset"));
@@ -372,17 +433,23 @@ internal static class ProjectVaultStore
                 ImportSettings = entry.ImportSettings,
                 CreatedAt = entry.CreatedAt
             };
+            progress?.Report(new("Loading project images", index + 1, imageAssets.Length, entry.Name));
         }
 
         var scenes = new SceneRestartSnapshot[manifest.Scenes.Length];
+        progress?.Report(new("Loading project scenes", 0, scenes.Length));
         for (var index = 0; index < manifest.Scenes.Length; index++)
         {
             var entry = manifest.Scenes[index];
             var expectedTimelinePath = SceneTimelineRelativePath(entry.Id, manifest.FormatVersion);
             var timelinePath = ResolveExpectedRelativePath(projectRoot, entry.TimelinePath, expectedTimelinePath);
+            progress?.Report(new("Loading project scenes", index, scenes.Length, entry.Name,
+                "Verifying file checksums", entry.TimelinePath));
             projectBytes = AddProjectBytes(
                 projectBytes,
                 ValidateFile(timelinePath, entry.TimelineSha256, MaxTimelineBytes, "scene timeline"));
+            progress?.Report(new("Loading project scenes", index, scenes.Length, entry.Name,
+                "Reading timeline data", entry.TimelinePath));
             var timeline = ReadTimeline<SceneTimelineDocument>(
                 timelinePath,
                 manifest.FormatVersion,
@@ -397,6 +464,7 @@ internal static class ProjectVaultStore
                 Dimension = entry.Dimension,
                 Camera = entry.Camera,
                 Canvas = timeline.Canvas,
+                RulerGuides = RulerGuideValidation.Copy(timeline.RulerGuides),
                 CanvasWelcomeDismissed = timeline.CanvasWelcomeDismissed,
                 Lights = timeline.Lights,
                 CreatedAt = entry.CreatedAt,
@@ -408,8 +476,11 @@ internal static class ProjectVaultStore
                 OnionSkinPreviousFrames = timeline.OnionSkinPreviousFrames,
                 OnionSkinNextFrames = timeline.OnionSkinNextFrames
             };
+            progress?.Report(new("Loading project scenes", index + 1, scenes.Length, entry.Name));
         }
 
+        progress?.Report(new("Loading project scenes", scenes.Length, scenes.Length));
+        progress?.Report(new("Validating project references"));
         var externalSvgAssets = manifest.ExternalSvgAssets.Select(item => item.ToSnapshot()).ToArray();
         if (manifest.FormatVersion >= 6)
         {
@@ -418,6 +489,8 @@ internal static class ProjectVaultStore
                 var entry = manifest.ExternalSvgAssets[index];
                 var expected = $".Vault/ExternalSvg/{entry.Id}.svg";
                 var path = ResolveExpectedRelativePath(projectRoot, entry.ProjectRelativePath, expected);
+                progress?.Report(new("Validating project references", index, externalSvgAssets.Length, entry.Name,
+                    "Verifying file checksums", entry.ProjectRelativePath));
                 projectBytes = AddProjectBytes(projectBytes,
                     ValidateFile(path, entry.LastKnownSha256, MaxSvgAssetBytes, "SVG asset"));
                 externalSvgAssets[index] = new ExternalSvgAssetRestartSnapshot
@@ -453,7 +526,10 @@ internal static class ProjectVaultStore
                         layer.MaskScene is { } mask && mask.ImportedSvgAssetIds.Count > 0))))
             throw new InvalidDataException("Older project formats cannot contain shared SVG references.");
         ValidateRestartSnapshot(snapshot, projectRoot);
-        return VectorProject.RestoreRestartSnapshot(snapshot);
+        progress?.Report(new("Restoring project document", Item: manifest.Project.Name));
+        var project = VectorProject.RestoreRestartSnapshot(snapshot);
+        progress?.Report(new("Project loaded", 1, 1));
+        return project;
     }
 
     internal static (string StagingRoot, string BackupRoot, string JournalPath) GetSaveRecoveryPathsForRegression(
@@ -955,7 +1031,7 @@ internal static class ProjectVaultStore
             {
                 throw new InvalidDataException("Project formats before version 3 cannot contain symbol snap points.");
             }
-            ValidateManifestFile(projectRoot, drawing.SvgPath, DrawingSvgRelativePath(drawing.Id), drawing.SvgSha256, paths);
+            ValidateManifestFile(projectRoot, drawing.SvgPath, ExpectedDrawingSvgPath(manifest, drawing), drawing.SvgSha256, paths);
             ValidateManifestFile(
                 projectRoot,
                 drawing.TimelinePath,
@@ -1471,7 +1547,7 @@ internal static class ProjectVaultStore
         DrawingTimelineDocument document,
         VectorSceneSnapshot scene,
         string expectedDrawingId,
-        IReadOnlyList<DrawingManifestEntry> drawings)
+        ISet<string> drawingIds)
     {
         if (document is null || document.FormatVersion != TimelineFormatVersion
             || !string.Equals(document.DrawingObjectId, expectedDrawingId, StringComparison.Ordinal)
@@ -1514,7 +1590,6 @@ internal static class ProjectVaultStore
             throw new InvalidDataException($"Symbol '{expectedDrawingId}' has mismatched cel ownership.");
         }
 
-        var drawingIds = drawings.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         ValidateInstances(document.Instances, drawingIds, $"symbol '{expectedDrawingId}'");
         var layerIds = document.Layers.Select(item => item.Id).ToArray();
         ValidateTimeline(document.Timeline, layerIds);
@@ -2310,6 +2385,54 @@ internal static class ProjectVaultStore
             && !id.Contains(Path.AltDirectorySeparatorChar);
     }
 
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ProjectManifest, Dictionary<string, string>> NamedDrawingPaths = new();
+    private static string ExpectedDrawingSvgPath(ProjectManifest manifest, DrawingManifestEntry drawing)
+        => manifest.FormatVersion < 8 ? DrawingSvgRelativePath(drawing.Id)
+            : NamedDrawingPaths.GetValue(manifest, m => BuildNamedDrawingPaths(
+                m.DrawingObjects.Select(d => (d.Id, d.Name, d.AssetFolderId)),
+                m.AssetFolders.Select(f => (f.Id, f.Name, f.ParentFolderId))))[drawing.Id];
+
+    private static Dictionary<string, string> BuildNamedDrawingPaths(
+        IEnumerable<(string Id, string Name, string Folder)> drawings,
+        IEnumerable<(string Id, string Name, string Parent)> folders, Action<string>? createFolder = null)
+    {
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".Vault/Images", ".Vault/ExternalSvg" };
+        var pending = folders.ToDictionary(f => f.Id);
+        var directories = new Dictionary<string, string> { [""] = VaultDirectoryName };
+        while (pending.Count > 0)
+        {
+            var ready = pending.Values.Where(f => directories.ContainsKey(f.Parent)).ToArray();
+            if (ready.Length == 0) throw new InvalidDataException("Invalid asset folder hierarchy.");
+            foreach (var folder in ready)
+            {
+                directories.Add(folder.Id, Allocate(directories[folder.Parent], folder.Name, folder.Id, ""));
+                createFolder?.Invoke(directories[folder.Id]);
+                pending.Remove(folder.Id);
+            }
+        }
+        var result = new Dictionary<string, string>();
+        foreach (var drawing in drawings)
+            result.Add(drawing.Id, Allocate(directories[drawing.Folder], drawing.Name, drawing.Id, ".svg"));
+        return result;
+
+        string Allocate(string parent, string name, string id, string extension)
+        {
+            var invalid = Path.GetInvalidFileNameChars();
+            var safe = new string(name.Select(c => invalid.Contains(c) || char.IsControl(c) ? '_' : c).ToArray()).Trim().TrimEnd('.');
+            if (safe.Length > 80) safe = safe[..80];
+            if (safe.Length == 0) safe = "Untitled";
+            var stem = safe.Split('.')[0].ToUpperInvariant();
+            if (new[] { "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9" }.Contains(stem)) safe = "_" + safe;
+            var path = parent + "/" + safe + extension;
+            if (!used.Add(path))
+            {
+                path = parent + "/" + safe + "_" + id + extension;
+                while (!used.Add(path)) path = parent + "/_" + Path.GetFileName(path);
+            }
+            return path;
+        }
+    }
+
     private static string DrawingSvgRelativePath(string id) => $"{VaultDirectoryName}/{id}.svg";
 
     private static string DrawingTimelineRelativePath(string id, int manifestFormatVersion) =>
@@ -2476,7 +2599,10 @@ internal static class ProjectVaultStore
             FileAccess.Write,
             FileShare.None,
             bufferSize: 4096,
-            FileOptions.WriteThrough);
+            FileOptions.None);
+        // The staging file is not published until this explicit disk flush
+        // completes. WriteThrough would additionally synchronize each write,
+        // then repeat that barrier here for every small timeline/manifest.
         stream.Write(bytes);
         stream.Flush(flushToDisk: true);
     }
@@ -2563,6 +2689,7 @@ internal static class ProjectVaultStore
         return new VectorSceneSnapshot
         {
             LayerCount = source.LayerCount,
+            RulerGuides = RulerGuideValidation.Copy(source.RulerGuides),
             ObjectCount = source.ObjectCount,
             VirtualAtomCount = source.VirtualAtomCount,
             NextObjectOrder = source.NextObjectOrder,
@@ -2909,6 +3036,7 @@ internal static class ProjectVaultStore
 
     private sealed class SceneTimelineDocument
     {
+        public RulerGuide[] RulerGuides { get; init; } = [];
         public int FormatVersion { get; init; }
         public string SceneId { get; init; } = "";
         public SceneCanvasSettings? Canvas { get; init; }
@@ -2927,6 +3055,7 @@ internal static class ProjectVaultStore
             FormatVersion = ProjectVaultStore.TimelineFormatVersion,
             SceneId = scene.Id,
             Canvas = scene.Canvas,
+            RulerGuides = RulerGuideValidation.Copy(scene.RulerGuides),
             CanvasWelcomeDismissed = scene.CanvasWelcomeDismissed,
             Layers = scene.Layers,
             Timeline = scene.Timeline,

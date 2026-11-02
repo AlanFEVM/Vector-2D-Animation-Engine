@@ -53,6 +53,8 @@
 | `Benchmark.SceneLightingBrdf.cs`, `Benchmark.SceneLightingVisual.cs` | `Render` | GGX material response, numerical stability, lighting screenshots and renderer parity |
 | `Benchmark.SnapPoints.cs` | `Freehand`, `Timeline`, `Render` | snap-point model, Vault storage, tools and overlays |
 | `Benchmark.StageInteraction.cs` | `Render` | Stage selection, transforms, pointer and spatial interaction; nearest physical/virtual endpoint routing, narrow editing versus drawing snap radii and true line-centerline snapping |
+| `Benchmark.StageShortcuts.cs` | `Freehand`, `Render` | Stage shortcut profiles, geometry/instance duplication, selection, appearance and document undo/redo |
+| `Benchmark.CanvasRotation.cs` | `Freehand` | 2D view rotation, coordinate/navigation invariants, gesture cancellation and real-HWND Direct2D/GDI pixels |
 | `Benchmark.StageRenderSuite.cs` | `Render` | render orchestration and shared app checks; the separately callable frame-cache regression remains in Render and checks invalidation before warming a second unchanged frame for the current cache-settlement policy |
 | `Benchmark.StageVisualRegression.cs` | `Freehand`, `Render` | Bezier operation budgets and visual pixels/passes/fallback checks |
 | `Benchmark.SymbolSvgExport.cs` | `Timeline` | single-symbol portable SVG export: layer/stack paint order and visible-range filtering |

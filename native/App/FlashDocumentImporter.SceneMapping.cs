@@ -63,7 +63,8 @@ internal static partial class FlashDocumentImporter
     {
         var source = staging.Scene;
         var timeline = staging.Timeline.CreateSnapshot();
-        var roots = Enumerable.Range(0, source.LayerCount).Where(layer => source.GetLayerParentIndex(layer) < 0).ToArray();
+        var roots = Enumerable.Range(0, source.LayerCount).Where(layer => source.GetLayerParentIndex(layer) < 0
+            && !source.TryGetMaskLayerIndex(layer, out _)).ToArray();
         var layers = new List<SceneLayerSnapshotItem>();
         var tracks = new List<AnimationTimelineTrackSnapshot>();
         var groups = new List<(int Root, int[] Members, string LayerId, bool Wrapped)>();
@@ -71,7 +72,8 @@ internal static partial class FlashDocumentImporter
         {
             var members = source.ResolveLayerRemovalIndices([source.LayerIds[root]]);
             var layerId = Guid.NewGuid().ToString("N");
-            var wrapped = members.Length > 1 || source.GetLayerKind(root) == DrawingLayerKind.Folder || source.LayerLocked[root];
+            var wrapped = members.Length > 1 || source.GetLayerKind(root) is DrawingLayerKind.Folder or DrawingLayerKind.Mask
+                || source.LayerLocked[root];
             groups.Add((root, members, layerId, wrapped));
             layers.Add(new(layerId, source.LayerNames[root], source.LayerVisible[root],
                 source.LayerColorArgb[root], source.LayerOutline[root] && source.GetLayerKind(root) != DrawingLayerKind.Folder));
@@ -112,6 +114,7 @@ internal static partial class FlashDocumentImporter
                 group.Scene.LayerNames[index] = source.LayerNames[member];
                 group.Scene.LayerKinds[index] = source.LayerKinds[member];
                 group.Scene.LayerParentIds[index] = source.LayerParentIds[member];
+                group.Scene.LayerMaskIds[index] = source.LayerMaskIds[member];
                 group.Scene.LayerLocked[index] = source.LayerLocked[member];
                 group.Scene.LayerVisible[index] = source.LayerVisible[member];
                 group.Scene.LayerColorArgb[index] = source.LayerColorArgb[member];

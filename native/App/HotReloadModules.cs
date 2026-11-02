@@ -182,6 +182,14 @@ internal static class HotReloadModuleResolver
     {
         if (typeName is nameof(StageControl)
             or nameof(Direct2DStageRenderer)
+            or nameof(SmartSnapIndex)
+            or nameof(SmartSnapResult)
+            or nameof(SmartSnapLine)
+            or nameof(SmartSnapAxis)
+            or nameof(SmartSnapKind)
+            or nameof(SmartLayout)
+            or nameof(SmartLayoutAction)
+            or nameof(SmartLayoutReference)
             or nameof(ShotFramingHandleKind)
             or nameof(ShotFramingHandleHit)
             or nameof(ShotFramingGizmoGeometry)
@@ -260,7 +268,8 @@ internal static class HotReloadModuleResolver
             or nameof(ShotDirectorMoveEventArgs)
             or nameof(ShotDirectorPropertiesEventArgs)
             or nameof(ShotDirectorLayerEventArgs)
-            or nameof(WorkspaceTabs))
+            or nameof(WorkspaceTabs)
+            or nameof(DrawSnappingStrip))
         {
             return HotReloadModule.Workspace;
         }

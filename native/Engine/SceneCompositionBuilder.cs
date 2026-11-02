@@ -55,6 +55,7 @@ internal sealed class SceneCompositionResult
     public IReadOnlyList<SpatialOpticalMaterial> ObjectMaterials => _materials;
     public IReadOnlyDictionary<int, (int Start, int Count)> HostLayerRanges { get; internal set; }
         = new Dictionary<int, (int Start, int Count)>();
+    public SceneCompositionMaskPlan LayerMasks { get; internal set; } = SceneCompositionMaskPlan.Empty;
 
     public bool TryGetOwner(int objectIndex, out SceneCompositionObjectOwner owner)
     {
@@ -122,7 +123,7 @@ internal sealed class SceneCompositionResult
     }
 }
 
-internal static class SceneCompositionBuilder
+internal static partial class SceneCompositionBuilder
 {
     private const int PreparedChunkSize = 2048;
 
@@ -158,11 +159,18 @@ internal static class SceneCompositionBuilder
         public bool IsCollisionTerrain { get; init; }
         public SymbolFilters Filters { get; init; }
         public bool SuppressSourceOpacity { get; init; }
+        // A library instance ID is reused whenever its containing symbol is placed
+        // again. Layer references must resolve inside this traversal occurrence.
+        public string OccurrenceId { get; init; } = "";
+        public CompositionLayerGroupKey SourceGroup => new(Source,
+            OccurrenceId.Length > 0 ? OccurrenceId : Owner.InstanceId);
+        public IReadOnlyList<CompositionMaskKey> InheritedMasks { get; init; } = [];
+        public IReadOnlyList<CompositionMaskKey> MaskContainers { get; init; } = [];
     }
 
     private readonly record struct SourceFrameKey(VectorScene Source, int Frame);
 
-    private readonly record struct CompositionLayerGroupKey(VectorScene Source, string InstanceId);
+    private readonly record struct CompositionLayerGroupKey(VectorScene Source, string OccurrenceId);
 
     private readonly record struct CompositionWorkItem(
         VectorScene Source,
@@ -276,7 +284,7 @@ internal static class SceneCompositionBuilder
             foreach (var instance in sceneDefinition.InstancesInLayer(sceneLayer.Id))
             {
                 var state = instance.EvaluateState(localFrame);
-                if (!state.Visible
+                if (instance.EditorHidden || !state.Visible
                     || !definitionsById.TryGetValue(instance.DrawingObjectId, out var drawingObject))
                 {
                     continue;
@@ -469,26 +477,30 @@ internal static class SceneCompositionBuilder
                 layer.PreserveSourceParent,
                 layer.Distortions)
             {
-                IsCollisionTerrain = layer.IsCollisionTerrain
+                IsCollisionTerrain = layer.IsCollisionTerrain,
+                OccurrenceId = layer.OccurrenceId,
+                InheritedMasks = layer.InheritedMasks,
+                MaskContainers = layer.MaskContainers
             };
         }
 
         return BuildLayers(destination, materializedLayers, Math.Max(AnimationTimeline.DefaultDuration, container.FrameCount));
     }
 
-    public static void BuildDrawingObjectOnionSkin(
+    public static SceneCompositionMaskPlan BuildDrawingObjectOnionSkin(
         VectorScene destination,
         DrawingObjectDefinition? drawingObject,
         IReadOnlyList<DrawingObjectDefinition> drawingObjects,
         int frame,
-        decimal parentFps = 30m)
+        decimal parentFps = 30m,
+        bool includeLocalArtwork = false)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(drawingObjects);
-        if (drawingObject is null || drawingObject.Instances.Count == 0)
+        if (drawingObject is null || !includeLocalArtwork && drawingObject.Instances.Count == 0)
         {
             destination.CreateEmpty();
-            return;
+            return SceneCompositionMaskPlan.Empty;
         }
 
         drawingObject.SynchronizeTimelineTracks();
@@ -496,7 +508,7 @@ internal static class SceneCompositionBuilder
         if (!scene.HasOnionSkinPreviewEnabled)
         {
             destination.CreateEmpty();
-            return;
+            return SceneCompositionMaskPlan.Empty;
         }
 
         var currentFrame = Math.Clamp(frame, 0, Math.Max(0, drawingObject.FrameCount - 1));
@@ -537,9 +549,10 @@ internal static class SceneCompositionBuilder
 
         var definitionsById = DefinitionsById(drawingObjects);
         var previews = new List<(VectorScene Scene, float Opacity, bool? IsPrevious)>(candidates.Count);
+        var maskSources = new List<(VectorScene Scene, SceneCompositionMaskPlan Plan)>();
         foreach (var candidate in candidates)
         {
-            if (!drawingObject.InstancesInLayer(scene.LayerIds[candidate.Layer]).Any(instance =>
+            if (!includeLocalArtwork && !drawingObject.InstancesInLayer(scene.LayerIds[candidate.Layer]).Any(instance =>
                     IsDrawingObjectInstanceActive(drawingObject, instance, candidate.Frame)
                     && definitionsById.ContainsKey(instance.DrawingObjectId)))
             {
@@ -547,7 +560,10 @@ internal static class SceneCompositionBuilder
             }
 
             var preview = new VectorScene();
-            BuildDrawingObjectChildrenCore(
+            var result = includeLocalArtwork
+                ? BuildDrawingObjectOnionExposure(preview, drawingObject, candidate.Layer, candidate.Frame,
+                    parentFps, definitionsById)
+                : BuildDrawingObjectChildrenCore(
                 preview,
                 drawingObject,
                 drawingObjects,
@@ -556,9 +572,14 @@ internal static class SceneCompositionBuilder
                 candidate.Layer,
                 definitionsById,
                 excludeEffectivelyLockedLayers: true);
-            if (preview.ObjectCount > 0) previews.Add((preview, candidate.Opacity, candidate.IsPrevious));
+            if (preview.ObjectCount > 0)
+            {
+                previews.Add((preview, candidate.Opacity, candidate.IsPrevious));
+                maskSources.Add((preview, result.LayerMasks));
+            }
         }
         destination.CombineOnionSkinPreviews(previews);
+        return CombineOnionSkinMaskPlans(maskSources);
     }
 
     /// <summary>
@@ -568,7 +589,7 @@ internal static class SceneCompositionBuilder
     /// that resolve to the same layer exposures as the current frame are skipped
     /// so a held Cel is not drawn twice.
     /// </summary>
-    public static void BuildSceneOnionSkin(
+    public static SceneCompositionMaskPlan BuildSceneOnionSkin(
         VectorScene destination,
         SceneDefinition? sceneDefinition,
         IReadOnlyList<DrawingObjectDefinition> drawingObjects,
@@ -580,7 +601,7 @@ internal static class SceneCompositionBuilder
         if (sceneDefinition is null || !sceneDefinition.HasOnionSkinPreviewEnabled)
         {
             destination.CreateEmpty();
-            return;
+            return SceneCompositionMaskPlan.Empty;
         }
 
         sceneDefinition.SynchronizeTimelineTracks();
@@ -588,6 +609,8 @@ internal static class SceneCompositionBuilder
         var lastFrame = Math.Max(0, sceneDefinition.FrameCount - 1);
         var currentFrame = Math.Clamp(frame, 0, lastFrame);
         var previews = new List<(VectorScene Scene, float Opacity, bool? IsPrevious)>();
+        var maskSources = new List<(VectorScene Scene, SceneCompositionMaskPlan Plan)>();
+        var seenExposures = new HashSet<(string LayerId, int SourceFrame)>();
         for (var offset = sceneDefinition.OnionSkinPreviousFrames; offset >= 1; offset--)
         {
             AddPreview(currentFrame - offset, offset, isPrevious: true);
@@ -599,7 +622,7 @@ internal static class SceneCompositionBuilder
         }
 
         destination.CombineOnionSkinPreviews(previews);
-        return;
+        return CombineOnionSkinMaskPlans(maskSources);
 
         void AddPreview(int previewFrame, int offset, bool isPrevious)
         {
@@ -610,13 +633,15 @@ internal static class SceneCompositionBuilder
                 var current = timeline.EvaluateTargetExposure(layer.Id, currentFrame);
                 var neighbour = timeline.EvaluateTargetExposure(layer.Id, previewFrame);
                 return neighbour.HasContent && (!current.HasContent
-                    || current.SourceKeyframeFrame != neighbour.SourceKeyframeFrame);
+                    || current.SourceKeyframeFrame != neighbour.SourceKeyframeFrame)
+                    && seenExposures.Add((layer.Id, neighbour.SourceKeyframeFrame));
             }).Select(layer => layer.Id).ToHashSet(StringComparer.Ordinal);
             if (changedLayers.Count == 0) return;
             var preview = new VectorScene();
-            Build(preview, sceneDefinition, drawingObjects, previewFrame, parentFps, sceneLayerFilter: changedLayers);
+            var result = Build(preview, sceneDefinition, drawingObjects, previewFrame, parentFps, sceneLayerFilter: changedLayers);
             if (preview.ObjectCount == 0) return;
             previews.Add((preview, 0.18f + 0.32f / offset, isPrevious));
+            maskSources.Add((preview, result.LayerMasks));
         }
     }
 
@@ -785,12 +810,16 @@ internal static class SceneCompositionBuilder
         string inheritedParentGroupId = "",
         bool excludeEffectivelyLockedLayers = false,
         IReadOnlyList<DistortWarp>? inheritedDistortions = null,
-        bool bakeAppearanceGroups = false)
+        bool bakeAppearanceGroups = false,
+        IReadOnlyList<CompositionMaskKey>? inheritedMasks = null,
+        IReadOnlyList<CompositionMaskKey>? maskContainers = null,
+        IReadOnlySet<int>? sourceLayerFilter = null)
     {
         if (!ancestry.Add(drawingObject.Id)) return;
         try
         {
             var source = drawingObject.Scene;
+            var occurrenceId = Guid.NewGuid().ToString("N");
             if (synchronize)
             {
                 source.SynchronizeTimelineTracks();
@@ -828,14 +857,28 @@ internal static class SceneCompositionBuilder
                     new SceneCompositionObjectOwner(instance.Id, drawingObject.Id, rootInstanceId),
                     SyntheticGroup: true, GroupId: filterGroupId, ParentGroupId: inheritedParentGroupId)
                 {
-                    Filters = state.Filters
+                    Filters = state.Filters,
+                    OccurrenceId = occurrenceId,
+                    InheritedMasks = inheritedMasks ?? [],
+                    MaskContainers = maskContainers ?? []
                 });
                 inheritedParentGroupId = filterGroupId;
                 alpha = inheritedAlpha; // Apply this instance's opacity once to the completed group.
             }
             for (var sourceLayer = 0; sourceLayer < source.LayerCount; sourceLayer++)
             {
-                if (excludeEffectivelyLockedLayers && source.IsLayerEffectivelyLocked(sourceLayer)) continue;
+                if (sourceLayerFilter is not null && !sourceLayerFilter.Contains(sourceLayer)) continue;
+                // Locked mask roots and their nested artwork are dependencies
+                // of otherwise eligible onion content, not visible previews.
+                if (excludeEffectivelyLockedLayers && source.IsLayerEffectivelyLocked(sourceLayer)
+                    && source.GetLayerKind(sourceLayer) != DrawingLayerKind.Mask
+                    && maskContainers is not { Count: > 0 }) continue;
+                var layerMasks = inheritedMasks ?? [];
+                if (source.TryGetMaskLayerIndex(sourceLayer, out var sourceMask))
+                    layerMasks = AppendMaskKey(layerMasks, new(source, occurrenceId, source.LayerIds[sourceMask]));
+                var childMaskContainers = maskContainers ?? [];
+                if (source.GetLayerKind(sourceLayer) == DrawingLayerKind.Mask)
+                    childMaskContainers = AppendMaskKey(childMaskContainers, new(source, occurrenceId, source.LayerIds[sourceLayer]));
                 var outline = inheritedOutline || source.IsLayerEffectivelyOutlined(sourceLayer);
                 var outlineColorArgb = inheritedOutline
                     ? inheritedOutlineColorArgb
@@ -891,7 +934,12 @@ internal static class SceneCompositionBuilder
                         GroupId: hostGroupId,
                         ParentGroupId: sourceParentGroupId,
                         PreserveSourceParent: true,
-                        Distortions: compositionDistortions));
+                        Distortions: compositionDistortions)
+                    {
+                        OccurrenceId = occurrenceId,
+                        InheritedMasks = layerMasks,
+                        MaskContainers = maskContainers ?? []
+                    });
                 }
 
                 var localLayer = new CompositionLayer(
@@ -915,7 +963,10 @@ internal static class SceneCompositionBuilder
                     Distortions: compositionDistortions)
                 {
                     IsCollisionTerrain = source.IsCollisionTerrainLayer(sourceLayer),
-                    SuppressSourceOpacity = hostGroupId.Length > 0
+                    SuppressSourceOpacity = hostGroupId.Length > 0,
+                    OccurrenceId = occurrenceId,
+                    InheritedMasks = layerMasks,
+                    MaskContainers = maskContainers ?? []
                 };
                 foreach (var childItem in activeChildren)
                 {
@@ -952,7 +1003,9 @@ internal static class SceneCompositionBuilder
                             : sourceParentGroupId.Length > 0 ? sourceParentGroupId : inheritedParentGroupId,
                         excludeEffectivelyLockedLayers,
                         compositionDistortions,
-                        bakeAppearanceGroups);
+                        bakeAppearanceGroups,
+                        layerMasks,
+                        childMaskContainers);
                 }
                 // Composition layers are stored front to back. Instances on a host
                 // layer therefore precede its local drawing in the flattened stack.
@@ -1057,7 +1110,7 @@ internal static class SceneCompositionBuilder
         DrawingObjectInstanceDefinition instance,
         int frame)
     {
-        if (!instance.EvaluateState(frame).Visible) return false;
+        if (instance.EditorHidden || !instance.EvaluateState(frame).Visible) return false;
         var scene = drawingObject.Scene;
         var layer = Array.IndexOf(scene.LayerIds, instance.SceneLayerId);
         return layer >= 0
@@ -1128,7 +1181,7 @@ internal static class SceneCompositionBuilder
             }
             if (layer.SyntheticGroup) continue;
 
-            var groupKey = new CompositionLayerGroupKey(layer.Source, layer.Owner.InstanceId);
+            var groupKey = layer.SourceGroup;
             if (!destinationLayerBySource.TryGetValue(groupKey, out var map))
             {
                 map = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -1152,7 +1205,7 @@ internal static class SceneCompositionBuilder
                 if (string.IsNullOrWhiteSpace(destination.LayerParentIds[destinationLayer])
                     && layer.PreserveSourceParent
                     && destinationLayerBySource.TryGetValue(
-                        new CompositionLayerGroupKey(layer.Source, layer.Owner.InstanceId),
+                        layer.SourceGroup,
                         out var syntheticMap)
                     && layer.SourceLayer < layer.Source.LayerParentIds.Length
                     && syntheticMap.TryGetValue(layer.Source.LayerParentIds[layer.SourceLayer], out var syntheticParentLayer))
@@ -1161,7 +1214,7 @@ internal static class SceneCompositionBuilder
                 }
                 continue;
             }
-            var map = destinationLayerBySource[new CompositionLayerGroupKey(layer.Source, layer.Owner.InstanceId)];
+            var map = destinationLayerBySource[layer.SourceGroup];
             var sourceLayer = layer.SourceLayer;
             if (string.IsNullOrWhiteSpace(destination.LayerParentIds[destinationLayer])
                 && sourceLayer < layer.Source.LayerParentIds.Length
@@ -1307,15 +1360,18 @@ internal static class SceneCompositionBuilder
         {
             throw new InvalidOperationException("Composition metadata does not align with destination objects.");
         }
+        var maskPlan = BuildLayerMaskPlan(layers);
         var finalizeMilliseconds = Stopwatch.GetElapsedTime(phaseStarted).TotalMilliseconds;
         LastBuildMetrics = new SceneCompositionBuildMetrics(
             bucketMilliseconds,
             setupMilliseconds,
             appendMilliseconds,
             finalizeMilliseconds);
-        return packedBatch
+        var result = packedBatch
             ? new SceneCompositionResult(packedOwners!, packedPoses!, packedMaterials!)
             : new SceneCompositionResult(owners!.ToArray(), poses!.ToArray(), materials!.ToArray());
+        result.LayerMasks = maskPlan;
+        return result;
     }
 
     private static void AppendPreparedChunks(

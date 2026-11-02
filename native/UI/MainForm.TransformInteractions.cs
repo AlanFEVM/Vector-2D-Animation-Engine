@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 
@@ -126,6 +126,7 @@ internal sealed partial class MainForm : Form
 
     private void StageMouseMove(object? sender, MouseEventArgs e)
     {
+        if (UpdateCanvasRotationPointer(e)) return;
         if (HandleReferenceCameraRightLookMouseMove(e)) return;
         if (UpdateCanvasViewDrag(e)) return;
         if (_transientViewNavigationActive && _lastMouse is null) return;
@@ -599,7 +600,8 @@ internal sealed partial class MainForm : Form
     {
         if (TryResolveSceneInstanceAt(world, out var instance))
         {
-            SetSceneInstanceSelection(instance, additive: IsShiftPressed());
+            if (!(IsAltPressed() && !IsShiftPressed() && _selectedSceneInstanceIds.Contains(instance.Id)))
+                SetSceneInstanceSelection(instance, additive: IsShiftPressed());
             _sceneInstanceMoveActive = true;
             _transformLastPointer = world;
         }
@@ -618,6 +620,7 @@ internal sealed partial class MainForm : Form
         {
             _sceneSnapMoveStartPointer = world;
             BeginSceneInstanceTransformPreview();
+            _duplicateProjectedDragArmed = IsAltPressed() && !IsShiftPressed();
         }
         UpdateInspector();
     }
@@ -657,6 +660,8 @@ internal sealed partial class MainForm : Form
         if (handle == TransformHandleKind.Focus) return;
         if (handle == TransformHandleKind.Move) _sceneSnapMoveStartPointer = _transformLastPointer;
         BeginSceneInstanceTransformPreview();
+        _duplicateProjectedDragArmed = handle == TransformHandleKind.Move
+            && IsAltPressed() && !IsShiftPressed();
         _transformPivot = TransformPivotFor(handle, _stage.TransformFrame);
         _transformLastAngle = TransformPointerAngle(_transformLastPointer, _transformPivot);
         if (IsRotationHandle(handle)) TryBeginRotationTransformFrame();
@@ -707,7 +712,6 @@ internal sealed partial class MainForm : Form
         }
 
         if (UpdateProjectedSceneMovePointer(e)) return;
-        if (IsSceneReferenceView() && !IsProjectedScene2DTransformView()) return;
         if (SupportsMarqueeSelection(_tool)
             && _marqueeSelecting
             && _marqueeStart is not null
@@ -716,6 +720,8 @@ internal sealed partial class MainForm : Form
             _stage.SetMarquee(_marqueeStart.Value, e.Location);
             return;
         }
+
+        if (IsSceneReferenceView() && !IsProjectedScene2DTransformView()) return;
 
         var world = _stage.TransformOverlayScreenToWorld(e.Location);
         if (_tool == ToolMode.Transform
@@ -752,13 +758,17 @@ internal sealed partial class MainForm : Form
 
     private void MoveSelectedSceneInstance(PointF world)
     {
+        if (_duplicateProjectedDragArmed && !DuplicateProjectedSceneDrag()) return;
         var instances = MotionTransformInstances();
         if (instances.Count == 0) return;
+        if (!IsScene3DView() && _startWorld is { } axisStart) world = ConstrainStageMove(world, axisStart);
         var spatialSession = _spatialTransformEditSession;
         if (spatialSession is not null && _sceneSnapMoveStartPointer is { } snapStart)
         {
             var rawDelta = new Vector3(world.X - snapStart.X, world.Y - snapStart.Y, 0);
             var delta = ResolveSceneSnapDelta(rawDelta, correction => new Vector3(correction.X, correction.Y, 0));
+            if (!IsScene3DView() && (ModifierKeys & Keys.Shift) != 0)
+                delta = Math.Abs(rawDelta.X) >= Math.Abs(rawDelta.Y) ? new Vector3(delta.X, 0, 0) : new Vector3(0, delta.Y, 0);
             var changed = false;
             foreach (var instance in instances)
             {
@@ -787,6 +797,8 @@ internal sealed partial class MainForm : Form
         var dx = world.X - _transformLastPointer.X;
         var dy = world.Y - _transformLastPointer.Y;
         if (Math.Abs(dx) <= 0.0001f && Math.Abs(dy) <= 0.0001f) return;
+
+        CaptureNestedInstancePointerUndo();
 
         foreach (var instance in instances)
         {
@@ -823,6 +835,8 @@ internal sealed partial class MainForm : Form
             _stage.Invalidate();
             return;
         }
+
+        CaptureNestedInstancePointerUndo();
 
         var changed = false;
         Func<PointF, PointF>? previewTransform = null;
@@ -1169,18 +1183,20 @@ internal sealed partial class MainForm : Form
             var hit = _scene.HitTestElement(_stage.ScreenToWorld(e.Location), _frame, SelectionToleranceWorld());
             var hasSelectableTarget = hit.IsValid && _scene.IsObjectSelectable(hit.Key.ObjectIndex, _frame);
             if (ShouldBeginTransformMarquee(handle, hasSelectableTarget)) BeginBlankMarqueeSelection(e.Location);
-            else if (hit.IsValid
-                && _scene.TryGetMixingBrushLocalRegion(hit.Key.ObjectIndex, out _))
+            else if (hasSelectableTarget)
             {
-                SetSelection(hit, deferPresentation: true);
+                if (_additiveSelection && _selectedObjects.Count > 0)
+                    AddToSelection(hit, deferPresentation: true);
+                else
+                    SetSelection(hit, deferPresentation: true);
             }
-            else SetSelection(hit.Key.ObjectIndex, deferPresentation: true);
             return;
         }
 
         _activeTransformHandle = handle;
         _transformCurrentBounds = _stage.TransformBounds;
         _transformLastPointer = _stage.ScreenToWorld(e.Location);
+        _duplicateDragArmed = handle == TransformHandleKind.Move && IsAltPressed() && !IsShiftPressed();
         _drawingTransformSession = null;
         _drawingTransformStartBounds = _transformCurrentBounds;
         _drawingTransformStartPointer = _transformLastPointer;
@@ -1617,6 +1633,9 @@ internal sealed partial class MainForm : Form
 
         if (_activeTransformHandle == TransformHandleKind.Move)
         {
+            world = ConstrainStageMove(world, _drawingTransformStartPointer);
+            world = ResolveSmartMovePointer(world, _drawingTransformStartPointer, _drawingTransformStartBounds);
+            world = ConstrainStageMove(world, _drawingTransformStartPointer);
             var dx = world.X - _drawingTransformStartPointer.X;
             var dy = world.Y - _drawingTransformStartPointer.Y;
             if (Math.Abs(dx) <= 0.0001f
@@ -1689,6 +1708,18 @@ internal sealed partial class MainForm : Form
         }
         else
         {
+            if (SmartSnapActive && FreeTransformKeepsAspectRatio()
+                && TryGetResizedTransformScaleFactors(_drawingTransformStartBounds, _transformPivot,
+                    _activeTransformHandle, world, out var rawScaleX, out var rawScaleY))
+            {
+                var uniform = ConstrainTransformScaleFactors(_activeTransformHandle, rawScaleX, rawScaleY, true);
+                var (hx, hy) = TransformHandleCoordinates(_activeTransformHandle);
+                var original = new PointF(_drawingTransformStartBounds.Left + hx * _drawingTransformStartBounds.Width,
+                    _drawingTransformStartBounds.Top + hy * _drawingTransformStartBounds.Height);
+                world = new(_transformPivot.X + (original.X - _transformPivot.X) * uniform.ScaleX,
+                    _transformPivot.Y + (original.Y - _transformPivot.Y) * uniform.ScaleY);
+            }
+            world = ResolveSmartResizePointer(world, _transformPivot, _activeTransformHandle, FreeTransformKeepsAspectRatio());
             if (!TryGetResizedTransformScaleFactors(
                     _drawingTransformStartBounds,
                     _transformPivot,
@@ -1742,6 +1773,14 @@ internal sealed partial class MainForm : Form
             return true;
         }
 
+        if (_duplicateDragArmed && _activeTransformHandle == TransformHandleKind.Move)
+        {
+            _duplicateDragArmed = false;
+            _duplicateSelectionKey = null;
+            if (!DuplicateStageSelection()) { session = null!; return false; }
+            _undoCapturedForPointerEdit = true;
+            _pointerUndoSnapshot = _undoStack.TryPeek(out var undo) ? undo.Snapshot : null;
+        }
         var materializeSelectedParts = _selectedElements.Count > 0;
         CapturePointerUndoSnapshot(
             allowSharedGeometry: _activeTransformHandle == TransformHandleKind.Move
@@ -2207,7 +2246,25 @@ internal sealed partial class MainForm : Form
             .Concat(_selectedElements)
             .Concat(_selectedObjects.Select(objectIndex => new DrawingElementHit(
                 new DrawingElementKey(objectIndex, DrawingElementKind.Stroke, 0), 0, 0, 1)));
-        foreach (var candidate in candidates)
+        var endpointCandidates = candidates.ToArray();
+        // A topology hit can cover only the last part of a source curve. At a
+        // physical source anchor, retain the complete line and its connections;
+        // materializing that part would replace the shared endpoint before dragging.
+        foreach (var candidate in endpointCandidates)
+        {
+            if (!candidate.IsValid || candidate.Key.Kind != DrawingElementKind.Stroke
+                || (uint)candidate.Key.ObjectIndex >= _scene.ObjectCount
+                || _scene.ShapeKind[candidate.Key.ObjectIndex] != ShapeKind.Line
+                || !_scene.IsObjectSelectable(candidate.Key.ObjectIndex, _frame)) continue;
+            var whole = new DrawingElementHit(
+                new DrawingElementKey(candidate.Key.ObjectIndex, DrawingElementKind.Stroke, 0), 0, 0, 1);
+            var wholeHandle = _stage.HitTestLineElementHandle(screen, whole);
+            if (wholeHandle is not (EditHandleKind.LineStart or EditHandleKind.LineEnd)) continue;
+            line = whole;
+            handle = wholeHandle;
+            return true;
+        }
+        foreach (var candidate in endpointCandidates)
         {
             var selectableBoundary = candidate.IsValid
                 && candidate.Key.Kind == DrawingElementKind.BoundaryStroke
@@ -2392,7 +2449,8 @@ internal sealed partial class MainForm : Form
 
     private void StageMouseUp(object? sender, MouseEventArgs e)
     {
-        var selectionGesture = e.Button == MouseButtons.Left && !_spacePanHeld && !_spacePanPointerActive
+        var selectionGesture = e.Button == MouseButtons.Left && _canvasRotationPointer is null && !_canvasRotationHeld
+            && !_spacePanHeld && !_spacePanPointerActive
             && !_brushColorPaletteActive && _tabletPressurePointerId is null
             && !_viewPanning && !_viewZooming && !_viewOrbiting && !_viewReferencePanning && !_viewReferenceZooming
             && _sceneLightGizmoPointerSession is null && _shotFramingPointerSession is null
@@ -2407,6 +2465,22 @@ internal sealed partial class MainForm : Form
 
     private void StageMouseUpCore(object? sender, MouseEventArgs e)
     {
+        if (_canvasRotationPointer is not null)
+        {
+            UpdateCanvasRotationPointer(e);
+            EndCanvasRotation();
+            return;
+        }
+        if (_tool == ToolMode.Select && e.Button == MouseButtons.Left
+            && (ModifierKeys & (Keys.Control | Keys.Alt | Keys.Shift)) == (Keys.Control | Keys.Alt)
+            && _startScreen is not null && !PointerDragExceeded(e.Location))
+        {
+            if (_projectedSceneMoveStartRayOrigin is not null) CancelProjectedSceneMovePointer();
+            FinishPointerInteraction();
+            CycleOccludedStageSelection(e.Location);
+            return;
+        }
+
         if (HandleReferenceCameraRightLookMouseUp(e)) return;
 
         if (_tabletPressurePointerId is not null && e.Button == MouseButtons.Left) return;
@@ -2557,7 +2631,8 @@ internal sealed partial class MainForm : Form
             && _lineBranchDragSession is null
             && _arcDragSession is null
             && _cornerDragSession is null
-            && (PointerMovedFromStart(e.Location) || _undoCapturedForPointerEdit))
+            && (PointerMovedFromStart(e.Location) || _undoCapturedForPointerEdit)
+            && (!_duplicateDragArmed || PointerDragExceeded(e.Location)))
         {
             QueueMoveSelectedFromPointer(_stage.ScreenToWorld(e.Location));
         }
@@ -2711,6 +2786,7 @@ internal sealed partial class MainForm : Form
 
     private void FinishLostPointerCapture()
     {
+        if (_canvasRotationPointer is not null) { EndCanvasRotation(cancel: true); return; }
         if (ReferenceCameraRightLookSessionActive)
         {
             CancelReferenceCameraRightLook();
@@ -2869,6 +2945,12 @@ internal sealed partial class MainForm : Form
 
     private void FinishPointerInteractionForFrameChange()
     {
+        EndCanvasRotation(cancel: true);
+        CancelStageNumericTransform();
+        _duplicateDragArmed = false;
+        _subtractMarquee = false;
+        _intersectMarquee = false;
+        ResetSmartSnapping();
         EndTransientViewNavigation(restoreFeedback: false);
         CancelReferenceCameraRightLook();
         CancelTemporaryCanvasPan();
@@ -2953,6 +3035,12 @@ internal sealed partial class MainForm : Form
 
     private void FinishPointerInteractionForContextChange()
     {
+        EndCanvasRotation(cancel: true);
+        CancelStageNumericTransform();
+        _duplicateDragArmed = false;
+        _subtractMarquee = false;
+        _intersectMarquee = false;
+        ResetSmartSnapping();
         EndTransientViewNavigation(restoreFeedback: false);
         CancelReferenceCameraRightLook();
         CancelReferenceCameraKeyboardNavigation();
@@ -3034,6 +3122,10 @@ internal sealed partial class MainForm : Form
 
     private void FinishPointerInteraction()
     {
+        _duplicateProjectedDragArmed = false;
+        _duplicateDragArmed = false;
+        _subtractMarquee = false;
+        _intersectMarquee = false;
         CancelArmedFillEdgeBezierPointer();
         _fillEdgePreSelect = null;
         CancelReferenceCameraRightLook();
@@ -3352,14 +3444,14 @@ internal sealed partial class MainForm : Form
         {
             _dragPreviewDrawingObjectId = drawingObject.Id;
             _dragPreviewPosition = world;
-            SceneCompositionBuilder.BuildDrawingObjectPreview(
+            var composition = SceneCompositionBuilder.BuildDrawingObjectPreview(
                 _dragPreviewStage,
                 drawingObject,
                 _drawingObjects,
                 world,
                 _frame,
                 parentFps: _playbackSettings.Fps);
-            _stage.BindDragPreviewScene(_dragPreviewStage);
+            _stage.BindDragPreviewScene(_dragPreviewStage, composition: composition);
             return;
         }
 

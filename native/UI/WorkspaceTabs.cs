@@ -34,8 +34,8 @@ internal sealed class WorkspaceTabs : UserControl
 {
     private const int TopNavigationHeight = 38;
     private const int PreferredWorkspaceButtonWidth = 116;
-    private const int ExpandedGridControlsWidth = 244;
-    private const int CompactGridControlsWidth = 40;
+    private const int ExpandedGridControlsWidth = 296;
+    private const int CompactGridControlsWidth = 92;
     private const int ExpandedGridBreakpoint = 660;
 
     private readonly FlowLayoutPanel _tabStrip = new();
@@ -121,6 +121,12 @@ internal sealed class WorkspaceTabs : UserControl
         _gridLabel.TextAlign = ContentAlignment.MiddleLeft;
         _gridLabel.Margin = Padding.Empty;
         _gridControls.Controls.Add(_gridLabel, 0, 0);
+        var rulerButton = new Button { Text = "标尺", AccessibleName = "标尺 / Rulers", Dock = DockStyle.Fill, Margin = Padding.Empty };
+        Theme.StyleToolbarButton(rulerButton);
+        rulerButton.Click += (_, _) => RulerMenuRequested?.Invoke(rulerButton, EventArgs.Empty);
+        _gridControls.ColumnCount = 5;
+        _gridControls.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+        _gridControls.Controls.Add(rulerButton, 4, 0);
 
         Theme.StyleToolbarButton(_gridTypeButton);
         _gridTypeButton.Dock = DockStyle.Fill;
@@ -174,6 +180,7 @@ internal sealed class WorkspaceTabs : UserControl
     public event EventHandler<WorkspaceViewChangedEventArgs>? SelectedViewChanged;
     public event EventHandler? ShotPageRequested;
     public event EventHandler? WorldGridOpacityChanged;
+    public event EventHandler? RulerMenuRequested;
     public event EventHandler? WorldGridTypeChanged;
 
     [DefaultValue(WorkspaceView.BasicDrawing)]
@@ -518,6 +525,7 @@ internal sealed class WorkspaceTabs : UserControl
 
         _compactGridControls = compact;
         _gridControls.SuspendLayout();
+        SetGridColumn(4, SizeType.Absolute, ScaleLogical(52));
         _gridLabel.Visible = !compact;
         _gridOpacity.Visible = !compact;
         _gridOpacityValue.Visible = !compact;

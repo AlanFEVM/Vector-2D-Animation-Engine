@@ -10,6 +10,27 @@ internal sealed partial class MainForm
         bool resetBezierCurvature = false)
     {
         if (_selectedObject < 0 || _startWorld is null || _selectedStart is null) return;
+        if (_duplicateDragArmed && _activeHandle == EditHandleKind.None)
+        {
+            _duplicateDragArmed = false;
+            _duplicateSelectionKey = null;
+            if (!DuplicateStageSelection()) return;
+            CaptureEditStart(_selectedObject);
+            // Paste already captured the pre-copy state. The drag belongs to that undo unit.
+            _undoCapturedForPointerEdit = true;
+            _pointerUndoSnapshot = _undoStack.TryPeek(out var duplicateUndo) ? duplicateUndo.Snapshot : null;
+        }
+        if (SmartSnapActive && _activeHandle == EditHandleKind.None && _selectedElements.Count > 0)
+        {
+            CapturePointerUndoSnapshot(allowSharedGeometry: _marqueeMaterializationSession is null);
+            if (!EnsureSelectedElementDetachedForMove(out _)) return;
+        }
+        if (_activeHandle == EditHandleKind.None)
+        {
+            world = ConstrainStageMove(world, _startWorld.Value);
+            world = ResolveSmartMovePointer(world, _startWorld.Value);
+            world = ConstrainStageMove(world, _startWorld.Value);
+        }
         var firstMove = !_undoCapturedForPointerEdit;
         var firstMoveStartedAt = firstMove ? Stopwatch.GetTimestamp() : 0;
         var firstMovePreviewAttempted = false;
@@ -532,6 +553,7 @@ internal sealed partial class MainForm
 
     private void ResetLineDragPreview()
     {
+        ResetSmartSnapping();
         _lineDragPreviewTimer.Stop();
         _pendingLineDragWorld = null;
         _pendingLineToolScreen = null;

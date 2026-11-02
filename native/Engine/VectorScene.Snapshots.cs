@@ -17,6 +17,7 @@ internal sealed partial class VectorScene
         return new VectorSceneSnapshot
         {
             LayerCount = LayerCount,
+            RulerGuides = RulerGuideValidation.Copy(RulerGuides),
             ObjectCount = ObjectCount,
             VirtualAtomCount = VirtualAtomCount,
             NextObjectOrder = _nextObjectOrder,
@@ -61,6 +62,8 @@ internal sealed partial class VectorScene
             AtomCount = AtomCount[..ObjectCount],
             Argb = Argb[..ObjectCount],
             StrokeArgb = StrokeArgb[..ObjectCount],
+            ObjectHidden = ObjectHidden[..ObjectCount],
+            ObjectLocked = ObjectLocked[..ObjectCount],
             FillAutoMergeProtected = FillAutoMergeProtected[..ObjectCount],
             FillBoundaryLinkDetached = FillBoundaryLinkDetached[..ObjectCount],
             QuadraticLineEditing = QuadraticLineEditing[..ObjectCount],
@@ -125,6 +128,9 @@ internal sealed partial class VectorScene
         ValidateObjectDistortionSnapshotPayload(snapshot);
         InvalidateQueryActiveKeyframes();
         LayerCount = snapshot.LayerCount;
+        var guides = RulerGuideValidation.Copy(snapshot.RulerGuides);
+        RulerGuides.Clear();
+        RulerGuides.AddRange(guides);
         ObjectCount = snapshot.ObjectCount;
         VirtualAtomCount = snapshot.VirtualAtomCount;
         _nextObjectOrder = snapshot.NextObjectOrder;
@@ -216,6 +222,8 @@ internal sealed partial class VectorScene
         AtomCount = snapshot.AtomCount.ToArray();
         Argb = snapshot.Argb.ToArray();
         StrokeArgb = snapshot.StrokeArgb.ToArray();
+        ObjectHidden = snapshot.ObjectHidden.Length == ObjectCount ? snapshot.ObjectHidden.ToArray() : new bool[ObjectCount];
+        ObjectLocked = snapshot.ObjectLocked.Length == ObjectCount ? snapshot.ObjectLocked.ToArray() : new bool[ObjectCount];
         FillAutoMergeProtected = snapshot.FillAutoMergeProtected.Length == ObjectCount
             ? snapshot.FillAutoMergeProtected.ToArray()
             : new bool[ObjectCount];

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.CompilerServices;
@@ -34,9 +34,8 @@ internal sealed partial class StageControl : Control
             {
                 if (SelectionDragPreviewActive)
                 {
-                    var offset = SelectionDragPreviewOffset;
-                    var screenScale = VectorUnits.PixelsPerUnit * Zoom;
-                    g.TranslateTransform(offset.X * screenScale, offset.Y * screenScale);
+                    var offset = WorldOffsetToScreen(SelectionDragPreviewOffset);
+                    g.TranslateTransform(offset.X, offset.Y);
                 }
                 foreach (var objectIndex in _selectedElements
                              .Where(hit => (uint)hit.Key.ObjectIndex < Scene.ObjectCount
@@ -596,11 +595,23 @@ internal sealed partial class StageControl : Control
         var h = Math.Max(2, WorldLengthToScreen(Math.Abs(dy)));
         var state = g.Save();
         g.TranslateTransform(center.X, center.Y);
+        g.RotateTransform(PlanarCanvasRotation * 180f / MathF.PI);
         DrawPreviewLocalShape(g, DrawingPreviewShape, DrawingPreviewShapeVertexCount, fill, stroke, w, h);
-        g.Restore(state);
 
         using var boundsPen = new Pen(Color.FromArgb(180, 255, 255, 255), 1) { DashStyle = DashStyle.Dash };
-        g.DrawRectangle(boundsPen, center.X - w * 0.5f, center.Y - h * 0.5f, w, h);
+        var previewVertices = DrawingPreviewShape switch
+        {
+            ShapeKind.Triangle => RegularPolygonPoints(3, w, h, -MathF.PI / 2),
+            ShapeKind.Polygon => RegularPolygonPoints(PolygonVertexCount(DrawingPreviewShapeVertexCount), w, h, -MathF.PI / 2),
+            ShapeKind.Star => StarPoints(StarVertexCount(DrawingPreviewShapeVertexCount), w, h, -MathF.PI / 2),
+            _ => Array.Empty<PointF>()
+        };
+        var previewBounds = previewVertices.Length == 0
+            ? new RectangleF(-w * 0.5f, -h * 0.5f, w, h)
+            : RectangleF.FromLTRB(previewVertices.Min(point => point.X), previewVertices.Min(point => point.Y),
+                previewVertices.Max(point => point.X), previewVertices.Max(point => point.Y));
+        g.DrawRectangle(boundsPen, previewBounds.X, previewBounds.Y, previewBounds.Width, previewBounds.Height);
+        g.Restore(state);
         g.SmoothingMode = oldMode;
     }
 
@@ -1516,13 +1527,9 @@ internal sealed partial class StageControl : Control
 
     private RectangleF WorldToScreenBounds(RectangleF bounds)
     {
-        var topLeft = WorldToScreen(new PointF(bounds.Left, bounds.Top));
-        var bottomRight = WorldToScreen(new PointF(bounds.Right, bounds.Bottom));
-        return RectangleF.FromLTRB(
-            Math.Min(topLeft.X, bottomRight.X),
-            Math.Min(topLeft.Y, bottomRight.Y),
-            Math.Max(topLeft.X, bottomRight.X),
-            Math.Max(topLeft.Y, bottomRight.Y));
+        var corners = new[] { WorldToScreen(bounds.Left, bounds.Top), WorldToScreen(bounds.Right, bounds.Top),
+            WorldToScreen(bounds.Right, bounds.Bottom), WorldToScreen(bounds.Left, bounds.Bottom) };
+        return RectangleF.FromLTRB(corners.Min(p => p.X), corners.Min(p => p.Y), corners.Max(p => p.X), corners.Max(p => p.Y));
     }
 
     private static PointF Midpoint(PointF left, PointF right)

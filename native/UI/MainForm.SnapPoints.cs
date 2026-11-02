@@ -346,14 +346,15 @@ internal sealed partial class MainForm
         bool? snapRequested = null)
     {
         ArgumentNullException.ThrowIfNull(constrainCorrection);
+        var layoutDelta = ResolveSmartSceneMove(rawDelta, constrainCorrection);
         _lastSceneSnapCandidateCheckCount = 0;
         var session = _spatialTransformEditSession;
-        if (!(snapRequested ?? IsShiftPressed())
+        if (!(snapRequested ?? (IsShiftPressed() || _drawSettings.SnapEnabled && _drawSettings.SnapToObjects))
             || session is null
             || session.SelectedInstanceIds.Length == 0)
         {
             _stage.ClearSceneSnapIndicator();
-            return rawDelta;
+            return layoutDelta;
         }
 
         var cache = ResolveSceneSnapQueryCache(session);
@@ -361,16 +362,17 @@ internal sealed partial class MainForm
         if (cache.SourcePoints.Length == 0 || cache.TargetPoints.Length == 0)
         {
             _stage.ClearSceneSnapIndicator();
-            return rawDelta;
+            return layoutDelta;
         }
         EnsureSceneSnapProjectionCache(cache);
         if (cache.TargetBuckets.Count == 0)
         {
             _stage.ClearSceneSnapIndicator();
-            return rawDelta;
+            return layoutDelta;
         }
 
-        const float thresholdSquared = SnapPointHitRadiusPixels * SnapPointHitRadiusPixels;
+        var radius = IsShiftPressed() ? SnapPointHitRadiusPixels : _drawSettings.SnapTolerancePixels * _stage.DeviceDpi / 96f;
+        var thresholdSquared = radius * radius;
         const float constrainedAlignmentSquared = 4f;
         var bestDistanceSquared = thresholdSquared;
         var bestCandidateOrder = -1L;
@@ -388,9 +390,10 @@ internal sealed partial class MainForm
                 continue;
             }
 
-            for (var cellY = -1; cellY <= 1; cellY++)
+            var cellRadius = Math.Max(1, (int)Math.Ceiling(radius / SnapPointHitRadiusPixels));
+            for (var cellY = -cellRadius; cellY <= cellRadius; cellY++)
             {
-                for (var cellX = -1; cellX <= 1; cellX++)
+                for (var cellX = -cellRadius; cellX <= cellRadius; cellX++)
                 {
                     var cell = new SceneSnapGridCell(sourceCell.X + cellX, sourceCell.Y + cellY);
                     if (!cache.TargetBuckets.TryGetValue(cell, out var targets)) continue;
@@ -429,8 +432,9 @@ internal sealed partial class MainForm
         if (!found)
         {
             _stage.ClearSceneSnapIndicator();
-            return rawDelta;
+            return layoutDelta;
         }
+        _stage.ClearSmartSnapLines();
         _stage.SetSceneSnapIndicator(bestSource, bestTarget);
         return rawDelta + bestCorrection;
     }
@@ -501,6 +505,7 @@ internal sealed partial class MainForm
 
     private void ClearSceneSnapQueryCache()
     {
+        ResetSmartSnapping();
         _sceneSnapQueryCache = null;
         _lastSceneSnapTargetPointCount = 0;
         _lastSceneSnapCandidateCheckCount = 0;

@@ -21,6 +21,13 @@ internal sealed class SettingsDialog : ModernDialogForm
     private WindowCornerStyle _selectedWindowCornerStyle;
     private readonly CodexIntegrationPanel _codexIntegration = new() { Dock = DockStyle.Fill, Visible = false };
     private UiLanguage _selectedLanguage;
+    private readonly ModernToggleSwitch _navigationPreview = new() {
+        Text = "Fast navigation preview", AccessibleName = "Fast navigation preview", Checked = true,
+        AccessibleDescription = "Temporarily reuses pixels during navigation; full vector quality returns after 250 ms idle.",
+        Dock = DockStyle.Bottom, AutoSize = true };
+    public bool NavigationPreviewEnabled { get => _navigationPreview.Checked; set => _navigationPreview.Checked = value; }
+    private readonly ModernToggleSwitch _experimentalLighting = new() { Text = "Enable experimental scene lighting", AccessibleName = "Enable experimental scene lighting", Dock = DockStyle.Bottom, AutoSize = true };
+    public bool ExperimentalSceneLightingEnabled { get => _experimentalLighting.Checked; set => _experimentalLighting.Checked = value; }
     private readonly ModernToggleSwitch _experimental3D = new()
     {
         Text = "Enable experimental 3D features",
@@ -231,10 +238,18 @@ internal sealed class SettingsDialog : ModernDialogForm
         settingsPanels.Controls.Add(operationPreferences, 0, 0);
         settingsPanels.Controls.Add(shortcutProfiles, 1, 0);
         content.Controls.Add(settingsPanels, 0, 6);
-        content.Controls.Add(_simpleSelectionHighlight, 0, 7);
+        var renderingOptions = new Panel { Dock = DockStyle.Fill };
+        _simpleSelectionHighlight.Dock = DockStyle.Top;
+        renderingOptions.Controls.Add(_simpleSelectionHighlight);
+        renderingOptions.Controls.Add(_navigationPreview);
+        content.Controls.Add(renderingOptions, 0, 7);
+        content.RowStyles[7].Height = 80;
 
-        content.Controls.Add(CreateOptionRow("Experimental features", _experimental3D), 0, 8);
-        content.RowStyles[8].Height = 46;
+        var experiments = new Panel { Dock = DockStyle.Fill };
+        experiments.Controls.Add(_experimental3D);
+        experiments.Controls.Add(_experimentalLighting);
+        content.Controls.Add(CreateOptionRow("Experimental features", experiments), 0, 8);
+        content.RowStyles[8].Height = 76;
         var cornerSelector = CreateSegmentedSelector();
         ConfigureSelectionButton(_squareCorners, "Use square interface corners");
         ConfigureSelectionButton(_subtleRoundedCorners, "Use subtle rounded interface corners");

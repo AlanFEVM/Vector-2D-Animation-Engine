@@ -1,4 +1,4 @@
-using System.Buffers;
+﻿using System.Buffers;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -22,8 +22,10 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     {
         ReleaseShotPreviewCaptureResources();
         _shotPreviewCaptureFailed = false;
+        ClearRetainedCompositionMasks();
         ClearSelectionCommands();
         ClearLayerContentHighlightCommands();
+        ClearReferenceNavigationCommands();
         ClearSelectionElementGeometry();
         ClearSoftwareFramePresentation();
         ClearSymbolEditingReference();
@@ -548,7 +550,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     {
         var origin = stage.WorldToScreen(0, 0);
         var scale = VectorUnits.PixelsPerUnit * stage.Zoom;
-        return Matrix3x2.CreateScale(scale) * Matrix3x2.CreateTranslation(origin.X, origin.Y);
+        return Matrix3x2.CreateScale(scale) * Matrix3x2.CreateRotation(stage.PlanarCanvasRotation)
+            * Matrix3x2.CreateTranslation(origin.X, origin.Y);
     }
 
     private static bool TryGetContourBounds(IReadOnlyList<GdiPointF[]> contours, out GdiRectangleF bounds)
