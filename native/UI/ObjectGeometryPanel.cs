@@ -4,9 +4,10 @@ internal enum ObjectTransformField { X, Y, Width, Height, Rotation }
 
 internal sealed class ObjectGeometryPanel : UserControl
 {
-    private readonly Label _title = new();
+    private readonly SvgIconButton _title = new(SvgIconKind.ChevronRight)
+        { Text = "Object transform", IsDisclosureHeader = true, IsInspectorPageHeader = true };
     private readonly Label _scope = new() { AutoEllipsis = true, UseMnemonic = false };
-    private readonly Label[] _captions = new[] { "X (vu)", "Y (vu)", "Width (vu)", "Height (vu)", "Rotation" }
+    private readonly Label[] _captions = new[] { "X (px)", "Y (px)", "Width (px)", "Height (px)", "Rotation" }
         .Select(InspectorModuleStyle.CreateFieldLabel).ToArray();
     private readonly ModernNumericUpDown[] _values = Enumerable.Range(0, 5).Select(_ => new ModernNumericUpDown()).ToArray();
     private readonly Label _ratioCaption = InspectorModuleStyle.CreateFieldLabel("Keep aspect ratio");
@@ -19,6 +20,7 @@ internal sealed class ObjectGeometryPanel : UserControl
     private bool _updating;
     private bool _interacting;
     private bool _ratioPreference;
+    private bool _expanded;
 
     public ObjectGeometryPanel()
     {
@@ -29,8 +31,13 @@ internal sealed class ObjectGeometryPanel : UserControl
         AccessibleName = "Object transform";
         AccessibleRole = AccessibleRole.Pane;
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
-        InspectorModuleStyle.StylePageTitle(_title);
-        _title.Text = "Object transform";
+        Theme.StyleToolbarButton(_title);
+        _title.AccessibleName = _title.Text;
+        _title.Click += (_, _) =>
+        {
+            _expanded = !_expanded;
+            UpdateExpansion();
+        };
         _scope.Font = Theme.UiFont();
         _scope.ForeColor = Theme.PanelSecondaryText;
         Theme.StyleStandardButton(_appearance);
@@ -45,7 +52,7 @@ internal sealed class ObjectGeometryPanel : UserControl
             editor.DecimalPlaces = 2;
             editor.Increment = 1;
             editor.AccessibleName = _captions[index].Text;
-            editor.Suffix = field == ObjectTransformField.Rotation ? "°" : "vu";
+            editor.Suffix = field == ObjectTransformField.Rotation ? "°" : "px";
             editor.ShowSuffix = true;
             InspectorModuleStyle.StyleField(editor);
             var gestureToken = "";
@@ -66,10 +73,11 @@ internal sealed class ObjectGeometryPanel : UserControl
         Controls.AddRange([_title, _scope, _source, _appearance, _ratioCaption, _keepRatio, .. _captions, .. _values]);
         Height = PreferredHeight;
         _ready = true;
+        UpdateExpansion();
         UiLocalization.Watch(this);
     }
 
-    public int PreferredHeight => ScaleMetric(_appearance.Enabled ? 434 : 390);
+    public int PreferredHeight => ScaleMetric(_expanded ? _appearance.Enabled ? 434 : 390 : 62);
     public event EventHandler? AppearanceRequested;
     public event Action<ObjectTransformField, float, bool>? ValueCommitted;
 
@@ -89,15 +97,15 @@ internal sealed class ObjectGeometryPanel : UserControl
                 _values[index].Enabled = editable && (index != 3 || heightEditable);
             }
             _captions[4].Text = UiLocalization.T(group || relativeRotation ? "Rotate by" : "Rotation");
-            _captions[2].Text = UiLocalization.T(heightEditable ? "Width (vu)" : "Length (vu)");
-            _captions[3].Text = UiLocalization.T(heightEditable ? "Height (vu)" : "Selection height (vu)");
+            _captions[2].Text = UiLocalization.T(heightEditable ? "Width (px)" : "Length (px)");
+            _captions[3].Text = UiLocalization.T(heightEditable ? "Height (px)" : "Selection height (px)");
             _toolTip.SetToolTip(_values[3], heightEditable ? "" : UiLocalization.T("Edit line thickness on the Appearance page."));
             _scope.Text = UiLocalization.T(mixedSelection
                 ? "Select either drawing objects or instances to edit transforms."
                 : group
                 ? "Multiple objects: center position, proportional group size and relative rotation."
-                : relativeRotation ? "Whole-object bounds in vector units (vu); rotation is applied as an increment."
-                : "Center position and local size in vector units (vu). Edits affect the whole object.");
+                : relativeRotation ? "Whole-object bounds in document pixels (px); rotation is applied as an increment."
+                : "Center position and local size in document pixels (px). Edits affect the whole object.");
             _toolTip.SetToolTip(_scope, _scope.Text);
             for (var index = 0; index < _values.Length; index++) _values[index].AccessibleName = _captions[index].Text;
             _keepRatio.Enabled = editable && !group;
@@ -108,9 +116,24 @@ internal sealed class ObjectGeometryPanel : UserControl
             _source.AccessibleDescription = sourceText;
             _toolTip.SetToolTip(_source, sourceText);
             _appearance.Enabled = appearanceAvailable;
-            _appearance.Visible = appearanceAvailable;
+            _appearance.Visible = _expanded && appearanceAvailable;
         }
         finally { _updating = false; }
+        PerformLayout();
+    }
+
+    private void UpdateExpansion()
+    {
+        SuspendLayout();
+        try
+        {
+            _title.Icon = _expanded ? SvgIconKind.ChevronDown : SvgIconKind.ChevronRight;
+            foreach (Control control in Controls)
+                if (control != _title) control.Visible = _expanded && (control != _appearance || _appearance.Enabled);
+            Height = PreferredHeight;
+            _title.Invalidate();
+        }
+        finally { ResumeLayout(performLayout: true); }
     }
 
     protected override void OnLayout(LayoutEventArgs eventArgs)
@@ -120,22 +143,23 @@ internal sealed class ObjectGeometryPanel : UserControl
         var inset = ScaleMetric(16);
         var width = Math.Max(1, Width - inset * 2);
         var split = (int)Math.Floor(width * 0.48f);
-        _title.SetBounds(inset + ScaleMetric(24), ScaleMetric(16), Math.Max(1, width - ScaleMetric(24)), ScaleMetric(28));
+        _title.SetBounds(inset, ScaleMetric(16), width, ScaleMetric(28));
+        _title.TabIndex = 0;
         _scope.SetBounds(inset, ScaleMetric(66), width, ScaleMetric(44));
         for (var index = 0; index < _values.Length; index++)
         {
             _captions[index].Dock = DockStyle.None;
             _captions[index].SetBounds(inset, ScaleMetric(118 + index * 40), Math.Max(1, split - ScaleMetric(8)), ScaleMetric(32));
             _values[index].SetBounds(inset + split, ScaleMetric(118 + index * 40), Math.Max(1, width - split), ScaleMetric(32));
-            _values[index].TabIndex = index;
+            _values[index].TabIndex = index + 1;
         }
         _ratioCaption.Dock = DockStyle.None;
         _ratioCaption.SetBounds(inset, ScaleMetric(318), Math.Max(1, split - ScaleMetric(8)), ScaleMetric(32));
         _keepRatio.SetBounds(inset + split, ScaleMetric(318), Math.Max(1, width - split), ScaleMetric(32));
-        _keepRatio.TabIndex = 5;
+        _keepRatio.TabIndex = 6;
         _source.SetBounds(inset, ScaleMetric(358), width, ScaleMetric(20));
         _appearance.SetBounds(inset, ScaleMetric(390), width, ScaleMetric(32));
-        _appearance.TabIndex = 6;
+        _appearance.TabIndex = 7;
         var height = PreferredHeight;
         if (Height != height) Height = height;
     }
@@ -143,7 +167,6 @@ internal sealed class ObjectGeometryPanel : UserControl
     protected override void OnPaint(PaintEventArgs eventArgs)
     {
         base.OnPaint(eventArgs);
-        SvgIcons.Draw(eventArgs.Graphics, SvgIconKind.Transform, new Rectangle(ScaleMetric(16), ScaleMetric(21), ScaleMetric(18), ScaleMetric(18)), Theme.PanelSecondaryText);
         InspectorModuleStyle.DrawDivider(this, eventArgs.Graphics, ScaleMetric(54));
         InspectorModuleStyle.DrawBottomDivider(this, eventArgs.Graphics);
     }

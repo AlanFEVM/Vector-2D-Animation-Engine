@@ -729,6 +729,10 @@ Selecting a layer in the timeline layer list automatically outlines that layer's
 
 图层名称可上下拖动以调整叠放顺序，上方图层覆盖下方图层。编辑元件时，本地绘制和嵌套元件共同遵循所属图层的顺序；同一图层中元件显示在本地绘制之上，点击及双击也优先命中可见的上层元件。该规则在元件编辑和场景组合中保持一致。
 
+使用时间轴“添加图层”时，新图层插入当前图层上方并自动选中，保留当前图层所属分组；文件夹内的新图层保持同级，选中被遮罩图层时插在遮罩组上方，不拆开遮罩关系。添加操作仍可一次撤销。新建文档保持当前工作区：场景与动画继续显示场景时间轴和“镜头”分组，选择普通图层不会误切到元件编辑上下文或丢失对应工具。
+
+Adding a timeline layer inserts and selects it above the current layer in the same tab group. New layers inside folders remain siblings; masked layers stay together, with the new layer above their mask block. The addition remains a single undo step. New documents retain the current workspace: Scene & Animation keeps its scene timeline and Shots group, and selecting a normal layer does not switch to a symbol-editing context or lose its tools.
+
 Drag layer names vertically to change stacking order; upper layers cover lower layers. Local drawing and nested symbols follow their host layers in both symbol editing and scene composition. Within one layer, symbols appear above local drawing, and clicks or double-clicks target the visible symbol first.
 
 场景与动画以场景图层中是否存在元件实例来判定关键帧内容。空场景图层始终显示空心关键帧，包括旧工程中残留了有内容曝光标记的情况；实例仅被隐藏时仍属于图层内容。
@@ -1779,7 +1783,7 @@ The brush commit microbenchmark collects the prior functional tests' heap after 
 
 The default **Properties → Object** summary shares the camera/text panel styling. With no selection, it shows a selection hint instead of empty metadata. A selection presents its type/ID or instance name, layer and geometry atom count (instance transform summary for symbols). **Drawing objects** is the total, not the selection count. Full names and transforms are available in tooltips; this read-only summary never changes tools, document data or navigation.
 
-“对象”页先展示对象限定的参数，统一的“位置和大小”放在面板最底部：普通矢量图形、线条、路径、自由形状、笔刷／混色笔触、文本、位图、SVG 和 2D 元件实例都可直接编辑中心 X／Y、局部宽／高及旋转。位置和尺寸使用 vu（矢量单位），不是屏幕像素；单选可开启“保持宽高比”，多选只允许整体等比缩放，旋转字段改为相对的“旋转增量”。局部填充／描边选择仍编辑整个对象，文本在正常局部缩放后保留可编辑文本类型。专用文字、图片和实例参数仍保留在下方；SVG、位图和实例不提供无效的外观入口。
+“对象”页先展示对象限定的参数，统一的“位置和大小”放在面板最底部，默认折叠，点击标题可展开或收起；切换选区和刷新数值时保留当前展开状态。普通矢量图形、线条、路径、自由形状、笔刷／混色笔触、文本、位图、SVG 和 2D 元件实例都可直接编辑中心 X／Y、局部宽／高及旋转。位置和尺寸使用 px（文档像素），不随舞台缩放变化；旋转仍使用度（°）。单选可开启“保持宽高比”，多选只允许整体等比缩放，旋转字段改为相对的“旋转增量”。局部填充／描边选择仍编辑整个对象，文本在正常局部缩放后保留可编辑文本类型。专用文字、图片和实例参数仍保留在下方；SVG、位图和实例不提供无效的外观入口。
 
 矢量对象在“位置和大小”上方提供“外观”快捷区，复用原有颜色编辑器与撤销流程，不建立第二套材质数据。选中填充区域时仅显示填色；选中描边时仅显示描边色和宽度（pt）；整对象按实际类型显示可用的填色／描边及不透明度。点击色样可原地打开现有色板，不离开对象页；需要完整颜色通道或渐变设置时，可主动点击“外观”进入完整页面。文本仅提供填色，位图、SVG、混色笔触和元件继续使用各自专用属性，不显示无效的通用材质入口。多选颜色不同时色样标记“混合”，数值显示主对象值，编辑应用于可用的选中部分。对象材质与绘制工具默认材质分开保存；激活工具或取消选区恢复工具原有颜色、线宽及渐变，工具默认值调整不会修改残留选区。连续线宽／不透明度编辑复用现有单次撤销与取消机制。
 
@@ -1791,7 +1795,7 @@ The default **Properties → Object** summary shares the camera/text panel styli
 
 工具页为所有工具提供统一图标标题和操作说明。有参数的工具复用真实设置：形状的保持宽高比，形状／直线／钢笔的共享吸附开关，直线／钢笔的角度步长，以及橡皮擦的描边／填充目标；这些入口与原工具栏双向同步，不创建第二份默认值，也不修改已有选区。多边形／星形的边数、铅笔平滑、笔刷和混色设置仍由原面板提供。吸附总开关关闭时，依赖选项禁用；角度吸附未启用时，角度步长禁用。选择、套索、自由变换、3D 变换、变形、填充、墨水瓶、吸管、渐变和吸附点没有独立且已实现的其他参数时，显示其实际用法及适用的“对象属性”／“外观”入口，不添加虚假的容差等控件。手形提供视图缩放按钮，不编辑文档。手动选工具不切页；选中对象时打开“属性 → 对象”，随后仍可手动切换页面，普通刷新不会抢回对象页。
 
-**Panel coverage:** object-specific settings appear first; the shared Position and Size section is last. The Object page edits center position, size and rotation for vector shapes, text, bitmaps, imported SVGs and 2D instances. Multiple selections use proportional group scaling and relative rotation; partial geometry selections edit the whole object. Native text remains editable. Existing undo, held exposure and Auto Key rules apply, with one commit per completed numeric gesture. Paths and brush geometry use bounds and incremental rotation; line thickness remains in Appearance. Mixed geometry/instance selections must be edited separately. Locked layers, playback, active text editing and 3D views disable these 2D fields. Bitmap display mode is directly editable and shared by all placements of the same image asset; advanced import settings remain in the existing dialog. Every tool retains its context help and existing settings, without dummy controls. Object selection reveals Object; ordinary refreshes do not override manual page choices.
+**Panel coverage:** object-specific settings appear first; the shared Position and Size section is last and collapsed by default. Click its header to expand or collapse it; selection changes and value refreshes preserve its expansion state. Position and size use document pixels (px), independent of stage zoom; rotation uses degrees (°). The Object page edits center position, size and rotation for vector shapes, text, bitmaps, imported SVGs and 2D instances. Multiple selections use proportional group scaling and relative rotation; partial geometry selections edit the whole object. Native text remains editable. Existing undo, held exposure and Auto Key rules apply, with one commit per completed numeric gesture. Paths and brush geometry use bounds and incremental rotation; line thickness remains in Appearance. Mixed geometry/instance selections must be edited separately. Locked layers, playback, active text editing and 3D views disable these 2D fields. Bitmap display mode is directly editable and shared by all placements of the same image asset; advanced import settings remain in the existing dialog. Every tool retains its context help and existing settings, without dummy controls. Object selection reveals Object; ordinary refreshes do not override manual page choices.
 
 右侧分类栏使用单色矢量图标：滑杆对应属性入口，属性下的标签对应对象、扳手对应工具、原来的列表图标对应文档；调色板对应外观、原子对应物理、视频对应镜头、场景图标对应场景。分类栏保持 38 逻辑像素宽，不随语言加宽；三个子项使用统一次级底色、较小图标和紧凑尺寸，纵向时通过缩进与细引导线归属属性入口，并与下方常驻分类留出间隔；窄栏仍使用横向子导航，当前项使用主题高亮与侧边标记。完整名称通过悬停提示及无障碍名称提供。所有导入图标统一使用主题色，而非素材自带的固定颜色，物理入口仍禁用。图标已随应用内置，不需要安装图标字体。
 

@@ -3354,7 +3354,22 @@ internal sealed partial class MainForm : Form
         {
             var snapshot = drawingScene.CreateSnapshot();
             var timelineSelection = _timeline.CaptureSelectionSnapshot();
-            drawingScene.AddLayer();
+            var targetLayerId = _timeline.ActiveTrackId is not null
+                ? drawingScene.LayerIds[drawingScene.ActiveLayer] : null;
+            var targetGroupId = targetLayerId is not null
+                ? drawingScene.Timeline.FindTrackByTargetId(targetLayerId)?.TabGroupId : null;
+            var addedLayer = drawingScene.AddLayer();
+            var addedLayerId = drawingScene.LayerIds[addedLayer];
+            if (targetGroupId is not null
+                && drawingScene.Timeline.FindTrackByTargetId(addedLayerId) is { } addedTrack)
+            {
+                drawingScene.Timeline.SetTrackTabGroup(addedTrack.Id, targetGroupId);
+            }
+            if (targetLayerId is not null)
+            {
+                MoveTimelineDrawingLayer(drawingScene, addedLayerId, targetLayerId,
+                    TimelineLayerDropPlacement.Before, moveOutOfMask: false);
+            }
             PushUndoSnapshot(snapshot, playheadFrame: _frame, timelineSelection: timelineSelection);
             _timeline.RefreshTimeline();
             _timeline.SelectModelActiveTrack(clearFrameSelection: true);
@@ -3370,7 +3385,25 @@ internal sealed partial class MainForm : Form
         var layerSnapshot = sceneDefinition.CreateLayerSnapshot();
         var shotSnapshot = sceneDefinition.CreateShotSnapshot();
         var selectionSnapshot = _timeline.CaptureSelectionSnapshot();
-        if (!_project.TryAddSceneLayer(sceneDefinition.Id, out _)) return;
+        var targetSceneLayer = _timeline.ActiveTrackId is not null
+            ? sceneDefinition.FindLayer(sceneDefinition.ActiveLayerId) : null;
+        var targetSceneLayerId = targetSceneLayer is { MaskLayerId.Length: > 0 }
+            ? targetSceneLayer.MaskLayerId : targetSceneLayer?.Id;
+        var targetSceneGroupId = targetSceneLayerId is not null
+            ? sceneDefinition.Timeline.FindTrackByTargetId(targetSceneLayerId)?.TabGroupId : null;
+        if (!_project.TryAddSceneLayer(sceneDefinition.Id, out var addedSceneLayer)
+            || addedSceneLayer is null) return;
+        if (targetSceneGroupId is not null
+            && sceneDefinition.Timeline.FindTrackByTargetId(addedSceneLayer.Id) is { } addedSceneTrack)
+        {
+            sceneDefinition.Timeline.SetTrackTabGroup(addedSceneTrack.Id, targetSceneGroupId);
+        }
+        var targetSceneLayerIndex = sceneDefinition.Layers.ToList()
+            .FindIndex(layer => layer.Id == targetSceneLayerId);
+        if (targetSceneLayerIndex >= 0)
+        {
+            _project.TryMoveSceneLayer(sceneDefinition.Id, addedSceneLayer.Id, targetSceneLayerIndex);
+        }
 
         // A layer created while a shot is active joins that shot, inside the same undo entry.
         AssignActiveLayerToActiveShot(sceneDefinition);

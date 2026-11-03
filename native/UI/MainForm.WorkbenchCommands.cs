@@ -1723,7 +1723,8 @@ internal sealed partial class MainForm : Form
         _scene = _drawingObjects[0].Scene;
         ResetEditHistory();
         BuildDrawingObjectTabs();
-        BindActiveDrawingObjectScene(resetView: true);
+        ShowWorkspace(_workspaceTabs.SelectedView);
+        _stage.ResetDefaultView();
         SetProjectDirty(false);
         AppLog.Info("New empty project created with one empty symbol");
     }
