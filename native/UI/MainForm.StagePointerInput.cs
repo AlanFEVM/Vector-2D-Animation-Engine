@@ -142,6 +142,13 @@ internal sealed partial class MainForm : Form
 
     private void StageMouseDown(object? sender, MouseEventArgs e)
     {
+        if (BeginCanvasRotationPointer(e)) return;
+        if (_stageNumericMode != '\0')
+        {
+            if (e.Button == MouseButtons.Right) CancelStageNumericTransform();
+            else if (e.Button == MouseButtons.Left) CommitStageNumericTransform();
+            return;
+        }
         EndTransientViewNavigation(restoreFeedback: false);
         if (HandleReferenceCameraRightLookMouseDown(e)) return;
         CancelReferenceCameraKeyboardNavigation();
@@ -151,6 +158,8 @@ internal sealed partial class MainForm : Form
         _stage.Focus();
         var canvasNavigation = e.Button == MouseButtons.Middle
             || e.Button == MouseButtons.Left && (_spacePanHeld || _tool == ToolMode.Hand);
+        _occludedCycleStartInstanceId = _selectedSceneInstanceId;
+        _occludedCycleStartObject = _selectedObject;
         if (!canvasNavigation) FlushDeferredPresentationOverlaysForPointerHitTest();
         if (_brushColorPaletteActive)
         {
@@ -207,6 +216,7 @@ internal sealed partial class MainForm : Form
         if (TryBeginMotionTrackMarquee(e.Location)) return;
 
         if (IsBasicDrawingOnlyTool(_tool)) EnsureSceneDrawingSurface();
+        if (TryBeginModifiedStageInstanceMarquee(e)) return;
         if (TryBeginProjectedScenePointer(e)) return;
 
         if (IsSceneCompositionContext() && !IsSceneDrawingContext())
@@ -273,14 +283,14 @@ internal sealed partial class MainForm : Form
         }
 
         if (UsesSelectionGeometryEditing
-            && IsControlPressed()
+            && IsControlPressed() && !IsShiftPressed() && !IsAltPressed()
             && TryBeginCornerDrag(e))
         {
             return;
         }
 
         if (UsesSelectionGeometryEditing
-            && IsAltPressed()
+            && IsAltPressed() && !IsControlPressed() && !IsShiftPressed()
             && TryBeginLineBranchDrag(e))
         {
             return;
@@ -325,12 +335,32 @@ internal sealed partial class MainForm : Form
         _startScreen = e.Location;
         _startWorld = _stage.ScreenToWorld(e.Location);
         if (_tool == ToolMode.Line) _startWorld = ResolveDrawingLineEndpoint(_startWorld.Value);
+        else if (ToolShapeKind(_tool) is not null) _startWorld = ResolveSmartDrawingPoint(_startWorld.Value);
         _pointerHitWasAlreadySelected = false;
         _independentMarqueeStrokeMove = false;
         _selectionWasEmptyOnPointerDown = _selectedObjects.Count == 0;
-        _forceMarqueeOnPointerDown = e.Button == MouseButtons.Left && (ModifierKeys & Keys.Control) == Keys.Control;
-        _additiveSelection = SupportsMarqueeSelection(_tool) && e.Button == MouseButtons.Left && IsShiftPressed();
+        _duplicateDragArmed = false;
+        _subtractMarquee = e.Button == MouseButtons.Left && (ModifierKeys & Keys.Alt) != 0;
+        _intersectMarquee = _subtractMarquee && IsShiftPressed();
+        _forceMarqueeOnPointerDown = e.Button == MouseButtons.Left && ((ModifierKeys & Keys.Control) == Keys.Control || _subtractMarquee);
+        _additiveSelection = SupportsMarqueeSelection(_tool) && e.Button == MouseButtons.Left && (IsShiftPressed() || _subtractMarquee);
         _pendingClickSelection = DrawingElementHit.None;
+        if (_tool == ToolMode.Select && e.Button == MouseButtons.Left
+            && (ModifierKeys & (Keys.Control | Keys.Shift | Keys.Alt)) == (Keys.Control | Keys.Shift)
+            && _startWorld is { } connectedPointer && !IsSceneCompositionContext())
+        {
+            var seed = _scene.HitTestElement(connectedPointer, _frame, SelectionToleranceWorld());
+            if (seed.IsValid)
+            {
+                var connected = _scene.GetConnectedStrokeElements(seed, _frame);
+                if (connected.Length > 0)
+                {
+                    SetSelection(connected, seed);
+                    FinishPointerInteraction();
+                    return;
+                }
+            }
+        }
         if (_tool is ToolMode.Transform or ToolMode.Distort)
         {
             if (_tool == ToolMode.Transform) BeginTransformPointer(e);
@@ -436,6 +466,24 @@ internal sealed partial class MainForm : Form
                     if (TryResetSelectedBezierCurvature(e.Button, _activeHandle)) return;
                     _stage.InvalidateOverlay();
                     UpdateInteractionCursor(e.Location);
+                    return;
+                }
+            }
+
+            if (e.Button == MouseButtons.Left && (ModifierKeys & Keys.Alt) != 0
+                && !IsShiftPressed() && _startWorld is { } duplicatePointer
+                && _selectedObjects.Count > 0 && SelectedSceneInstances().Count == 0)
+            {
+                var duplicateHit = _scene.HitTestElement(duplicatePointer, _frame, SelectionToleranceWorld());
+                if (duplicateHit.IsValid && _selectedObjects.Contains(duplicateHit.Key.ObjectIndex))
+                {
+                    _subtractMarquee = false;
+                    _intersectMarquee = false;
+                    _additiveSelection = false;
+                    _duplicateDragArmed = true;
+                    _forceMarqueeOnPointerDown = false;
+                    _activeHandle = EditHandleKind.None;
+                    CaptureEditStart(_selectedObject);
                     return;
                 }
             }

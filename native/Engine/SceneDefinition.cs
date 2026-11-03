@@ -45,6 +45,7 @@ internal sealed record SceneLayerSnapshotItem(
 internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDefinition, IEditableSnapPointOwner
 {
     internal const int MaximumLights = 256;
+    internal List<RulerGuide> RulerGuides { get; } = [];
 
     private readonly AnimationTimeline _timeline;
     private readonly List<SceneLayerDefinition> _layers = [];

@@ -18,10 +18,10 @@ internal sealed partial class Direct2DStageRenderer
     // Flip-model HWNDs retain their last presented frame over subsequent GDI
     // window painting, even after releasing the swap chain. Keep software
     // composition at full resolution and upload only its final presentation.
-    internal bool TryPresentSoftwareFrame(StageControl stage, Action<Graphics> drawFrame)
+    internal bool TryPresentSoftwareFrame(StageControl stage, Action<Graphics> drawFrame, bool preparedFrame = false)
     {
         if (_disabled || stage.Width <= 0 || stage.Height <= 0
-            || (!stage.ShotWorkspacePreviewActive && !RequiresSoftwareLayerCompositing(stage) && !RequiresSoftwareDistortion(stage))) return false;
+            || (!preparedFrame && !stage.ShotWorkspacePreviewActive && !RequiresSoftwareLayerCompositing(stage) && !RequiresSoftwareDistortion(stage))) return false;
         var drawing = false;
         try
         {

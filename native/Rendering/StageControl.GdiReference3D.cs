@@ -156,6 +156,9 @@ internal sealed partial class StageControl
         var previousSmoothing = graphics.SmoothingMode;
         using var opacitySurface = new Reference3DGdiOpacitySurface(
             Scene.HasSymbolFilters ? LayerCompositor().SurfaceSize : ClientSize);
+        var compositionPlan = CompositionMasksFor(Scene);
+        using var compositionMasks = compositionPlan is null ? null : new SceneCompositionMaskRegions(
+            Scene, compositionPlan, Frame, CreateProjectedCompositionMaskObjectPaths);
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         try
         {
@@ -169,7 +172,8 @@ internal sealed partial class StageControl
                     compositor.CompositeBatchesTo(
                         graphics,
                         Scene,
-                        layer => objectsByLayer[layer].Length > 0,
+                        layer => objectsByLayer[layer].Length > 0 && (compositionPlan is null
+                            || !IsCompositionMaskArtworkHidden(Scene, compositionPlan, layer)),
                         (layerGraphics, layers) =>
                         {
                             var previousOffset = _reference3DGdiViewportOffset;
@@ -179,14 +183,15 @@ internal sealed partial class StageControl
                                 foreach (var item in GetReference3DCompositeLayerRenderItems(layers))
                                 {
                                     if (DrawReference3DSceneItem(
-                                            layerGraphics, item, maskPaths, opacitySurface))
+                                            layerGraphics, item, maskPaths, opacitySurface,
+                                            compositionMasks, deferCompositionMasksToLayerBoundary: true))
                                     {
                                         drawnObjects.Add(item.ObjectIndex);
                                     }
                                 }
                             }
                             finally { _reference3DGdiViewportOffset = previousOffset; }
-                        });
+                        }, layer => compositionMasks?.CreateLayerBoundaryClip(layer));
                     drawn = drawnObjects.Count;
                 }
                 finally
@@ -206,7 +211,8 @@ internal sealed partial class StageControl
                                 graphics,
                                 item,
                                 maskPaths,
-                                opacitySurface))
+                                opacitySurface,
+                                compositionMasks))
                         {
                             drawnObjects.Add(item.ObjectIndex);
                         }
@@ -231,13 +237,17 @@ internal sealed partial class StageControl
         Graphics graphics,
         Reference3DRenderItem item,
         IDictionary<int, GraphicsPath?> maskPaths,
-        Reference3DGdiOpacitySurface opacitySurface)
+        Reference3DGdiOpacitySurface opacitySurface,
+        SceneCompositionMaskRegions? compositionMasks = null,
+        bool deferCompositionMasksToLayerBoundary = false)
     {
         if ((uint)item.ObjectIndex >= Scene.ObjectCount
             || IsObjectHiddenForRendering(Scene, item.ObjectIndex))
         {
             return false;
         }
+        if (compositionMasks is not null && CompositionMasksFor(Scene) is { } compositionPlan
+            && IsCompositionMaskArtworkHidden(Scene, compositionPlan, item.LayerIndex)) return false;
 
         var opacity = float.IsFinite(item.MaterialOpacity)
             ? Math.Clamp(item.MaterialOpacity, 0f, 1f)
@@ -253,20 +263,24 @@ internal sealed partial class StageControl
             var drawn = DrawReference3DSceneItemClipped(
                 surfaceGraphics,
                 item with { MaterialOpacity = 1f },
-                maskPaths);
+                maskPaths, compositionMasks, deferCompositionMasksToLayerBoundary);
             if (drawn) opacitySurface.CompositeTo(graphics, opacity);
             return drawn;
         }
 
-        return DrawReference3DSceneItemClipped(graphics, item, maskPaths);
+        return DrawReference3DSceneItemClipped(graphics, item, maskPaths, compositionMasks,
+            deferCompositionMasksToLayerBoundary);
     }
 
     private bool DrawReference3DSceneItemClipped(
         Graphics graphics,
         Reference3DRenderItem item,
-        IDictionary<int, GraphicsPath?> maskPaths)
+        IDictionary<int, GraphicsPath?> maskPaths,
+        SceneCompositionMaskRegions? compositionMasks = null,
+        bool deferCompositionMasksToLayerBoundary = false)
     {
-        if (!TryGetReference3DLayerMaskPath(item.LayerIndex, maskPaths, out var maskPath))
+        GraphicsPath? maskPath = null;
+        if (compositionMasks is null && !TryGetReference3DLayerMaskPath(item.LayerIndex, maskPaths, out maskPath))
         {
             return false;
         }
@@ -276,7 +290,9 @@ internal sealed partial class StageControl
         {
             if ((uint)item.SecondaryObjectIndex >= Scene.ObjectCount
                 || IsObjectHiddenForRendering(Scene, item.SecondaryObjectIndex)
-                || !TryGetReference3DLayerMaskPath(
+                || compositionMasks is not null && CompositionMasksFor(Scene) is { } secondaryPlan
+                    && IsCompositionMaskArtworkHidden(Scene, secondaryPlan, Scene.ObjectLayer[item.SecondaryObjectIndex])
+                || compositionMasks is null && !TryGetReference3DLayerMaskPath(
                     Scene.ObjectLayer[item.SecondaryObjectIndex],
                     maskPaths,
                     out secondaryMaskPath))
@@ -284,8 +300,17 @@ internal sealed partial class StageControl
                 return false;
             }
         }
+        using var compositionClip = deferCompositionMasksToLayerBoundary
+            ? null : compositionMasks?.CreateLayerClip(item.LayerIndex);
+        using var secondaryCompositionClip = item.SecondaryObjectIndex >= 0
+            && item.SecondaryObjectIndex != item.ObjectIndex
+            ? deferCompositionMasksToLayerBoundary
+                ? compositionMasks?.CreateRelatedLayerClip(Scene.ObjectLayer[item.SecondaryObjectIndex], item.LayerIndex)
+                : compositionMasks?.CreateLayerClip(Scene.ObjectLayer[item.SecondaryObjectIndex])
+            : null;
         var fragmentClip = item.FragmentClip;
-        if (maskPath is null && secondaryMaskPath is null && fragmentClip is null)
+        if (maskPath is null && secondaryMaskPath is null && fragmentClip is null
+            && compositionClip is null && secondaryCompositionClip is null)
         {
             return DrawReference3DSceneItemUnmasked(graphics, item);
         }
@@ -298,6 +323,8 @@ internal sealed partial class StageControl
         var state = graphics.Save();
         try
         {
+            if (compositionClip is not null) graphics.SetClip(compositionClip, CombineMode.Intersect);
+            if (secondaryCompositionClip is not null) graphics.SetClip(secondaryCompositionClip, CombineMode.Intersect);
             if (maskPath is not null) graphics.SetClip(maskPath, CombineMode.Intersect);
             if (secondaryMaskPath is not null
                 && !ReferenceEquals(secondaryMaskPath, maskPath))

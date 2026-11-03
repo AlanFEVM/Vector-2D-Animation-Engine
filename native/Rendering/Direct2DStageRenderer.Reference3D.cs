@@ -265,6 +265,9 @@ internal sealed partial class Direct2DStageRenderer
 
     private RenderStats DrawReference3DScene(StageControl stage)
     {
+        if (TryDrawReferenceNavigation(stage, out var navigationStats)) return navigationStats;
+        if (stage.Scene.RequiresIsolatedLayerCompositing)
+            throw new InvalidOperationException("Reference color groups require software compositing for this frame.");
         var editableScene = stage.Scene;
         var onionSkinStats = default(RenderStats);
         var underlayStats = default(RenderStats);
@@ -312,6 +315,9 @@ internal sealed partial class Direct2DStageRenderer
         }
 
         var maskGeometries = new Dictionary<int, ID2D1PathGeometry?>();
+        var compositionPlan = scene.RequiresIsolatedLayerCompositing ? null : stage.CompositionMasksFor(scene);
+        using var compositionMasks = compositionPlan is null ? null : new CompositionMaskGeometries(
+            this, stage, scene, compositionPlan, referenceProjection: true);
         var drawnObjects = new HashSet<int>();
         var planStarted = Stopwatch.GetTimestamp();
         var renderItems = stage.GetReference3DSceneRenderItems();
@@ -319,7 +325,7 @@ internal sealed partial class Direct2DStageRenderer
             Stopwatch.GetElapsedTime(planStarted).TotalMilliseconds;
         var previousDenseRenderMode = _reference3DDenseRenderMode;
         _reference3DDenseRenderMode = renderItems.Length >= DenseReference3DRenderItemThreshold;
-        if (TryDrawReference3DCpuRaster(stage, renderItems, out var cpuDrawnObjects))
+        if (compositionMasks is null && TryDrawReference3DCpuRaster(stage, renderItems, out var cpuDrawnObjects))
         {
             _reference3DDenseRenderMode = previousDenseRenderMode;
             return new RenderStats(visible, cpuDrawnObjects, atoms, 0, scene.ObjectCount, false);
@@ -356,6 +362,7 @@ internal sealed partial class Direct2DStageRenderer
             for (var itemIndex = 0; itemIndex < renderItems.Length; itemIndex++)
             {
                 if (renderItems[itemIndex].Kind == Reference3DRenderKind.FrontStroke
+                    && compositionMasks is null
                     && TryDrawReference3DFrontStrokeBatch(
                         stage,
                         renderItems,
@@ -379,7 +386,7 @@ internal sealed partial class Direct2DStageRenderer
                         maskTargetLayer,
                         secondaryMaskTargetLayer,
                         fragmentTargetLayer,
-                        opacityTargetLayer))
+                        opacityTargetLayer, compositionMasks))
                 {
                     drawnObjects.Add(item.ObjectIndex);
                 }
@@ -513,7 +520,8 @@ internal sealed partial class Direct2DStageRenderer
         ID2D1Layer maskTargetLayer,
         ID2D1Layer? secondaryMaskTargetLayer,
         ID2D1Layer? fragmentTargetLayer,
-        ID2D1Layer? opacityTargetLayer)
+        ID2D1Layer? opacityTargetLayer,
+        CompositionMaskGeometries? compositionMasks = null)
     {
         var scene = stage.Scene;
         if ((uint)item.ObjectIndex >= scene.ObjectCount
@@ -521,12 +529,14 @@ internal sealed partial class Direct2DStageRenderer
         {
             return false;
         }
+        if (compositionMasks is not null && stage.CompositionMasksFor(scene) is { } compositionPlan
+            && StageControl.IsCompositionMaskArtworkHidden(scene, compositionPlan, item.LayerIndex)) return false;
 
         if (!TryGetReference3DLayerMaskGeometry(
                 stage,
                 item.LayerIndex,
                 maskGeometries,
-                out var maskGeometry))
+                out var maskGeometry, compositionMasks))
         {
             return false;
         }
@@ -536,11 +546,13 @@ internal sealed partial class Direct2DStageRenderer
         {
             if ((uint)item.SecondaryObjectIndex >= scene.ObjectCount
                 || stage.IsObjectHiddenForRendering(scene, item.SecondaryObjectIndex)
+                || compositionMasks is not null && stage.CompositionMasksFor(scene) is { } secondaryPlan
+                    && StageControl.IsCompositionMaskArtworkHidden(scene, secondaryPlan, scene.ObjectLayer[item.SecondaryObjectIndex])
                 || !TryGetReference3DLayerMaskGeometry(
                     stage,
                     scene.ObjectLayer[item.SecondaryObjectIndex],
                     maskGeometries,
-                    out secondaryMaskGeometry))
+                    out secondaryMaskGeometry, compositionMasks))
             {
                 return false;
             }
@@ -639,10 +651,20 @@ internal sealed partial class Direct2DStageRenderer
         StageControl stage,
         int layer,
         IDictionary<int, ID2D1PathGeometry?> maskGeometries,
-        out ID2D1PathGeometry? maskGeometry)
+        out ID2D1PathGeometry? maskGeometry,
+        CompositionMaskGeometries? compositionMasks = null)
     {
         var scene = stage.Scene;
         maskGeometry = null;
+        if (compositionMasks is not null)
+        {
+            if (!maskGeometries.TryGetValue(layer, out maskGeometry))
+            {
+                maskGeometry = compositionMasks.CreateLayerClip(layer);
+                maskGeometries.Add(layer, maskGeometry);
+            }
+            return true;
+        }
         if (scene.GetLayerKind(layer) == DrawingLayerKind.Mask
             || !scene.TryGetMaskLayerIndex(layer, out var maskLayer))
         {
@@ -1432,7 +1454,8 @@ internal sealed partial class Direct2DStageRenderer
                 DrawReference3DLineEndpointJoins(stage, item, width, color, color);
                 return;
             }
-            _target!.DrawGeometry(geometry, BrushFor(color), width, RoundStrokeStyle());
+            if (!TryRecordReferenceNavigationGeometry(geometry, BrushFor(color), false, width, RoundStrokeStyle()))
+                _target!.DrawGeometry(geometry, BrushFor(color), width, RoundStrokeStyle());
         }
         finally
         {
@@ -1491,7 +1514,8 @@ internal sealed partial class Direct2DStageRenderer
         try
         {
             _target.Transform = ObjectLocalToWorldTransform(scene, objectIndex) * projection;
-            _target.DrawGeometry(geometry, BrushFor(color), width, RoundStrokeStyle());
+            if (!TryRecordReferenceNavigationGeometry(geometry, BrushFor(color), false, width, RoundStrokeStyle()))
+                _target.DrawGeometry(geometry, BrushFor(color), width, RoundStrokeStyle());
         }
         finally
         {
@@ -3250,9 +3274,7 @@ internal sealed partial class Direct2DStageRenderer
             stage,
             objectIndex,
             (_, _) => BitmapObjectBitmap(decoded),
-            interpolation,
-            decoded.PixelWidth,
-            decoded.PixelHeight);
+            interpolation);
     }
 
     /// <summary>
@@ -3264,9 +3286,7 @@ internal sealed partial class Direct2DStageRenderer
         StageControl stage,
         int objectIndex,
         Func<float, float, ID2D1Bitmap> resolveBitmap,
-        BitmapInterpolationMode interpolation,
-        int? fixedPixelWidth = null,
-        int? fixedPixelHeight = null)
+        BitmapInterpolationMode interpolation)
     {
         var scene = stage.Scene;
         var contour = stage.GetReference3DProjectedContours(objectIndex)
@@ -3303,9 +3323,12 @@ internal sealed partial class Direct2DStageRenderer
                 Math.Max(1f, Reference3DDistance(topLeft, bottomLeft)));
         }
 
-        var pixelWidth = fixedPixelWidth ?? Math.Max(1, (int)rasterSize.Width);
-        var pixelHeight = fixedPixelHeight ?? Math.Max(1, (int)rasterSize.Height);
         var bitmap = resolveBitmap(rasterSize.Width, rasterSize.Height);
+        // SVG rasters are quantized, bounded and may reuse a larger cached
+        // texture. UVs and source rectangles must cover the returned bitmap,
+        // rather than a prefix sized from the original request.
+        var pixelWidth = bitmap.PixelSize.Width;
+        var pixelHeight = bitmap.PixelSize.Height;
         var opacity = GdiColor.FromArgb(scene.Argb[objectIndex]).A / 255f;
         if (projective)
         {
@@ -3363,7 +3386,9 @@ internal sealed partial class Direct2DStageRenderer
         var old = _target!.Transform;
         try
         {
-            _target.Transform = transform;
+            _target.Transform = !stage.InstanceMovePreviewRasterizing && stage.InstanceMovePreviewObjects?.Contains(objectIndex) == true
+                ? transform * Matrix3x2.CreateTranslation(stage.InstanceMovePreviewOffset.X, stage.InstanceMovePreviewOffset.Y)
+                : transform;
             var destination = Rect(0, 0, pixelWidth, pixelHeight);
             var sourceRect = Rect(0, 0, pixelWidth, pixelHeight);
             _target.DrawBitmap(
@@ -3434,12 +3459,31 @@ internal sealed partial class Direct2DStageRenderer
 
     private void DrawReference3DSelection(StageControl stage)
     {
+        if (TryDrawInstanceMoveSelection(stage)) return;
+        var previousTransform = _target!.Transform;
+        var offset = stage.InstanceMovePreviewOffset;
+        _target.Transform = previousTransform * Matrix3x2.CreateTranslation(offset.X, offset.Y);
+        try
+        {
+            DrawReference3DSelectionCore(stage);
+        }
+        finally { _target.Transform = previousTransform; }
+    }
+
+    private void DrawReference3DSelectionCore(StageControl stage)
+    {
         foreach (var objectIndex in stage.Reference3DSelectedObjects)
         {
-            using var geometry = CreateReference3DGeometry(
-                stage.GetReference3DProjectedSolid(objectIndex).SelectionEdges,
-                fillOnly: false);
+            var retained = stage.InstanceMovePreviewObjects is not null;
+            ID2D1PathGeometry? geometry;
+            if (!retained || !_instanceMoveSelectionGeometry.TryGetValue(objectIndex, out geometry))
+            {
+                geometry = CreateReference3DGeometry(stage.GetReference3DProjectedSolid(objectIndex).SelectionEdges, fillOnly: false);
+                if (retained) _instanceMoveSelectionGeometry[objectIndex] = geometry;
+            }
             if (geometry is null) continue;
+            try
+            {
             DrawReference3DSelectionWithMasks(stage, objectIndex, () =>
             {
                 _target!.DrawGeometry(
@@ -3453,6 +3497,8 @@ internal sealed partial class Direct2DStageRenderer
                     1.5f,
                     RoundStrokeStyle());
             });
+            }
+            finally { if (!retained) geometry.Dispose(); }
         }
     }
 

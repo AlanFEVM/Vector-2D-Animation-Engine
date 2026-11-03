@@ -224,7 +224,7 @@ internal static class DrawingObjectSvgCodec
     {
         var frame = PreviewFrame(snapshot);
         return Enumerable.Range(0, snapshot.ObjectCount)
-            .Where(index => snapshot.ObjectKeyframeFrame[index] == frame)
+            .Where(index => snapshot.ObjectKeyframeFrame[index] == frame && (snapshot.ObjectHidden.Length == 0 || !snapshot.ObjectHidden[index]))
             .Where(index => snapshot.LayerVisible[snapshot.ObjectLayer[index]])
             .Where(index => snapshot.LayerKinds[snapshot.ObjectLayer[index]] != DrawingLayerKind.Folder)
             .OrderByDescending(index => snapshot.ObjectLayer[index])
@@ -254,7 +254,7 @@ internal static class DrawingObjectSvgCodec
     /// paint emission as the stored preview instead of duplicating it.
     /// </summary>
     internal static XElement? CreateExportElement(VectorSceneSnapshot snapshot, int index) =>
-        CreatePreviewElement(snapshot, index);
+        CreatePreviewElement(snapshot, index, includeLayerOpacity: false);
 
     /// <summary>
     /// Builds the gradient definition for one snapshot object, or null when the
@@ -263,7 +263,7 @@ internal static class DrawingObjectSvgCodec
     internal static XElement? CreateExportGradient(VectorSceneSnapshot snapshot, int index) =>
         CreateGradient(snapshot, index);
 
-    private static XElement? CreatePreviewElement(VectorSceneSnapshot snapshot, int index)
+    private static XElement? CreatePreviewElement(VectorSceneSnapshot snapshot, int index, bool includeLayerOpacity = true)
     {
         var shape = snapshot.ShapeKind[index];
         XElement? element = shape switch
@@ -303,7 +303,7 @@ internal static class DrawingObjectSvgCodec
             ApplyPaint(element, snapshot, index);
         }
         var opacity = snapshot.LayerOpacity[snapshot.ObjectLayer[index]];
-        if (opacity < 1f) element.SetAttributeValue("opacity", Number(opacity));
+        if (includeLayerOpacity && opacity < 1f) element.SetAttributeValue("opacity", Number(opacity));
         return element;
     }
 
@@ -1104,6 +1104,8 @@ internal static class DrawingObjectSvgCodec
         ValidateArray(snapshot.AtomCount, count, nameof(snapshot.AtomCount));
         ValidateArray(snapshot.Argb, count, nameof(snapshot.Argb));
         ValidateArray(snapshot.StrokeArgb, count, nameof(snapshot.StrokeArgb));
+        ValidateOptionalArray(snapshot.ObjectHidden, count, nameof(snapshot.ObjectHidden));
+        ValidateOptionalArray(snapshot.ObjectLocked, count, nameof(snapshot.ObjectLocked));
         ValidateOptionalArray(snapshot.FillAutoMergeProtected, count, nameof(snapshot.FillAutoMergeProtected));
         ValidateOptionalArray(snapshot.QuadraticLineEditing, count, nameof(snapshot.QuadraticLineEditing));
         ValidateArray(snapshot.LinearGradientEnabled, count, nameof(snapshot.LinearGradientEnabled));

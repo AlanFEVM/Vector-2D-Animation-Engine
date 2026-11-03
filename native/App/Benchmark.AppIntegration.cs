@@ -816,13 +816,15 @@ internal static partial class Benchmark
             "Shortcut command catalog exceeded the persistence limit.");
         foreach (var command in ShortcutProfiles.Commands.Where(command => command.Kind == ShortcutCommandKind.Workbench))
         {
-            AssertTimeline(ToolShortcutMap.ResolveCommandId(migrated, command.DefaultKey) == command.Id,
+            AssertTimeline(command.DefaultKey == Keys.None
+                    ? !migrated.Bindings.Single(binding => binding.CommandId == command.Id).Gestures.Any()
+                    : ToolShortcutMap.ResolveCommandId(migrated, command.DefaultKey) == command.Id,
                 $"Legacy profile did not inherit {command.Id}.");
             ShortcutProfiles.TryCreateGesture(Keys.Control | Keys.Alt | Keys.F12, out var gesture);
             AssertTimeline(ShortcutProfiles.TrySetBinding(migrated, command.Id, [gesture], false,
                 out var remapped, out _, out _), $"Could not remap {command.Id}.");
-            AssertTimeline(ShortcutProfiles.ResolveWorkbenchKey(remapped, Keys.Control | Keys.Alt | Keys.F12) == command.DefaultKey
-                && ShortcutProfiles.ResolveWorkbenchKey(remapped, command.DefaultKey) == Keys.None,
+            AssertTimeline(ToolShortcutMap.ResolveCommandId(remapped, Keys.Control | Keys.Alt | Keys.F12) == command.Id
+                && (command.DefaultKey == Keys.None || ShortcutProfiles.ResolveWorkbenchKey(remapped, command.DefaultKey) == Keys.None),
                 $"Old or new gesture resolved incorrectly for {command.Id}.");
             AssertTimeline(ShortcutProfiles.TrySetBinding(remapped, command.Id, [], false,
                 out var cleared, out _, out _), $"Could not clear {command.Id}.");
@@ -849,7 +851,7 @@ internal static partial class Benchmark
             && ShortcutProfiles.IsReservedGesture(Keys.Control | Keys.D1)
             && !ShortcutProfiles.IsGestureAllowed(ShortcutCommandIds.ToolStar, Keys.Enter),
             "Interaction and workspace keys lost their reservation.");
-        Console.WriteLine("shortcut_profile_expansion=ok,commands=27,migration=ok,clear_roundtrip=ok,conflicts=ok");
+        Console.WriteLine($"shortcut_profile_expansion=ok,commands={ShortcutProfiles.Commands.Count},migration=ok,clear_roundtrip=ok,conflicts=ok");
     }
 
     private static void RunConfiguredWorkbenchShortcutRegression()

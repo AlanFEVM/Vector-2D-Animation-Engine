@@ -141,6 +141,10 @@ internal sealed partial class MainForm : Form
         var profile = ShortcutProfiles.ResolveProfile(
             _applicationSettings.ActiveShortcutProfileId,
             _applicationSettings.CustomShortcutProfiles);
+        if (_canvasRotationHeld && profile.Bindings.Any(binding => binding.CommandId == ShortcutCommandIds.RotateCanvas
+            && binding.Gestures.Any(gesture => ShortcutProfiles.TryGetKeyData(gesture, out var rotationKey)
+                && (rotationKey & Keys.KeyCode) == e.KeyCode)))
+        { EndCanvasRotation(); e.Handled = true; return; }
         if (profile.Bindings.Any(binding => binding.CommandId is ShortcutCommandIds.InsertFrame or ShortcutCommandIds.RemoveFrame
             && binding.Gestures.Any(gesture => ShortcutProfiles.TryGetKeyData(gesture, out var keyData)
                 && (keyData & Keys.KeyCode) == e.KeyCode)))
@@ -4185,6 +4189,11 @@ internal sealed partial class MainForm : Form
 
     private void RecordUndoSequence(object entry)
     {
+        if (!_replayingDocumentHistory)
+        {
+            _documentRedo.Clear();
+            _canvasSettingsRedo.Clear();
+        }
         _undoSequenceByEntry[entry] = ++_nextUndoSequence;
     }
 
@@ -4229,7 +4238,7 @@ internal sealed partial class MainForm : Form
         snapshot.DetachSharedGeometry();
     }
 
-    private bool UndoLastEdit()
+    private bool UndoLastEditCore()
     {
         if (_objectDrawingPenCommit is not null)
         {
@@ -4256,12 +4265,17 @@ internal sealed partial class MainForm : Form
             canUndoDrawing ? UndoSequence(drawingUndo!) : 0);
         if (_sharedAssetUndoStack.TryPeek(out var latestAssetUndo) && ReferenceEquals(latestAssetUndo.Project, _project))
             latestOtherSequence = Math.Max(latestOtherSequence, UndoSequence(latestAssetUndo));
-        if (TryUndoCanvasSettings(latestOtherSequence)) return true;
+        if (TryUndoCanvasSettings(latestOtherSequence))
+        {
+            if (_canvasSettingsRedo.TryPeek(out var canvasRedo)) CaptureDocumentRedo(canvasRedo);
+            return true;
+        }
         if (_sharedAssetUndoStack.TryPeek(out var assetUndo)
             && ReferenceEquals(assetUndo.Project, _project)
             && (!canUndoDrawing || UndoSequence(assetUndo) >= UndoSequence(drawingUndo!))
             && (!canUndoSceneTimeline || UndoSequence(assetUndo) >= UndoSequence(timelineUndo!)))
         {
+            CaptureDocumentRedo(assetUndo);
             _sharedAssetUndoStack.Pop();
             _undoSequenceByEntry.Remove(assetUndo);
             RestoreSharedAssetUndo(assetUndo);
@@ -4270,6 +4284,7 @@ internal sealed partial class MainForm : Form
         if (undoSceneTimeline)
         {
             var sceneUndo = timelineUndo!;
+            CaptureDocumentRedo(sceneUndo);
             var activeScene = sceneUndo.Scene;
             var wasSceneMaskEditing = IsSceneMaskEditing();
             var previousLastFrame = Math.Max(0, activeScene.FrameCount - 1);
@@ -4298,6 +4313,7 @@ internal sealed partial class MainForm : Form
             {
                 AppLog.Error($"Scene undo could not remove created symbol: {createdDrawingObjectId}");
             }
+            foreach (var id in sceneUndo.CreatedDrawingObjectIds) _project.TryRemoveDrawingObject(id, out _);
             if (sceneUndo.LayerSnapshot is not null
                 && (wasSceneMaskEditing || IsSceneMaskEditing()))
             {
@@ -4319,13 +4335,14 @@ internal sealed partial class MainForm : Form
                 _timeline.RestoreSelectionSnapshot(sceneTimelineSelection);
             }
             UpdateInspector();
-            if (sceneUndo.CreatedDrawingObjectId is not null) RefreshDrawingObjectAssetPresentation();
+            if (sceneUndo.CreatedDrawingObjectId is not null || sceneUndo.CreatedDrawingObjectIds.Length > 0) RefreshDrawingObjectAssetPresentation();
             MarkProjectDirty();
             return true;
         }
 
         if (!IsEditableDrawingContext()) return false;
         if (!canUndoDrawing || drawingUndo is null) return false;
+        CaptureDocumentRedo(drawingUndo);
         var previousDrawingLastFrame = Math.Max(0, _scene.FrameCount - 1);
         _undoStack.Pop();
         _undoSequenceByEntry.Remove(drawingUndo);
@@ -4344,6 +4361,7 @@ internal sealed partial class MainForm : Form
             && _project.TryRenameDrawingObject(
                 drawingUndo.DrawingObject.Id,
                 drawingUndo.DrawingObjectName);
+        foreach (var id in drawingUndo.CreatedDrawingObjectIds) _project.TryRemoveDrawingObject(id, out _);
         _scene.RestoreSnapshot(ResolveUndoSnapshotAndConsumeMarqueeHistory(drawingUndo));
         _scene.EditFrame = _frame;
         SynchronizeActiveSceneMaskTimelineContent(refreshTimeline: false);
@@ -4364,7 +4382,7 @@ internal sealed partial class MainForm : Form
         }
         UpdateInspector();
         RefreshTweenCurveInspector();
-        if (drawingObjectNameRestored || createdDrawingObjectRemoved) RefreshDrawingObjectAssetPresentation();
+        if (drawingObjectNameRestored || createdDrawingObjectRemoved || drawingUndo.CreatedDrawingObjectIds.Length > 0) RefreshDrawingObjectAssetPresentation();
         UpdateSnapPointOverlay();
         _stage.Invalidate();
         MarkProjectDirty();
@@ -4420,6 +4438,8 @@ internal sealed partial class MainForm : Form
                     instance.EvaluateState(0),
                     instance.StateKeyframes.ToArray()));
             }
+            var clipboardGeometry = targets.Length > 0 ? _scene.CreateClipboardScene(targets) : null;
+            var clipboardIndex = 0;
             foreach (var index in targets)
             {
                 PointF[][]? pathContours = null;
@@ -4459,7 +4479,9 @@ internal sealed partial class MainForm : Form
                     mixingSamples,
                     _scene.TryGetBitmapObjectData(index, out var bitmapData) ? bitmapData : null)
                 {
-                    QuadraticLineEditing = _scene.IsQuadraticLine(index)
+                    QuadraticLineEditing = _scene.IsQuadraticLine(index),
+                    Geometry = clipboardGeometry,
+                    GeometryIndex = clipboardIndex++
                 });
             }
 
@@ -4477,11 +4499,14 @@ internal sealed partial class MainForm : Form
         }
     }
 
-    private bool PasteCopiedObjects()
+    private bool PasteCopiedObjects() => PasteCopiedObjectsWithOffset(new PointF(PasteOffsetUnits, PasteOffsetUnits));
+
+    private bool PasteCopiedObjectsWithOffset(PointF offset, bool preserveOverlap = false)
     {
         if (IsShotDirectorContext()) return false;
         if (_clipboardObjects.Count > 0) EnsureSceneDrawingSurface();
-        if (IsSceneCompositionContext() && (!IsSceneDrawingContext() || _clipboardObjects.Count == 0)) return PasteCopiedSceneInstances();
+        if (IsSceneCompositionContext() && (!IsSceneDrawingContext() || _clipboardObjects.Count == 0))
+            return PasteCopiedSceneInstancesWithOffset(offset);
         if (DrawingToolsBlocked()) return false;
         if (_clipboardObjects.Count == 0 && _clipboardDrawingObjectInstances.Count == 0) return false;
         var sceneContainer = IsSceneDrawingContext() ? ActiveScene() : null;
@@ -4505,10 +4530,13 @@ internal sealed partial class MainForm : Form
         var pasted = new List<int>(_clipboardObjects.Count);
         foreach (var item in _clipboardObjects)
         {
-            var offset = new PointF(PasteOffsetUnits, PasteOffsetUnits);
             var layer = Math.Clamp(item.Layer, 0, Math.Max(0, _scene.LayerCount - 1));
             int index;
-            if (item.Shape == ShapeKind.ImportedSvg && !string.IsNullOrWhiteSpace(item.ImportedSvgSource))
+            if (item.Geometry is { } geometry)
+            {
+                index = _scene.AppendClipboardObject(geometry, item.GeometryIndex, layer, offset);
+            }
+            else if (item.Shape == ShapeKind.ImportedSvg && !string.IsNullOrWhiteSpace(item.ImportedSvgSource))
             {
                 var center = new PointF(item.Center.X + offset.X, item.Center.Y + offset.Y);
                 index = _scene.AddImportedSvgObject(
@@ -4633,8 +4661,8 @@ internal sealed partial class MainForm : Form
         }
 
         var pastedInstances = sceneContainer is not null
-            ? PasteSceneDrawingInstances(sceneContainer)
-            : PasteCopiedDrawingObjectInstances(container!);
+            ? PasteSceneDrawingInstances(sceneContainer, offset)
+            : PasteCopiedDrawingObjectInstances(container!, offset);
         // The batch must be complete before the snapshot, selection or merge sees the new objects.
         bulkAppend.Dispose();
         if (pasted.Count == 0 && pastedInstances.Count == 0)
@@ -4651,7 +4679,7 @@ internal sealed partial class MainForm : Form
             pasted,
             pastedInstances,
             pastedInstances.Count > 0 ? pastedInstances[^1] : null);
-        if (pasted.Count > 0)
+        if (pasted.Count > 0 && !preserveOverlap)
         {
             MergeSelectedFillsAfterGeometryEdit(connectNearby: true);
             MergeCompatibleLinesAfterDrawingOperation(LocalLineMergeScope(_selectedObjects));
@@ -4744,10 +4772,9 @@ internal sealed partial class MainForm : Form
     }
 
     private List<DrawingObjectInstanceDefinition> PasteCopiedDrawingObjectInstances(
-        DrawingObjectDefinition container)
+        DrawingObjectDefinition container, PointF offset)
     {
         var targetLayerId = container.Scene.ResolveInstanceLayerId(null);
-        var offset = new PointF(PasteOffsetUnits, PasteOffsetUnits);
         var pasted = new List<DrawingObjectInstanceDefinition>(_clipboardDrawingObjectInstances.Count);
         foreach (var item in _clipboardDrawingObjectInstances)
         {
@@ -4783,7 +4810,9 @@ internal sealed partial class MainForm : Form
         return pasted;
     }
 
-    private bool PasteCopiedSceneInstances()
+    private bool PasteCopiedSceneInstances() => PasteCopiedSceneInstancesWithOffset(new PointF(PasteOffsetUnits, PasteOffsetUnits));
+
+    private bool PasteCopiedSceneInstancesWithOffset(PointF offset)
     {
         if (IsShotDirectorContext()) return false;
         var scene = ActiveScene();
@@ -4793,7 +4822,6 @@ internal sealed partial class MainForm : Form
         var timelineSnapshot = scene.Timeline.CreateSnapshot();
         var instanceSnapshot = scene.CreateInstanceSnapshot();
         var timelineSelection = _timeline.CaptureSelectionSnapshot();
-        var offset = new PointF(PasteOffsetUnits, PasteOffsetUnits);
         var pasted = new List<DrawingObjectInstanceDefinition>(_clipboardDrawingObjectInstances.Count);
         foreach (var item in _clipboardDrawingObjectInstances)
         {

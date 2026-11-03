@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Numerics;
@@ -19,7 +19,10 @@ internal readonly record struct StageViewState(
     float ReferenceTargetY,
     float ReferenceTargetZ,
     float WorldGridOpacity,
-    WorldGridType WorldGridType);
+    WorldGridType WorldGridType)
+{
+    public float CanvasRotation { get; init; }
+}
 
 internal readonly record struct TransformOverlayFrame(PointF Origin, PointF AxisX, PointF AxisY)
 {
@@ -688,6 +691,9 @@ internal sealed partial class StageControl : Control
     private readonly SceneRenderOrderBuffer _underlayRenderOrder = new();
     private VectorScene? _underlayHostScene;
     private IReadOnlyDictionary<int, (int Start, int Count)>? _underlayHostLayerRanges;
+    private SceneCompositionResult? _underlayCompositionResult;
+    private SceneCompositionMaskPlan? _onionSkinMaskPlan;
+    private SceneCompositionResult? _dragPreviewCompositionResult;
     private int _underlayDrawLimit;
     private int _underlayDrawnObjects;
     private (int Start, int Count)? _underlayDrawingRange;
@@ -1397,6 +1403,7 @@ internal sealed partial class StageControl : Control
     public StageControl(VectorScene scene)
     {
         Scene = scene;
+        InitializeRulers();
         _marqueeOverlay = new MarqueeOverlayWindow(this);
         DoubleBuffered = false;
         SetStyle(
@@ -1413,7 +1420,7 @@ internal sealed partial class StageControl : Control
         _fillAnimationTimer.Tick += (_, _) => TickFillAnimation();
         _selectionSweepTimer.Tick += (_, _) => TickSelectionSweep();
         _selectionHighlightTimer.Tick += (_, _) => TickSelectionHighlight();
-        _zoomLodPreviewTimer.Tick += (_, _) => EndZoomLodPreview(invalidate: true);
+        _zoomLodPreviewTimer.Tick += (_, _) => TickZoomLodPreviewIdle();
         _reference3DOpticalPreviewTimer.Tick += (_, _) =>
             EndReference3DOpticalInteractionPreview();
         InitializeReferenceCameraTransitions();
@@ -1441,8 +1448,14 @@ internal sealed partial class StageControl : Control
         bool preserveReference3DWorkspaceFrameCache = false,
         bool requestPaint = true,
         bool preserveSelectionRenderCache = false,
-        bool preserveReference3DRenderPlanCache = false)
+        bool preserveReference3DRenderPlanCache = false,
+        bool preserveReferenceNavigation = false)
     {
+        if (basePresentationChanged && !preserveReferenceNavigation)
+        {
+            _referenceNavigationContentRevision++;
+            _referenceNavigationPreviewActive = false;
+        }
         if (!preserveSelectionRenderCache) SelectionRenderRevision++;
         if (basePresentationChanged && !preserveSelectionRenderCache) SelectionGeometryRevision++;
         if (basePresentationChanged && !preserveReference3DRenderPlanCache) InvalidateReference3DRenderPlanCache();
@@ -1597,6 +1610,7 @@ internal sealed partial class StageControl : Control
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
+        if (TryBeginExistingGuideDrag(e)) return;
         if (ShotWorkspacePreviewActive)
         {
             Focus();
@@ -1664,8 +1678,11 @@ internal sealed partial class StageControl : Control
         UnderlayScene = null;
         _underlayHostScene = null;
         _underlayHostLayerRanges = null;
+        _underlayCompositionResult = null;
         OnionSkinScene = null;
+        _onionSkinMaskPlan = null;
         DragPreviewScene = null;
+        _dragPreviewCompositionResult = null;
         _dragPreviewSourceScene = null;
         _dragPreviewHiddenObjects.Clear();
         _editingTextScene = null;
@@ -1692,13 +1709,25 @@ internal sealed partial class StageControl : Control
 
     public void BindUnderlayScene(VectorScene? scene,
         IReadOnlyDictionary<int, (int Start, int Count)>? hostLayerRanges = null)
+        => BindUnderlaySceneCore(scene, hostLayerRanges, null);
+
+    internal void BindUnderlayComposition(VectorScene scene, SceneCompositionResult composition)
+        => BindUnderlaySceneCore(scene, composition.HostLayerRanges, composition);
+
+    private void BindUnderlaySceneCore(VectorScene? scene,
+        IReadOnlyDictionary<int, (int Start, int Count)>? hostLayerRanges,
+        SceneCompositionResult? composition)
     {
         var next = scene is { ObjectCount: > 0 } ? scene : null;
-        if (ReferenceEquals(UnderlayScene, next) && ReferenceEquals(_underlayHostLayerRanges, hostLayerRanges)) return;
+        var nextComposition = next is null ? null : composition;
+        if (ReferenceEquals(UnderlayScene, next)
+            && ReferenceEquals(_underlayHostLayerRanges, hostLayerRanges)
+            && ReferenceEquals(_underlayCompositionResult, nextComposition)) return;
         UnderlayScene = next;
         _underlayHostScene = next is not null && hostLayerRanges is { Count: > 0 } ? Scene : null;
         _underlayHostLayerRanges = next is not null ? hostLayerRanges : null;
-        Invalidate();
+        _underlayCompositionResult = nextComposition;
+        RequestStageFrame(basePresentationChanged: true);
     }
 
     internal bool HasLayeredUnderlay => UnderlayScene is not null && _underlayHostScene is not null;
@@ -1713,17 +1742,23 @@ internal sealed partial class StageControl : Control
     }
 
     public void BindOnionSkinScene(VectorScene? scene)
+        => BindOnionSkinComposition(scene, null);
+
+    internal void BindOnionSkinComposition(VectorScene? scene, SceneCompositionMaskPlan? plan)
     {
         var next = scene is { ObjectCount: > 0 } ? scene : null;
-        if (ReferenceEquals(OnionSkinScene, next)) return;
+        var nextPlan = next is null ? null : plan;
+        if (ReferenceEquals(OnionSkinScene, next) && ReferenceEquals(_onionSkinMaskPlan, nextPlan)) return;
         OnionSkinScene = next;
-        Invalidate();
+        _onionSkinMaskPlan = nextPlan;
+        RequestStageFrame(basePresentationChanged: true);
     }
 
     public void BindDragPreviewScene(
         VectorScene? scene,
         VectorScene? sourceScene = null,
-        IReadOnlyCollection<int>? hiddenSourceObjects = null)
+        IReadOnlyCollection<int>? hiddenSourceObjects = null,
+        SceneCompositionResult? composition = null)
     {
         var nextPreviewScene = scene is { ObjectCount: > 0 } ? scene : null;
         var nextSourceScene = nextPreviewScene is not null ? sourceScene : null;
@@ -1733,6 +1768,7 @@ internal sealed partial class StageControl : Control
         var sourceVisibilityChanged = !ReferenceEquals(_dragPreviewSourceScene, nextSourceScene)
             || !_dragPreviewHiddenObjects.SetEquals(nextHiddenObjects);
         DragPreviewScene = nextPreviewScene;
+        _dragPreviewCompositionResult = nextPreviewScene is null ? null : composition;
         _dragPreviewSourceScene = nextSourceScene;
         _dragPreviewHiddenObjects = nextHiddenObjects;
         RequestStageFrame(basePresentationChanged: sourceVisibilityChanged);
@@ -2024,7 +2060,8 @@ internal sealed partial class StageControl : Control
         {
             _referenceZoomScale = Math.Clamp(_referenceZoomScale / factor, 0.25f, 8f);
         }
-        Invalidate();
+        PulseReferenceNavigationPreview();
+        RequestStageFrame(basePresentationChanged: true, preserveReferenceNavigation: true);
     }
 
     public void DollyReferenceCameraByPixels(float dy)
@@ -2042,7 +2079,8 @@ internal sealed partial class StageControl : Control
         {
             _referenceZoomScale = Math.Clamp(_referenceZoomScale / factor, 0.25f, 8f);
         }
-        Invalidate();
+        PulseReferenceNavigationPreview();
+        RequestStageFrame(basePresentationChanged: true, preserveReferenceNavigation: true);
     }
 
     public void ZoomReferenceCamera(float factor)
@@ -2060,12 +2098,16 @@ internal sealed partial class StageControl : Control
             return;
         }
 
-        Invalidate();
+        PulseReferenceNavigationPreview();
+        RequestStageFrame(basePresentationChanged: true, preserveReferenceNavigation: true);
     }
 
     public void PanReferenceCamera(float dx, float dy)
     {
         CompleteReferenceCameraTransitionForDirectInput();
+        var canvasCos = MathF.Cos(PlanarCanvasRotation);
+        var canvasSin = MathF.Sin(PlanarCanvasRotation);
+        (dx, dy) = (dx * canvasCos + dy * canvasSin, -dx * canvasSin + dy * canvasCos);
         var yawCos = MathF.Cos(EffectiveReferenceYaw);
         var yawSin = MathF.Sin(EffectiveReferenceYaw);
         var pitchCos = MathF.Cos(EffectiveReferencePitch);
@@ -2082,7 +2124,8 @@ internal sealed partial class StageControl : Control
         _referenceTargetX = Math.Clamp(_referenceTargetX + rightX * horizontal + upX * vertical, -5_000_000, 5_000_000);
         _referenceTargetY = Math.Clamp(_referenceTargetY + upY * vertical, -5_000_000, 5_000_000);
         _referenceTargetZ = Math.Clamp(_referenceTargetZ + rightZ * horizontal + upZ * vertical, -5_000_000, 5_000_000);
-        Invalidate();
+        PulseReferenceNavigationPreview();
+        RequestStageFrame(basePresentationChanged: true, preserveReferenceNavigation: true);
     }
 
     public void SetReferenceCameraOrientation(
@@ -2113,7 +2156,7 @@ internal sealed partial class StageControl : Control
             reference.TargetY,
             reference.TargetZ,
             WorldGridOpacity,
-            WorldGridType);
+            WorldGridType) { CanvasRotation = CanvasRotation };
     }
 
     internal void RestoreViewState(StageViewState state)
@@ -2124,6 +2167,7 @@ internal sealed partial class StageControl : Control
         CameraX = Math.Clamp(state.CameraX, -5_000_000, 5_000_000);
         CameraY = Math.Clamp(state.CameraY, -5_000_000, 5_000_000);
         Zoom = Math.Clamp(state.Zoom, 0.02f, 64f);
+        CanvasRotation = float.IsFinite(state.CanvasRotation) ? NormalizeRadians(state.CanvasRotation) : 0;
         _referenceYaw = NormalizeRadians(state.ReferenceYaw);
         _referencePitch = Math.Clamp(
             state.ReferencePitch,
@@ -2138,7 +2182,7 @@ internal sealed partial class StageControl : Control
         WorldGridOpacity = state.WorldGridOpacity;
         WorldGridType = state.WorldGridType;
         RefreshBrushTipCursorScale();
-        Invalidate();
+        RequestStageFrame(basePresentationChanged: true, preserveReferenceNavigation: true);
         RaiseViewChanged();
     }
 
@@ -2193,23 +2237,26 @@ internal sealed partial class StageControl : Control
 
     public PointF ScreenToWorld(Point screen)
     {
+        var unrotated = UnrotateCanvasScreenPoint(screen);
         return new PointF(
-            CameraX + VectorUnits.FromPixels((screen.X - Width * 0.5f) / Zoom),
-            CameraY + VectorUnits.FromPixels((screen.Y - Height * 0.5f) / Zoom));
+            CameraX + VectorUnits.FromPixels((unrotated.X - Width * 0.5f) / Zoom),
+            CameraY + VectorUnits.FromPixels((unrotated.Y - Height * 0.5f) / Zoom));
     }
 
     public PointF WorldToScreen(float x, float y)
     {
-        return new PointF(
-            Width * 0.5f + VectorUnits.ToPixels(x - CameraX) * Zoom,
-            Height * 0.5f + VectorUnits.ToPixels(y - CameraY) * Zoom);
+        return RotateCanvasScreenPoint(new PointF(
+            (float)(Width * 0.5 + ((double)x - CameraX) / VectorUnits.UnitsPerPixel * Zoom),
+            (float)(Height * 0.5 + ((double)y - CameraY) / VectorUnits.UnitsPerPixel * Zoom)));
     }
 
     public void Pan(float dx, float dy)
     {
         CompleteReferenceCameraTransitionForDirectInput();
-        CameraX -= VectorUnits.FromPixels(dx / Zoom);
-        CameraY -= VectorUnits.FromPixels(dy / Zoom);
+        var cos = MathF.Cos(CanvasRotation);
+        var sin = MathF.Sin(CanvasRotation);
+        CameraX -= VectorUnits.FromPixels((dx * cos + dy * sin) / Zoom);
+        CameraY -= VectorUnits.FromPixels((-dx * sin + dy * cos) / Zoom);
         RequestStageFrame(
             basePresentationChanged: true,
             preserveReference3DWorkspaceFrameCache: true,
@@ -2254,9 +2301,9 @@ internal sealed partial class StageControl : Control
 
     public RectangleF VisibleWorldBounds()
     {
-        var topLeft = ScreenToWorld(new Point(0, 0));
-        var bottomRight = ScreenToWorld(new Point(Width, Height));
-        return RectangleF.FromLTRB(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
+        var corners = new[] { ScreenToWorld(Point.Empty), ScreenToWorld(new Point(Width, 0)),
+            ScreenToWorld(new Point(Width, Height)), ScreenToWorld(new Point(0, Height)) };
+        return RectangleF.FromLTRB(corners.Min(p => p.X), corners.Min(p => p.Y), corners.Max(p => p.X), corners.Max(p => p.Y));
     }
 
     public EditHandleKind HitTestHandle(Point screen, int objectIndex)
@@ -3039,7 +3086,11 @@ internal sealed partial class StageControl : Control
 
     protected override void OnPaint(PaintEventArgs e)
     {
+        UpdateSceneRefreshScheduling();
+        InstanceMovePreviewAwaitingPresent = false;
         var frameStarted = Stopwatch.GetTimestamp();
+        if (_sceneRefreshTimer is not null && !_presentingSceneRefresh)
+            Interlocked.Exchange(ref _sceneRefreshDeadline, frameStarted + SceneRefreshInterval);
         UpdateSelectionHighlightAnimation();
         var requestedAt = _interactiveFrameRequestedAt;
         var reportsPointerDown = _pointerDownAwaitingPresent && _pointerDownStartedAt != 0;
@@ -3069,6 +3120,12 @@ internal sealed partial class StageControl : Control
                 LastFrameUsedDirect2D = false;
                 _paintFailureLogged = false;
                 rendered = true;
+            }
+            else if (_gdiBaseFrameBorrowed && CanReuseGdiBaseFrame())
+            {
+                if (!_direct2DRenderer.TryPresentSoftwareFrame(this, DrawGdiFrame, preparedFrame: true))
+                    DrawBufferedGdi(e.Graphics);
+                LastFrameUsedDirect2D = false;
             }
             else if (_direct2DRenderer.TryRender(this, out var stats))
             {
@@ -3226,7 +3283,10 @@ internal sealed partial class StageControl : Control
         return !PlaybackActive
             && !HasDistortPreview
             && !(DistortRasterInteractivePreview && HasSoftwareDistortionForCurrentFrame())
-            && (RendersReferenceProjection || HasSoftwareDistortionForCurrentFrame());
+            && (RendersReferenceProjection || HasSoftwareDistortionForCurrentFrame()
+                || Scene.RequiresIsolatedLayerCompositing
+                || UnderlayScene?.RequiresIsolatedLayerCompositing == true
+                || OnionSkinScene?.RequiresIsolatedLayerCompositing == true);
     }
 
     private bool DistortRasterInteractivePreview => HasDistortPreview
@@ -3287,7 +3347,7 @@ internal sealed partial class StageControl : Control
 
     private void EnsureGdiBaseFrameBitmap()
     {
-        if (_gdiBaseFrameBitmap is not null && _gdiBaseFrameSize == ClientSize) return;
+        if (!_gdiBaseFrameBorrowed && _gdiBaseFrameBitmap is not null && _gdiBaseFrameSize == ClientSize) return;
         ClearGdiBaseFrameCache();
         _gdiBaseFrameBitmap = new Bitmap(
             ClientSize.Width,
@@ -3313,7 +3373,8 @@ internal sealed partial class StageControl : Control
 
     private void ClearGdiBaseFrameCache()
     {
-        _gdiBaseFrameBitmap?.Dispose();
+        if (!_gdiBaseFrameBorrowed) _gdiBaseFrameBitmap?.Dispose();
+        _gdiBaseFrameBorrowed = false;
         _gdiBaseFrameBitmap = null;
         _gdiBaseFrameSize = default;
         _gdiBaseFrameRenderState = default;
@@ -3411,6 +3472,8 @@ internal sealed partial class StageControl : Control
         DrawSnapPointOverlay(g);
         DrawMarquee(g);
         DrawShotFramingGizmoGdi(g);
+        DrawRulerGuidesGdi(g);
+        DrawSmartSnapGdi(g);
         if (ReferenceDimension == SceneDimension.ThreeD)
         {
             DrawSpatialTransformGizmoGdi(g);
@@ -3535,6 +3598,8 @@ internal sealed partial class StageControl : Control
             DrawBrushColorPalette(g);
         }
         DrawShotFramingGizmoGdi(g);
+        DrawRulerGuidesGdi(g);
+        DrawSmartSnapGdi(g);
     }
 
     private RenderStats DrawSceneGdi(
@@ -3547,53 +3612,8 @@ internal sealed partial class StageControl : Control
         Scene = scene;
         try
         {
-            var pixelZoom = EffectivePixelZoom();
-            if (IsUnderlayHostScene(scene))
-                return DrawObjects(graphics, forceObjectRenderer || scene.HasSymbolFilters ? int.MaxValue : objectDrawLimit);
-            if (forceObjectRenderer || scene.HasSymbolFilters)
-            {
-                return DrawObjects(graphics, int.MaxValue);
-            }
-            if (HasSceneCompositionMaskClips(Scene)) return DrawObjects(graphics, objectDrawLimit);
-            if (SceneHasDistortionsForRendering(Scene)) return DrawObjects(graphics, objectDrawLimit);
-            if (SceneRenderOrder.RequiresObjectRenderer(Scene)) return DrawObjects(graphics, objectDrawLimit);
-            if (MarqueeLodPreviewActive && Scene.ObjectCount > 0)
-            {
-                return pixelZoom < 0.08f
-                    ? DrawOverviewTiles(graphics)
-                    : DrawTiles(graphics);
-            }
-            if (ZoomLodPreviewActive
-                && Scene.ObjectCount >= SceneRenderOrder.DenseObjectLodMinimumVisibleObjects
-                && !Scene.HasDisplayLayerEffects)
-            {
-                return pixelZoom < 0.08f
-                    ? DrawOverviewTiles(graphics)
-                    : DrawTiles(graphics);
-            }
-            if (Scene.HasDisplayLayerEffects || pixelZoom >= 0.18f) return DrawObjects(graphics, objectDrawLimit);
-            if (Scene.ObjectCount >= 5000)
-            {
-                return pixelZoom < 0.08f
-                    ? DrawOverviewTiles(graphics)
-                    : DrawTiles(graphics);
-            }
-
-            if (Scene.ObjectCount < SceneRenderOrder.DenseObjectLodMinimumVisibleObjects)
-            {
-                return DrawObjects(graphics, objectDrawLimit);
-            }
-
-            var bounds = VisibleWorldBounds();
-            _renderOrder.Collect(Scene, bounds, Frame);
-            if (SceneRenderOrder.ShouldUseDenseObjectLod(Scene, pixelZoom, bounds, _renderOrder))
-            {
-                return pixelZoom < 0.08f
-                    ? DrawOverviewTiles(graphics)
-                    : DrawTiles(graphics);
-            }
-
-            return DrawCollectedObjects(graphics, objectDrawLimit);
+            // Match Direct2D: navigation retains the complete object rendering.
+            return DrawObjects(graphics, int.MaxValue);
         }
         finally
         {
@@ -3601,7 +3621,7 @@ internal sealed partial class StageControl : Control
         }
     }
 
-    private int ObjectDrawLimit() => EffectivePixelZoom() < 0.35f ? 65_000 : 160_000;
+    private int ObjectDrawLimit() => int.MaxValue;
 
     internal void BeginScenePassOrder()
     {
@@ -3619,12 +3639,7 @@ internal sealed partial class StageControl : Control
 
     private bool UsesObjectRenderer(VectorScene scene)
     {
-        return scene.ObjectCount > 0
-            && (HasSceneCompositionMaskClips(scene)
-                || SceneRenderOrder.RequiresObjectRenderer(scene)
-                || scene.ObjectCount < 5000
-                || scene.HasDisplayLayerEffects
-                || EffectivePixelZoom() >= 0.18f);
+        return scene.ObjectCount > 0;
     }
 
     private float EffectivePixelZoom() => Zoom * VectorUnits.PixelsPerUnit;
@@ -3670,6 +3685,7 @@ internal sealed partial class StageControl : Control
         if (Visible) _marqueeOverlay.Prepare();
         else
         {
+            StopSceneRefreshScheduling();
             CompleteReferenceCameraTransition(invalidate: false);
             CompleteSpatialTransformGizmoMotion(invalidate: false);
             _marqueeOverlay.Hide();
@@ -3680,6 +3696,7 @@ internal sealed partial class StageControl : Control
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
+        StopSceneRefreshScheduling();
         CompleteReferenceCameraTransition(invalidate: false);
         CompleteSpatialTransformGizmoMotion(invalidate: false);
         ResetFrameSchedulerState();
@@ -3707,6 +3724,7 @@ internal sealed partial class StageControl : Control
     {
         if (disposing)
         {
+            StopSceneRefreshScheduling();
             _disposingResources = true;
             ClearSelectionMoveFeedbackCore();
             DisposeFillSystemCursor();
@@ -5367,7 +5385,9 @@ internal sealed partial class StageControl : Control
     private void EndZoomLodPreview(bool invalidate)
     {
         _zoomLodPreviewTimer.Stop();
-        if (!_zoomLodPreviewActive && !_distortZoomPreviewActive && !_selectionZoomPreviewActive) return;
+        if (!_zoomLodPreviewActive && !_distortZoomPreviewActive && !_selectionZoomPreviewActive && !_referenceNavigationPreviewActive) return;
+        var navigationPreview = _referenceNavigationPreviewActive;
+        _referenceNavigationPreviewActive = false;
         _zoomLodPreviewActive = false;
         _distortZoomPreviewActive = false;
         _selectionZoomPreviewActive = false;
@@ -5375,7 +5395,8 @@ internal sealed partial class StageControl : Control
         if (invalidate)
         {
             _direct2DRenderer.InvalidateSelectionCommands();
-            RequestStageFrame(basePresentationChanged: true, preserveSelectionRenderCache: true);
+            RequestStageFrame(basePresentationChanged: true, preserveSelectionRenderCache: true,
+                preserveReferenceNavigation: navigationPreview);
         }
     }
 

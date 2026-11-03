@@ -35,6 +35,7 @@ internal sealed class DrawSnappingStrip : UserControl
         AccessibleName = "Angle snap degrees"
     };
     private bool _updating;
+    private readonly AnimatedContextMenuStrip _snapOptions = new();
     private UiLanguage? _helpLanguage;
 
     public DrawSnappingStrip(DrawSettings settings)
@@ -52,6 +53,7 @@ internal sealed class DrawSnappingStrip : UserControl
         Theme.StyleToolTip(_toolTip);
 
         BuildUi();
+        BuildSnapOptions();
         foreach (var control in new Control[] { _snap, _snapGrid, _snapObjects, _adhesion, _alignment, _angleSnap, _gridSize, _angleStep })
         {
             control.MouseEnter += (_, _) => RefreshHelp();
@@ -67,6 +69,7 @@ internal sealed class DrawSnappingStrip : UserControl
         {
             _settings.Changed -= HandleSettingsChanged;
             _toolTip.Dispose();
+            _snapOptions.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -189,11 +192,38 @@ internal sealed class DrawSnappingStrip : UserControl
         SetToggleHelp(_snap, "Enable or pause snapping. Your individual snap options are kept.", false);
         SetToggleHelp(_snapGrid, "Place points on the grid. Set the spacing with the vu field.", true);
         SetToggleHelp(_snapObjects, "Snap to nearby object points while drawing or moving.", true);
-        SetToggleHelp(_adhesion, "Tight fit", false);
+        SetToggleHelp(_adhesion, "Snap object edges together while moving. Right-click Snap for options.", true);
         SetToggleHelp(_alignment, "Use alignment guides while drawing.", true);
         SetToggleHelp(_angleSnap, "Constrain angles to the step in the degrees field.", true);
         SetHelp(_gridSize, UiLocalization.T("Grid spacing in vector units (vu). Smaller values give a finer grid."));
         SetHelp(_angleStep, UiLocalization.T("Angle step in degrees. For example, 15 gives 15, 30, 45 degrees."));
+    }
+
+    private void BuildSnapOptions()
+    {
+        _snap.ContextMenuStrip = _snapOptions;
+        _adhesion.ContextMenuStrip = _snapOptions;
+        _alignment.ContextMenuStrip = _snapOptions;
+        AddOption("Snap to ruler guides", () => _settings.SnapToGuides, value => _settings.SnapToGuides = value);
+        AddOption("Snap to canvas edges and center", () => _settings.SnapToCanvas, value => _settings.SnapToCanvas = value);
+        AddOption("Equal spacing guides", () => _settings.SnapToGaps, value => _settings.SnapToGaps = value);
+        _snapOptions.Items.Add(new ToolStripSeparator());
+        foreach (var pixels in new[] { 4, 8, 12, 16 })
+        {
+            var item = new ToolStripMenuItem($"{pixels} px");
+            item.Click += (_, _) => { _settings.SnapTolerancePixels = pixels; _settings.NotifyChanged(); };
+            _snapOptions.Opening += (_, _) => item.Checked = _settings.SnapTolerancePixels == pixels;
+            _snapOptions.Items.Add(item);
+        }
+        UiLocalization.Watch(_snapOptions);
+
+        void AddOption(string label, Func<bool> read, Action<bool> write)
+        {
+            var item = new ToolStripMenuItem(label);
+            item.Click += (_, _) => { write(!read()); _settings.NotifyChanged(); };
+            _snapOptions.Opening += (_, _) => item.Checked = read();
+            _snapOptions.Items.Add(item);
+        }
     }
 
     private void SetToggleHelp(SvgToggleButton control, string purpose, bool requiresSnap)

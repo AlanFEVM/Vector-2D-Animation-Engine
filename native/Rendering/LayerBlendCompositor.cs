@@ -33,14 +33,15 @@ internal sealed class LayerBlendCompositor : IDisposable
     internal Bitmap? CurrentLayerSurface { get; private set; }
 
     internal void CompositeRangeOnto(Bitmap destination, VectorScene scene, int firstLayer, int layerCount,
-        Region clip, Action<Graphics, int> drawLayer)
+        Region clip, Action<Graphics, int> drawLayer, Func<int, Region?>? createLayerClip = null)
     {
         var children = BuildLayerTree(scene);
         CompositeChildren(scene, children, scene.LayerCount, destination, drawLayer,
-            firstLayer, firstLayer + layerCount, clip);
+            firstLayer, firstLayer + layerCount, clip, createLayerClip);
     }
 
-    public void CompositeTo(Graphics destination, VectorScene scene, Action<Graphics, int> drawLayer)
+    public void CompositeTo(Graphics destination, VectorScene scene, Action<Graphics, int> drawLayer,
+        Func<int, Region?>? createLayerClip = null)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(scene);
@@ -50,7 +51,7 @@ internal sealed class LayerBlendCompositor : IDisposable
         try
         {
             var children = BuildLayerTree(scene);
-            CompositeChildren(scene, children, scene.LayerCount, root, drawLayer);
+            CompositeChildren(scene, children, scene.LayerCount, root, drawLayer, createLayerClip: createLayerClip);
             destination.DrawImageUnscaled(root, -Padding.Left, -Padding.Top);
         }
         finally
@@ -63,7 +64,8 @@ internal sealed class LayerBlendCompositor : IDisposable
         Graphics destination,
         VectorScene scene,
         Func<int, bool> shouldDrawLayer,
-        Action<Graphics, IReadOnlyList<int>> drawLayers)
+        Action<Graphics, IReadOnlyList<int>> drawLayers,
+        Func<int, Region?>? createLayerClip = null)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(scene);
@@ -82,7 +84,7 @@ internal sealed class LayerBlendCompositor : IDisposable
                 root,
                 pendingLayers,
                 shouldDrawLayer,
-                drawLayers);
+                drawLayers, createLayerClip);
             FlushLayerBatch(root, pendingLayers, drawLayers, $"root:{scene.LayerCount}");
             destination.DrawImageUnscaled(root, -Padding.Left, -Padding.Top);
         }
@@ -120,7 +122,8 @@ internal sealed class LayerBlendCompositor : IDisposable
         Action<Graphics, int> drawLayer,
         int firstLayer = 0,
         int endLayer = int.MaxValue,
-        Region? clip = null)
+        Region? clip = null,
+        Func<int, Region?>? createLayerClip = null)
     {
         var siblings = children[parent];
         for (var siblingIndex = siblings.Count - 1; siblingIndex >= 0; siblingIndex--)
@@ -133,12 +136,32 @@ internal sealed class LayerBlendCompositor : IDisposable
                 continue;
             }
 
+            // A fully opaque normal leaf needs no isolation surface. Draw it
+            // directly into its parent, preserving the enclosing group boundary.
+            // This avoids clearing and copying a viewport-sized bitmap for every
+            // ordinary layer in imported documents with one filtered instance.
+            using var boundaryClip = createLayerClip?.Invoke(layer);
+            if (scene.GetLayerKind(layer) != DrawingLayerKind.Folder
+                && BlendModeFor(scene, layer) == LayerBlendMode.Normal
+                && OpacityFor(scene, layer) == 1f
+                && !scene.GetLayerSymbolFilters(layer).HasEnabled
+                && boundaryClip is null && clip is null)
+            {
+                using var graphics = Graphics.FromImage(destination);
+                ConfigureLayerGraphics(graphics);
+                var previousSurface = CurrentLayerSurface;
+                CurrentLayerSurface = destination;
+                try { drawLayer(graphics, layer); }
+                finally { CurrentLayerSurface = previousSurface; }
+                continue;
+            }
+
             var source = RentSurface();
             try
             {
                 if (scene.GetLayerKind(layer) == DrawingLayerKind.Folder)
                 {
-                    CompositeChildren(scene, children, layer, source, drawLayer);
+                    CompositeChildren(scene, children, layer, source, drawLayer, createLayerClip: createLayerClip);
                 }
                 else
                 {
@@ -151,15 +174,11 @@ internal sealed class LayerBlendCompositor : IDisposable
                 }
 
                 ApplyFilters(source, scene.GetLayerSymbolFilters(layer));
+                // Clips belong to the composited layer/group boundary. Applying
+                // them only inside drawLayer lets blur/glow leak past the mask.
+                if (boundaryClip is not null) ClipSurface(source, boundaryClip);
                 if (clip is not null)
-                {
-                    using var graphics = Graphics.FromImage(source);
-                    ConfigureLayerGraphics(graphics);
-                    graphics.CompositingMode = CompositingMode.SourceCopy;
-                    graphics.SetClip(clip, CombineMode.Exclude);
-                    using var transparent = new SolidBrush(Color.Transparent);
-                    graphics.FillRectangle(transparent, -Padding.Left, -Padding.Top, _width, _height);
-                }
+                    ClipSurface(source, clip);
                 CompositeSurface(
                     destination,
                     source,
@@ -174,6 +193,16 @@ internal sealed class LayerBlendCompositor : IDisposable
         }
     }
 
+    private void ClipSurface(Bitmap surface, Region clip)
+    {
+        using var graphics = Graphics.FromImage(surface);
+        ConfigureLayerGraphics(graphics);
+        graphics.CompositingMode = CompositingMode.SourceCopy;
+        graphics.SetClip(clip, CombineMode.Exclude);
+        using var transparent = new SolidBrush(Color.Transparent);
+        graphics.FillRectangle(transparent, -Padding.Left, -Padding.Top, _width, _height);
+    }
+
     private void AppendChildrenBatched(
         VectorScene scene,
         IReadOnlyList<int>[] children,
@@ -181,16 +210,18 @@ internal sealed class LayerBlendCompositor : IDisposable
         Bitmap destination,
         List<int> pendingLayers,
         Func<int, bool> shouldDrawLayer,
-        Action<Graphics, IReadOnlyList<int>> drawLayers)
+        Action<Graphics, IReadOnlyList<int>> drawLayers,
+        Func<int, Region?>? createLayerClip = null)
     {
         var siblings = children[parent];
         for (var siblingIndex = siblings.Count - 1; siblingIndex >= 0; siblingIndex--)
         {
             var layer = siblings[siblingIndex];
             if (!LayerIsVisible(scene, layer)) continue;
+            using var layerClip = createLayerClip?.Invoke(layer);
             var isFolder = scene.GetLayerKind(layer) == DrawingLayerKind.Folder;
             if (isFolder && BlendModeFor(scene, layer) == LayerBlendMode.Normal
-                && !scene.GetLayerSymbolFilters(layer).HasEnabled)
+                && !scene.GetLayerSymbolFilters(layer).HasEnabled && layerClip is null)
             {
                 AppendChildrenBatched(
                     scene,
@@ -199,7 +230,7 @@ internal sealed class LayerBlendCompositor : IDisposable
                     destination,
                     pendingLayers,
                     shouldDrawLayer,
-                    drawLayers);
+                    drawLayers, createLayerClip);
                 continue;
             }
 
@@ -218,13 +249,14 @@ internal sealed class LayerBlendCompositor : IDisposable
                         folderSurface,
                         isolatedPendingLayers,
                         shouldDrawLayer,
-                        drawLayers);
+                        drawLayers, createLayerClip);
                     FlushLayerBatch(
                         folderSurface,
                         isolatedPendingLayers,
                         drawLayers,
                         $"folder:{layer}");
                     ApplyFilters(folderSurface, scene.GetLayerSymbolFilters(layer));
+                    if (layerClip is not null) ClipSurface(folderSurface, layerClip);
                     CompositeSurface(
                         destination,
                         folderSurface,
@@ -240,7 +272,8 @@ internal sealed class LayerBlendCompositor : IDisposable
             }
 
             if (!shouldDrawLayer(layer)) continue;
-            if (BlendModeFor(scene, layer) == LayerBlendMode.Normal && !scene.GetLayerSymbolFilters(layer).HasEnabled)
+            if (BlendModeFor(scene, layer) == LayerBlendMode.Normal
+                && !scene.GetLayerSymbolFilters(layer).HasEnabled && layerClip is null)
             {
                 pendingLayers.Add(layer);
                 continue;
@@ -256,6 +289,7 @@ internal sealed class LayerBlendCompositor : IDisposable
 
                 graphics.Flush();
                 ApplyFilters(layerSurface, scene.GetLayerSymbolFilters(layer));
+                if (layerClip is not null) ClipSurface(layerSurface, layerClip);
                 CompositeSurface(
                     destination,
                     layerSurface,

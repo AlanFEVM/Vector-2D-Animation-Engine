@@ -23,7 +23,8 @@ internal sealed partial class Direct2DStageRenderer
         float ZoomScale,
         float TargetX,
         float TargetY,
-        float TargetZ);
+        float TargetZ,
+        SceneCompositionMaskPlan? CompositionMasks);
 
     private readonly record struct Reference3DPlaybackRasterRequestKey(
         long SessionId,
@@ -1042,6 +1043,11 @@ internal sealed partial class Direct2DStageRenderer
 
     private bool RejectReference3DPlaybackRasterPreparation(StageControl stage)
     {
+        if (stage.CompositionMasksFor(stage.Scene) is not null)
+        {
+            LastReference3DCpuRasterFallbackReason = "composition_mask";
+            return true;
+        }
         if (stage.Reference3DGpuOpticsEnabled
             && (LastGpuOpticalSurfaceCount > 0 || LastGpuOpticsBypassedSurfaces > 0))
         {
@@ -1321,7 +1327,8 @@ internal sealed partial class Direct2DStageRenderer
             stage.ReferenceZoomScale,
             stage.ReferenceTargetX,
             stage.ReferenceTargetY,
-            stage.ReferenceTargetZ);
+            stage.ReferenceTargetZ,
+            stage.CompositionMasksFor(stage.Scene));
 
     private static int GetReference3DPlaybackRasterWorkerLimit(int tileCount)
     {

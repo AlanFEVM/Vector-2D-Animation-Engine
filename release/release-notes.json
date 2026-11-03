@@ -2,6 +2,109 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "0.3.0",
+      "releaseDate": "2026-10-30",
+      "showInApplication": true,
+      "locales": {
+        "en": {
+          "title": "Version 0.3.0",
+          "summary": "Expanded scene drawing, local topology and smart layout, with ruler guides and a broader stage shortcut workflow.",
+          "sections": [
+            {
+              "heading": "Scene drawing and inspectors",
+              "items": [
+                "Added direct drawing in the 2D front view of Scene & Animation, integrated with scene layers, timelines and project saving.",
+                "Reorganized inspector categories and tool context, with improved geometry, transform, multi-selection, text, image and brush controls.",
+                "Improved cross-layer selection, layer-content highlighting and object transforms."
+              ]
+            },
+            {
+              "heading": "Lines, fills and local topology",
+              "items": [
+                "Endpoint hits take priority during line editing; hold C while dragging an endpoint to connect it to another endpoint.",
+                "Improved fill-boundary updates during endpoint and curve edits, with topology cleanup limited to affected regions. Closed self-intersection regions retain fills and strokes split at crossings.",
+                "Improved local fill/stroke detachment, materialization and object-index remapping to reduce stale selections and outlines."
+              ]
+            },
+            {
+              "heading": "Rulers, guides and smart layout",
+              "items": [
+                "Added bottom and right stage rulers with pixel, millimetre, centimetre and inch units and a visibility switch.",
+                "Drag guides from rulers; Ctrl-drag to reposition and drop back on a ruler to delete. Guides use the project accent colour and persist with scenes, symbols and open canvases.",
+                "Upgraded Tight Fit and Align with visible edges, centres, canvas and guide targets, equal-gap feedback, and configurable targets and tolerance.",
+                "Added alignment and equal-gap distribution relative to selection, key object or canvas. Line drawing and endpoint editing favour common 15°, 30°, 45°, 60° and 90° directions."
+              ]
+            },
+            {
+              "heading": "Stage shortcuts and editing",
+              "items": [
+                "Added Alt-drag duplication, arrow-key nudging, Shift axis locking, deselection, inverse selection, click-through selection and subtract/intersect marquees.",
+                "Added in-place duplication and repeated displacement, paste in place, linked duplication, appearance copy/paste, connected-topology selection and selection growth/shrink.",
+                "Added 2D fit, actual size, keyboard zoom, zoom to selection, canvas rotation, panel-group visibility and numeric move/rotate/scale.",
+                "Expanded hide, isolate, object locking, hierarchy navigation, keyframe navigation, Backspace deletion, Break Apart and stacking commands, with configurable shortcut entries.",
+                "Extended document-edit redo with Ctrl+Y and Ctrl+Shift+Z and improved undo/redo integration."
+              ]
+            },
+            {
+              "heading": "Usability and documentation",
+              "items": [
+                "Removed floating operation tips while dragging cameras and framing boxes; hover help remains available.",
+                "Added an offline Chinese illustrated HTML manual and a portable edition with embedded screenshots, covering drawing, animation, scenes, assets, saving and shortcuts."
+              ]
+            }
+          ]
+        },
+        "zh-CN": {
+          "title": "版本 0.3.0",
+          "summary": "升级场景绘制、局部拓扑与智能布局，新增标尺辅助线并补齐舞台快捷键。",
+          "sections": [
+            {
+              "heading": "场景绘制与检查器",
+              "items": [
+                "场景与动画的二维前视支持直接绘制，绘制内容与实例沿用场景图层、时间轴和保存流程。",
+                "重新整理右侧检查器分类与工具上下文，完善对象几何、位置尺寸、多选摘要、文本、图片和笔刷参数的展示与编辑。",
+                "改进跨图层选择、图层内容高亮和对象变换，让当前选择与可编辑参数更清晰。"
+              ]
+            },
+            {
+              "heading": "线段、填色与局部拓扑",
+              "items": [
+                "调整线段时优先命中端点；拖动端点按住 C 可吸附连接其他端点。",
+                "改进填色边界随端点和曲线编辑的联动，并在操作完成后整理受影响区域的拓扑；自交封闭区域保留填色，在交点处分割描边。",
+                "完善局部填色／描边的拆离、实体化和对象索引映射，减少编辑后选择错位与轮廓刷新异常。"
+              ]
+            },
+            {
+              "heading": "标尺、辅助线与智能对齐",
+              "items": [
+                "新增舞台底部与右侧标尺，支持像素、毫米、厘米和英寸，并提供显示开关。",
+                "从标尺拖出辅助线；Ctrl+拖动重新定位，拖回标尺删除。辅助线使用工程高亮色，并随场景、元件及开放画布保存。",
+                "升级紧贴与对齐：支持可见边缘、中心、画布、辅助线、等距与连续间距提示，提供吸附目标和容差设置。",
+                "新增选择范围、主选对象和画布基准的对齐与等间距分布；绘制线段与拖动端点时偏好 15°、30°、45°、60°、90° 等常用方向。"
+              ]
+            },
+            {
+              "heading": "舞台快捷键与编辑效率",
+              "items": [
+                "新增 Alt 拖拽复制、方向键微移、Shift 轴锁定、取消全选、反选、穿透选择及框选减选／交集。",
+                "补齐就地复制与重复位移、原位粘贴、关联复制、复制／粘贴外观、相连拓扑选择和选择扩张／收缩。",
+                "新增二维适应窗口、实际大小、键盘缩放、缩放到选中、画布旋转、面板组显隐及二维数值移动／旋转／缩放。",
+                "完善隐藏、孤立、对象锁定、层级进入退出、关键帧跳转、Backspace 删除、拆散和堆叠命令，并补充可配置快捷键目录。",
+                "扩展文档编辑重做，支持 Ctrl+Y 与 Ctrl+Shift+Z，完善编辑操作的撤销／重做衔接。"
+              ]
+            },
+            {
+              "heading": "体验与使用说明",
+              "items": [
+                "移除拖动镜头及取景框时的浮动操作提示，保留悬停说明。",
+                "新增可离线阅读的中文 HTML 图文手册与内嵌截图的单文件版本，整理绘制、动画、场景、素材、保存和快捷键说明。"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
       "version": "0.2.7",
       "releaseDate": "2026-10-27",
       "showInApplication": true,
@@ -66,7 +169,7 @@
             {
               "heading": "Highlights",
               "items": [
-                "Added Shots \u0026 Directing with multiple cameras, framing controls and camera keyframe tweens.",
+                "Added Shots & Directing with multiple cameras, framing controls and camera keyframe tweens.",
                 "Added symbol filters including blur, glow, shadow and bevel, with GPU acceleration.",
                 "Added standalone SVG export and import/export of editable .V2DSymbol packages.",
                 "Added a local Codex / MCP interface for project editing and animation bundle import.",
@@ -123,7 +226,7 @@
               "items": [
                 "Polygon Lasso creates a selection boundary point by point, while Freehand Lasso follows a dragged outline. Both support Shift to add to the current selection and Escape or right-click to cancel.",
                 "In Basic Drawing, lasso selection can target fills, segments, and strokes inside the actual boundary, including local regions that can then be moved or edited without selecting the whole object.",
-                "Scene Building\u0027s 2D Front view also supports lasso selection; side and top reference views retain their projected selection tools."
+                "Scene Building's 2D Front view also supports lasso selection; side and top reference views retain their projected selection tools."
               ]
             },
             {
@@ -145,9 +248,9 @@
             {
               "heading": "Scene lighting response",
               "items": [
-                "Direct light now uses a GGX microfacet distribution with Smith visibility and Schlick Fresnel. Roughness controls highlight spread, while metallic and transmission reduce diffuse response; dielectric F0 follows the material\u0027s index of refraction and reflectivity.",
+                "Direct light now uses a GGX microfacet distribution with Smith visibility and Schlick Fresnel. Roughness controls highlight spread, while metallic and transmission reduce diffuse response; dielectric F0 follows the material's index of refraction and reflectivity.",
                 "Area lights use a deterministic 3x3 stratified midpoint sample pattern with weights that sum to one. Point-sized areas still use the point-light path, and changing shadow softness does not change unobstructed sampling or distance falloff.",
-                "Solid and gradient pixels use linear-space lighting that retains the material\u0027s base-color contribution and alpha, including colored metal reflections and grazing-angle Fresnel response. This remains a 2.5D lighting model without Blender Cycles path tracing, indirect global illumination, or true refraction."
+                "Solid and gradient pixels use linear-space lighting that retains the material's base-color contribution and alpha, including colored metal reflections and grazing-angle Fresnel response. This remains a 2.5D lighting model without Blender Cycles path tracing, indirect global illumination, or true refraction."
               ]
             },
             {
@@ -240,7 +343,7 @@
             {
               "heading": "3D Transform Controls",
               "items": [
-                "3D Transform lets you freely adjust a component\u0027s position, rotation, and scale in 3D space. Use G, R, and S for Move, Rotate, and Scale respectively, in a workflow similar to Blender."
+                "3D Transform lets you freely adjust a component's position, rotation, and scale in 3D space. Use G, R, and S for Move, Rotate, and Scale respectively, in a workflow similar to Blender."
               ]
             },
             {
@@ -252,7 +355,7 @@
             {
               "heading": "3D Lighting",
               "items": [
-                "3D lighting now supports Point, Area, Ambient, and Directional lights. Lighting is blended with each component\u0027s base color."
+                "3D lighting now supports Point, Area, Ambient, and Directional lights. Lighting is blended with each component's base color."
               ]
             },
             {
@@ -520,7 +623,7 @@
             {
               "heading": "Mixing-region editing",
               "items": [
-                "Each gesture is undoable with Ctrl\u002BZ, and the Eraser can trim or split Mixing Brush paint when Fill erasing is enabled.",
+                "Each gesture is undoable with Ctrl+Z, and the Eraser can trim or split Mixing Brush paint when Fill erasing is enabled.",
                 "Click and marquee selection use actual painted coverage. A connected island inside a merged mixing object can be selected, moved, transformed, deleted, copied, and pasted without selecting unrelated islands.",
                 "Editing a selected island materializes only that region, preserves draw order and timeline ownership, and can be reverted to the previous merged result with Undo.",
                 "Legacy trajectory-based Mixing Brush data remains readable and renderable."
@@ -562,7 +665,7 @@
             {
               "heading": "混色区域编辑",
               "items": [
-                "每次混色笔迹都可使用 Ctrl\u002BZ 撤销；启用 Fill 擦除时，Eraser 可以裁切混色区域或将中段擦除后的内容拆成有序片段。",
+                "每次混色笔迹都可使用 Ctrl+Z 撤销；启用 Fill 擦除时，Eraser 可以裁切混色区域或将中段擦除后的内容拆成有序片段。",
                 "点击与框选按真实上色覆盖命中；合并混色对象中的单个连通岛可独立选择、移动、变形、删除、复制和粘贴，不会连带选中无关区域。",
                 "首次编辑所选岛时只物化该局部区域，并保留绘制顺序与时间轴归属；Undo 可恢复编辑前的合并结果。",
                 "旧工程中按轨迹保存的 Mixing Brush 数据继续兼容读取与渲染。"
@@ -701,7 +804,7 @@
               "heading": "Formal EXE hot updates",
               "items": [
                 "The formal package is the single VectorAnimationEngine-0.1.7-win-x64.exe and remains smaller than 5 MiB.",
-                "Every formal EXE launch atomically regenerates .V2DEngine from that EXE\u0027s embedded payload, so replacing the EXE deterministically deploys the tested application body.",
+                "Every formal EXE launch atomically regenerates .V2DEngine from that EXE's embedded payload, so replacing the EXE deterministically deploys the tested application body.",
                 "A complete compatible .Runtime is reused without download or replacement; a missing or incomplete runtime still enters the verified Microsoft provisioning flow.",
                 "Bootstrap self-tests now verify repeated application deployment, stale-file removal, runtime reuse, embedded metadata, archive safety, and rollback-capable directory replacement."
               ]
@@ -766,7 +869,7 @@
               "items": [
                 "A selected Fill part stays attached to the intended region through pointer-down materialization, dragging, commit, cancel, undo, and anchor insertion or deletion.",
                 "Open portions of a fill boundary expose their complete anchors and cubic controls, while sections fully covered by a same-layer closed stroke remain hidden from fill-edge editing.",
-                "Ctrl\u002Bleft-click inserts a cubic anchor at the clicked curve position and can continue directly into a drag; Ctrl\u002Bright-click removes a real anchor while preserving the minimum closed contour.",
+                "Ctrl+left-click inserts a cubic anchor at the clicked curve position and can continue directly into a drag; Ctrl+right-click removes a real anchor while preserving the minimum closed contour.",
                 "Dragging an endpoint that belongs to straight adjacent edges keeps those cubic controls collinear, while existing curved edges retain their control geometry."
               ]
             },
@@ -776,7 +879,7 @@
                 "Fill boundaries, independent Lines, stroked Paths, and closed freeform strokes now use the same shared-junction rules without assigning priority to either side.",
                 "Dragging a shared endpoint from either the fill side or the stroke side updates every captured endpoint to the same quantized position.",
                 "An independent Line crossing a fill boundary splits into exact cubic subcurves when required; path-backed outlines and closed freeform strokes keep the junction inside their original object.",
-                "Ctrl-drag from a Line endpoint creates a connected branch. Ctrl\u002BAlt-drag from the Line interior creates an exact branch anchor, and Shift temporarily enables angle snapping."
+                "Ctrl-drag from a Line endpoint creates a connected branch. Ctrl+Alt-drag from the Line interior creates an exact branch anchor, and Shift temporarily enables angle snapping."
               ]
             },
             {
@@ -827,7 +930,7 @@
                 "填色边界、独立 Line、带描边 Path 和闭合自由线使用同一套共享交点规则，不再区分填色侧或线段侧的优先级。",
                 "无论从填色侧还是描边侧拖动共享端点，所有已捕获端点都会同步到同一个量化坐标。",
                 "独立 Line 穿过填色边界时会按需要拆分为精确三次贝塞尔子曲线；Path 自带描边和闭合自由线的交点仍保留在原对象内部。",
-                "按住 Ctrl 从 Line 端点拖动可创建连接分支；按住 Ctrl\u002BAlt 从 Line 中部拖动可建立精确分支锚点，Shift 可临时启用角度吸附。"
+                "按住 Ctrl 从 Line 端点拖动可创建连接分支；按住 Ctrl+Alt 从 Line 中部拖动可建立精确分支锚点，Shift 可临时启用角度吸附。"
               ]
             },
             {
@@ -998,7 +1101,8 @@
           {
             "heading": "Contributors",
             "items": [
-              "DD_1345"
+              "DD_1345",
+              "TG"
             ]
           }
         ]
@@ -1010,7 +1114,8 @@
           {
             "heading": "贡献者",
             "items": [
-              "DD_1345"
+              "DD_1345",
+              "TG"
             ]
           }
         ]

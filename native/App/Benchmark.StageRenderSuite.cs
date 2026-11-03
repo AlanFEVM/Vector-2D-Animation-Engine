@@ -1,9 +1,62 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 
 namespace VectorAnimationEngine;
 
 internal static partial class Benchmark
 {
+    private static void RunUnlitSceneFrameCacheRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var albedo = Color.FromArgb(255, 68, 138, 208);
+        scene.AddObject(0, PointF.Empty, new SizeF(2400, 1800), 0, 0,
+            albedo, Color.Transparent, 12, ShapeKind.Rectangle);
+        var definition = new SceneDefinition();
+        definition.RestoreLights([], lightsWerePresent: true);
+        var owners = new[] { new SceneCompositionObjectOwner("unlit", "fixture") };
+        var poses = new[] { new SceneCompositionObjectPose(
+            System.Numerics.Matrix4x4.Identity, new System.Numerics.Vector3(0, 0, .5f)) };
+        using var form = new Form { ClientSize = new Size(320, 240), ShowInTaskbar = false };
+        using var stage = new StageControl(scene) { Dock = DockStyle.Fill, WorldGridOpacity = 0 };
+        form.Controls.Add(stage);
+        stage.ConfigureReferenceView(definition, SceneDimension.TwoD);
+        stage.SetSceneCompositionResult(new SceneCompositionResult(owners, poses));
+        var items = stage.GetReference3DSceneRenderItems();
+        if (items.Any(item => item.Kind == Reference3DRenderKind.Side || item.OpticalSurface is not null)
+            || !items.Any(item => item.Kind == Reference3DRenderKind.Back)
+            || !items.Any(item => item.Kind == Reference3DRenderKind.FrontFill))
+            throw new InvalidOperationException("An unlit front view built identity optical surfaces or zero-area walls.");
+        using (var bitmap = new Bitmap(320, 240))
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            typeof(StageControl).GetMethod("DrawGdi", System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.NonPublic)!.Invoke(stage, [graphics]);
+            if (!stage.TryProjectScenePosition(System.Numerics.Vector3.Zero, out var center, out _)
+                || bitmap.GetPixel((int)center.X, (int)center.Y).ToArgb() != albedo.ToArgb())
+                throw new InvalidOperationException("The unlit optical fast path changed the authored fill colour.");
+        }
+        stage.SetSceneCompositionResult(new SceneCompositionResult(owners, poses,
+            [SpatialOpticalMaterial.Default with { Transmission = .5f }]));
+        if (!stage.GetReference3DSceneRenderItems().Any(item =>
+                item.Kind == Reference3DRenderKind.FrontFill && item.MaterialOpacity < .6f))
+            throw new InvalidOperationException("The unlit optical fast path discarded material transmission.");
+        definition.RestoreLights([SceneLightDefinition.CreateDefaultDirectional()], lightsWerePresent: true);
+        if (!stage.GetReference3DLayerRenderItems([0]).Any(item => item.Kind == Reference3DRenderKind.Side))
+            throw new InvalidOperationException("The front-view optimization removed potential shadow casters.");
+        definition.RestoreLights([], lightsWerePresent: true);
+        stage.SetSceneCompositionResult(new SceneCompositionResult(owners, poses));
+        form.Show();
+        Application.DoEvents();
+        var renderer = (Direct2DStageRenderer)typeof(StageControl).GetField("_direct2DRenderer",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(stage)!;
+        stage.Invalidate();
+        if (!renderer.TryRender(stage, out _) || renderer.LastBaseFrameCacheBuilds != 1)
+            throw new InvalidOperationException($"The Direct2D base-frame capture failed: {renderer.LastBaseFrameCacheFailure}");
+        if (!renderer.TryRender(stage, out _) || renderer.LastBaseFrameCacheReuses != 1)
+            throw new InvalidOperationException("An unchanged unlit scene did not reuse its Direct2D base frame.");
+        Console.WriteLine("unlit_front_optics_identity_transmission_shadow_sources_and_gpu_frame_cache=ok");
+    }
+
     private static void RunLayerBlendRegression()
     {
         var backdrop = Color.FromArgb(255, 64, 128, 192);
@@ -146,6 +199,37 @@ internal static partial class Benchmark
                 stageBitmap.GetPixel(lowerOnlyPoint.X, lowerOnlyPoint.Y),
                 Color.CornflowerBlue,
                 "Stage lower-layer preservation");
+
+            var drawFrame = typeof(StageControl).GetMethod(
+                "DrawGdiFrame",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            drawFrame.Invoke(stage, [stageGraphics]);
+            if (stage.LastGdiBaseFrameCacheBuilds != 1)
+                throw new InvalidOperationException("An isolated 2D frame did not populate the software base-frame cache.");
+            using var firstFrame = (Bitmap)stageBitmap.Clone();
+            drawFrame.Invoke(stage, [stageGraphics]);
+            if (stage.LastGdiBaseFrameCacheReuses != 1
+                || firstFrame.GetPixel(lowerOnlyPoint.X, lowerOnlyPoint.Y) != stageBitmap.GetPixel(lowerOnlyPoint.X, lowerOnlyPoint.Y))
+                throw new InvalidOperationException("An unchanged isolated 2D frame was not reused faithfully.");
+            stage.Frame = 1;
+            drawFrame.Invoke(stage, [stageGraphics]);
+            if (stage.LastGdiBaseFrameCacheBuilds != 1)
+                throw new InvalidOperationException("A frame change reused stale software composition.");
+
+            stage.Frame = 0;
+            stage.SetSceneCompositionResult(new SceneCompositionResult(
+                Enumerable.Repeat(new SceneCompositionObjectOwner("instance", "drawing"), stageScene.ObjectCount).ToArray(),
+                Enumerable.Repeat(new SceneCompositionObjectPose(
+                    System.Numerics.Matrix4x4.Identity, new System.Numerics.Vector3(0, 0, 0.5f)), stageScene.ObjectCount).ToArray()));
+            var frontItems = stage.GetReference3DSceneRenderItems();
+            if (frontItems.Any(item => item.Kind == Reference3DRenderKind.Side)
+                || !frontItems.Any(item => item.Kind == Reference3DRenderKind.Back)
+                || !frontItems.Any(item => item.Kind == Reference3DRenderKind.FrontFill))
+                throw new InvalidOperationException("The orthographic front view did not retain filled faces while excluding zero-area walls.");
+            stage.ConfigureReferenceView(null, SceneDimension.ThreeD);
+            stage.SetReferenceCameraOrientation(30, 25);
+            if (!stage.GetReference3DSceneRenderItems().Any(item => item.Kind == Reference3DRenderKind.Side))
+                throw new InvalidOperationException("Visible extrusion walls disappeared from an angled view.");
         }
 
         AssertProjectedNormalOpacity(useParentFolder: false);
@@ -8416,6 +8500,7 @@ internal static partial class Benchmark
 
     public static void RunStageRendererRegression()
     {
+        RunUnlitSceneFrameCacheRegression();
         RunSceneToolPaletteVisibilityRegression();
         RunShotParallaxRenderingRegression();
         RunSceneCanvasRenderingRegression();
@@ -8427,6 +8512,8 @@ internal static partial class Benchmark
         RunGpuPlaybackTargetLifetimeRegression();
         RunLayerBlendRegression();
         RunSceneReferenceRenderRegression();
+        RunReferenceNavigationGeometryRegression();
+        RunWorkspaceSchedulingRegression();
         RunWorkspacePreRenderTargetRegression();
         RunBitmapObjectRegression();
         RunSceneOpticsRenderRegression();
@@ -8434,6 +8521,7 @@ internal static partial class Benchmark
         RunSnapPointOverlayRegression();
         RunImportedSvgRasterizerRegression();
         RunBitmapObjectRegression();
+        RunReferenceSvgRasterExtentRegression();
         RunProjectiveSvgClippingRegression();
         RunImportedSvgBreakApartRegression();
         RunSelectionHighlightStyleRegression();

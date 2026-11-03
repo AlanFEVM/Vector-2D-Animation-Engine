@@ -73,11 +73,10 @@ internal sealed partial class Direct2DStageRenderer
             {
                 if (stage.SelectionDragPreviewActive && !_recordingSelectionCommands)
                 {
-                    var offset = stage.SelectionDragPreviewOffset;
-                    var screenScale = VectorUnits.PixelsPerUnit * stage.Zoom;
+                    var offset = stage.WorldOffsetToScreen(stage.SelectionDragPreviewOffset);
                     _target.Transform = selectionTransform * Matrix3x2.CreateTranslation(
-                        offset.X * screenScale,
-                        offset.Y * screenScale);
+                        offset.X,
+                        offset.Y);
                 }
                 foreach (var objectIndex in stage.SelectedElements
                              .Where(hit => (uint)hit.Key.ObjectIndex < stage.Scene.ObjectCount
@@ -743,12 +742,14 @@ internal sealed partial class Direct2DStageRenderer
     {
         if ((uint)objectIndex >= stage.Scene.ObjectCount) return false;
         var bounds = stage.Scene.GetObjectWorldBounds(objectIndex);
-        var topLeft = WorldToVector(stage, new GdiPointF(bounds.Left, bounds.Top));
-        var bottomRight = WorldToVector(stage, new GdiPointF(bounds.Right, bounds.Bottom));
-        var left = Math.Min(topLeft.X, bottomRight.X);
-        var top = Math.Min(topLeft.Y, bottomRight.Y);
-        var right = Math.Max(topLeft.X, bottomRight.X);
-        var bottom = Math.Max(topLeft.Y, bottomRight.Y);
+        var corners = new[] { WorldToVector(stage, new GdiPointF(bounds.Left, bounds.Top)),
+            WorldToVector(stage, new GdiPointF(bounds.Right, bounds.Top)),
+            WorldToVector(stage, new GdiPointF(bounds.Right, bounds.Bottom)),
+            WorldToVector(stage, new GdiPointF(bounds.Left, bounds.Bottom)) };
+        var left = corners.Min(p => p.X);
+        var top = corners.Min(p => p.Y);
+        var right = corners.Max(p => p.X);
+        var bottom = corners.Max(p => p.Y);
         if (right - left <= 0.001f || bottom - top <= 0.001f) return false;
 
         var rect = Rect(left, top, right - left, bottom - top);
@@ -767,12 +768,14 @@ internal sealed partial class Direct2DStageRenderer
     {
         if (!stage.DrawingObjectSelectionVisible) return;
         var bounds = stage.DrawingObjectSelectionBounds;
-        var topLeft = WorldToVector(stage, new GdiPointF(bounds.Left, bounds.Top));
-        var bottomRight = WorldToVector(stage, new GdiPointF(bounds.Right, bounds.Bottom));
-        var left = Math.Min(topLeft.X, bottomRight.X);
-        var top = Math.Min(topLeft.Y, bottomRight.Y);
-        var right = Math.Max(topLeft.X, bottomRight.X);
-        var bottom = Math.Max(topLeft.Y, bottomRight.Y);
+        var corners = new[] { WorldToVector(stage, new GdiPointF(bounds.Left, bounds.Top)),
+            WorldToVector(stage, new GdiPointF(bounds.Right, bounds.Top)),
+            WorldToVector(stage, new GdiPointF(bounds.Right, bounds.Bottom)),
+            WorldToVector(stage, new GdiPointF(bounds.Left, bounds.Bottom)) };
+        var left = corners.Min(p => p.X);
+        var top = corners.Min(p => p.Y);
+        var right = corners.Max(p => p.X);
+        var bottom = corners.Max(p => p.Y);
         if (right - left <= 0 || bottom - top <= 0) return;
 
         var rect = Rect(left, top, right - left, bottom - top);

@@ -438,7 +438,7 @@ internal sealed partial class VectorScene
             {
                 // A selected fill has already received the same affine transform.
                 // Replacing it from a pre-transform contour would undo that transform.
-                if (!transformed.Contains(link.FillObjectIndex)) links.Add(link);
+                if (!ObjectLocked[link.FillObjectIndex] && !transformed.Contains(link.FillObjectIndex)) links.Add(link);
             }
         }
 

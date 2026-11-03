@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using System.Xml;
@@ -35,18 +34,19 @@ internal static class FlashVisualConversionBridge
         {
             if (!signature[..4].SequenceEqual(new byte[] { 0x50, 0x4b, 0x03, 0x04 }))
                 throw new InvalidDataException("The visual bridge source must be an OLE binary FLA or an XFL ZIP FLA.");
-            input.Position = 0;
-            using var archive = new ZipArchive(input, ZipArchiveMode.Read, leaveOpen: true);
-            if (archive.Entries.Count > 20_000) throw new InvalidDataException("The FLA archive contains too many entries.");
-            var documents = archive.Entries.Where(entry => entry.FullName == "DOMDocument.xml").ToArray();
-            if (documents.Length != 1 || documents[0].Length is <= 0 or > 32L * 1024 * 1024)
-                throw new InvalidDataException("The FLA ZIP must contain one bounded root DOMDocument.xml.");
-            using var xml = documents[0].Open();
-            using var reader = XmlReader.Create(xml, XmlSettings(32L * 1024 * 1024));
-            reader.MoveToContent();
-            if (reader.LocalName != "DOMDocument" || reader.NamespaceURI != "http://ns.adobe.com/xfl/2008/")
-                throw new InvalidDataException("The FLA ZIP does not contain an Adobe XFL document.");
-            while (reader.Read()) if (reader.Depth > 256) throw new InvalidDataException("XFL XML depth exceeds 256.");
+            try
+            {
+                using var xml = new MemoryStream(FlashDocumentImporter.ReadVisualBridgeDocument(source), writable: false);
+                using var reader = XmlReader.Create(xml, XmlSettings(32L * 1024 * 1024));
+                reader.MoveToContent();
+                if (reader.LocalName != "DOMDocument" || reader.NamespaceURI != "http://ns.adobe.com/xfl/2008/")
+                    throw new InvalidDataException("The FLA ZIP does not contain an Adobe XFL document.");
+                while (reader.Read()) if (reader.Depth > 256) throw new InvalidDataException("XFL XML depth exceeds 256.");
+            }
+            catch (XmlException exception)
+            {
+                throw new InvalidDataException("The FLA ZIP contains invalid XFL XML: " + exception.Message, exception);
+            }
         }
         input.Position = 0;
 

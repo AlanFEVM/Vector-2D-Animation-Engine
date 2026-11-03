@@ -1,10 +1,11 @@
-using System.Drawing;
+﻿using System.Drawing;
 using System.Globalization;
 using System.Numerics;
 using System.Xml.Linq;
 
 namespace VectorAnimationEngine;
 
+internal sealed record FlashParseProgress(string Stage, int Completed = 0, int Total = 0, string Item = "");
 internal sealed record FlashImportDiagnostic(string Code, string Location, string Message);
 internal sealed record FlashDocumentImportResult(
     VectorProject Project, string Name, decimal Fps, int FrameCount, float Width, float Height,
@@ -20,14 +21,18 @@ internal static partial class FlashDocumentImporter
     private sealed record TimelineSpec(string Name, XElement Xml, int Duration, string SymbolType = "");
 
     internal static FlashDocumentImportResult Load(string path, bool editableGeometry = true)
+        => Load(path, editableGeometry, null);
+
+    internal static FlashDocumentImportResult Load(string path, bool editableGeometry, IProgress<FlashParseProgress>? progress)
     {
         var temporaryFiles = new List<string>();
-        try { return LoadCore(path, temporaryFiles, editableGeometry); }
+        try { return LoadCore(path, temporaryFiles, editableGeometry, progress); }
         catch { DeleteTemporaryImages(temporaryFiles); throw; }
     }
 
-    private static FlashDocumentImportResult LoadCore(string path, List<string> temporaryFiles, bool editableGeometry)
+    private static FlashDocumentImportResult LoadCore(string path, List<string> temporaryFiles, bool editableGeometry, IProgress<FlashParseProgress>? progress)
     {
+        progress?.Report(new("Reading Flash document"));
         using var source = new XflSource(path);
         var document = source.ReadXml("DOMDocument.xml");
         if (document.Name.LocalName != "DOMDocument") throw Failure("document", "Expected DOMDocument root.");
@@ -41,11 +46,39 @@ internal static partial class FlashDocumentImporter
             .Select((xml, index) => ParseTimeline(xml, Text(xml, "name", $"Scene {index + 1}"))).ToArray();
         if (timelines.Length is 0 or > 128) throw Failure("document", "Expected 1 to 128 scene timelines.");
         var library = new Dictionary<string, TimelineSpec>(StringComparer.Ordinal);
-        foreach (var include in Children(Child(document, "symbols"), "Include"))
+        var includedDefinitions = new Dictionary<string, (XElement Definition, string IncludeId)>(StringComparer.Ordinal);
+        var includes = Children(Child(document, "symbols"), "Include").ToArray();
+        if (includes.Length > MaximumSymbols) throw Failure("library", "Too many library symbols.");
+        var unavailableIncludes = new List<XElement>();
+        var readCount = 0;
+        foreach (var include in includes)
         {
+            progress?.Report(new("Reading Flash symbols", readCount++, includes.Length, Text(include, "href", "")));
             if (library.Count >= MaximumSymbols) throw Failure("library", "Too many library symbols.");
             var href = XflSource.SafeRelativePath(Required(include, "href"));
-            var symbolXml = source.ReadXml("LIBRARY/" + href);
+            var resolvedHref = href;
+            // Some Adobe documents encode the ampersands in Include one extra
+            // time. Decode exactly that layer, only if the exact key is absent.
+            // The stable itemID must also agree before adopting the fallback.
+            if (!source.HasEntry("LIBRARY/" + href) && href.Contains("&#038", StringComparison.Ordinal))
+            {
+                var candidate = XflSource.SafeRelativePath(href.Replace("&#038", "&", StringComparison.Ordinal));
+                if (source.HasEntry("LIBRARY/" + candidate)) resolvedHref = candidate;
+            }
+            if (!source.HasEntry("LIBRARY/" + resolvedHref))
+            {
+                unavailableIncludes.Add(include);
+                continue;
+            }
+            var symbolXml = source.ReadXml("LIBRARY/" + resolvedHref);
+            if (resolvedHref != href)
+            {
+                var includeId = Text(include, "itemID", "");
+                if (includeId.Length == 0 || !string.Equals(includeId, Text(symbolXml, "itemID", ""), StringComparison.Ordinal))
+                    throw Failure(href, "Adobe-escaped library path fallback requires matching Include and symbol itemID.");
+                diagnostics.Add(new("library-path-escape-resolved", href,
+                    "Resolved one extra Adobe ampersand-escape layer using the matching symbol itemID; exact ZIP/XFL paths take precedence."));
+            }
             if (symbolXml.Name.LocalName != "DOMSymbolItem") throw Failure(href, "Expected DOMSymbolItem root.");
             var name = Required(symbolXml, "name");
             var symbolType = Text(symbolXml, "symbolType", "movie clip");
@@ -56,9 +89,29 @@ internal static partial class FlashDocumentImporter
             if (symbolXml.Attribute("scale9Grid") is not null || Child(symbolXml, "scale9Grid") is not null)
                 throw Failure(name, "Scale-nine symbols require Adobe visual conversion.");
             var timeline = Child(Child(symbolXml, "timeline"), "DOMTimeline") ?? throw Failure(name, "Missing symbol timeline.");
+            if (includedDefinitions.TryGetValue(resolvedHref, out var previousDefinition))
+            {
+                if (!XNode.DeepEquals(previousDefinition.Definition, symbolXml))
+                    throw Failure(href, "A repeated library Include changed its symbol definition while reading.");
+                diagnostics.Add(new("library-repeated-include", href,
+                    "Repeated Include resolves to the same path and identical complete symbol XML; retained one library definition. "
+                    + "First Include itemID='" + previousDefinition.IncludeId + "', repeated Include itemID='"
+                    + Text(include, "itemID", "") + "', symbol itemID='" + Text(symbolXml, "itemID", "") + "'."));
+                continue;
+            }
             if (!library.TryAdd(name, ParseTimeline(timeline, name) with { SymbolType = symbolType })) throw Failure(name, "Duplicate library symbol name.");
+            includedDefinitions.Add(resolvedHref, (symbolXml, Text(include, "itemID", "")));
         }
+        progress?.Report(new("Reading Flash symbols", includes.Length, includes.Length));
+        progress?.Report(new("Validating Flash references"));
         ValidateReferences(library, timelines);
+        // Animate can leave obsolete Include records for files no longer in the
+        // archive. Admit them only after every real symbol reference resolves;
+        // never create an empty replacement for missing, referenced artwork.
+        foreach (var include in unavailableIncludes)
+            diagnostics.Add(new("library-stale-include", Required(include, "href"),
+                "The source lists an unavailable library file (itemID='" + Text(include, "itemID", "")
+                + "'). All actual symbol references resolve to available definitions; no replacement artwork was created."));
         foreach (var spec in library.Values.Concat(timelines)) PreflightVisualEffects(spec);
         foreach (var item in document.Descendants().Where(node => node.Name.LocalName is "DOMSoundItem" or "DOMVideoItem"))
             diagnostics.Add(new("media-not-converted", "library/" + Text(item, "name", item.Name.LocalName),
@@ -79,19 +132,29 @@ internal static partial class FlashDocumentImporter
             symbol.Scene.CreateEmpty(frameCount: spec.Duration); // All durations exist before any forward reference is sampled.
             symbols.Add(name, symbol);
         }
-        var bitmaps = ImportBitmaps(project, document, source, folders, temporaryFiles);
+        var bitmaps = ImportBitmaps(project, document, source, folders, temporaryFiles, diagnostics, progress);
         var builder = new ImportBuilder(project, symbols, bitmaps, fps, diagnostics, editableGeometry);
-        foreach (var (name, spec) in library) builder.Build(symbols[name], spec);
+        var buildTimer = System.Diagnostics.Stopwatch.StartNew();
+        var converted = 0;
+        foreach (var (name, spec) in library)
+        {
+            progress?.Report(new("Converting Flash symbols", converted, library.Count, name));
+            builder.Build(symbols[name], spec);
+            progress?.Report(new("Converting Flash symbols", ++converted, library.Count, name));
+        }
         for (var index = 0; index < timelines.Length; index++)
         {
             var spec = timelines[index];
+            progress?.Report(new("Converting Flash scenes", index, timelines.Length, spec.Name));
             var wrapper = library.Count == 0 && index == 0 ? project.DrawingObjects[0] : project.AddDrawingObject(spec.Name);
             wrapper.Name = spec.Name + " Timeline";
             builder.Build(wrapper, spec);
             var scene = index == 0 ? project.Scenes[0] : project.AddScene(spec.Name);
             scene.Name = spec.Name;
             RestoreNativeScene(project, scene, wrapper, fps, diagnostics);
+            progress?.Report(new("Converting Flash scenes", index + 1, timelines.Length, spec.Name));
         }
+        AppLog.Info($"Flash import build: total={buildTimer.Elapsed.TotalMilliseconds:F1} ms, shape={builder.ShapeMilliseconds:F1} ms, native={builder.NativeMilliseconds:F1} ms");
         var frameCount = timelines.Max(item => item.Duration);
         project.TrySetPlaybackSettings(fps, true, 0, frameCount - 1);
         return new(project, project.Name, fps, frameCount, width, height, diagnostics.AsReadOnly(), temporaryFiles.AsReadOnly());
@@ -101,7 +164,8 @@ internal static partial class FlashDocumentImporter
     {
         var duration = 1;
         var layers = Children(Child(xml, "layers"), "DOMLayer").ToArray();
-        if (layers.Length is 0 or > 4096) throw Failure(name, "Expected 1 to 4096 layers.");
+        // Animate permits empty library timelines; keep their identity and references.
+        if (layers.Length > 4096) throw Failure(name, "Expected at most 4096 layers.");
         foreach (var layer in layers)
         {
             var end = 0;
@@ -155,8 +219,89 @@ internal static partial class FlashDocumentImporter
         Dictionary<string, DrawingObjectDefinition> symbols, Dictionary<string, DrawingObjectDefinition> bitmaps,
         decimal fps, List<FlashImportDiagnostic> diagnostics, bool editableGeometry)
     {
+        internal double ShapeMilliseconds, NativeMilliseconds;
+        private bool TryBakeStationaryShapeTween(DrawingObjectDefinition target, int layer, string trackId,
+            XElement frame, XElement[] frames, int index, int start, int end, int duration, string location)
+        {
+            var elements = Children(Child(frame, "elements")).ToArray();
+            // A one-frame span has no intermediate samples, regardless of morph hints.
+            if (end - start == 1)
+            {
+                target.Scene.EditFrame = start;
+                target.Scene.Timeline.InsertBlankKeyframe(trackId, start);
+                foreach (var element in elements.Reverse())
+                    AddElement(target, layer, element, Matrix3x2.Identity, start, end, location, null, 0, null, "none", null);
+                if (end < duration) target.Scene.Timeline.InsertBlankKeyframe(trackId, end);
+                return true;
+            }
+            var morph = Child(frame, "MorphShape");
+            var segments = morph?.Descendants().Where(node => node.Name.LocalName == "MorphSegment").ToArray() ?? [];
+            // This supported subset moves gradient paint over stationary geometry.
+            if (segments.Any(segment => (string?)segment.Attribute("startPointA") != (string?)segment.Attribute("startPointB")
+                || segment.Elements().Any(curve => (string?)curve.Attribute("controlPointA") != (string?)curve.Attribute("controlPointB")
+                    || (string?)curve.Attribute("anchorPointA") != (string?)curve.Attribute("anchorPointB")))) return false;
+            if (elements.Length == 0) return true;
+            if (elements.Length != 1 || elements[0].Name.LocalName != "DOMShape") return false;
+            var nextElements = index + 1 < frames.Length ? Children(Child(frames[index + 1], "elements")).ToArray() : [];
+            var endpoint = nextElements.Length == 1 && nextElements[0].Name.LocalName == "DOMShape" ? nextElements[0] : null;
+            if (segments.Length != 0 && endpoint is null) return false;
+            if (morph is null && endpoint is not null) return false;
+            var matrices = elements[0].Descendants().Where(node => node.Name.LocalName == "Matrix").ToArray();
+            var nextMatrices = endpoint?.Descendants().Where(node => node.Name.LocalName == "Matrix").ToArray() ?? matrices;
+            if (matrices.Length != nextMatrices.Length) return false;
+            for (var sample = start; sample < end; sample++)
+            {
+                var clone = new XElement(elements[0]);
+                var output = clone.Descendants().Where(node => node.Name.LocalName == "Matrix").ToArray();
+                var t = (sample - start) / (float)Math.Max(1, end - start);
+                for (var m = 0; m < output.Length; m++)
+                    foreach (var name in new[] { "a", "b", "c", "d", "tx", "ty" })
+                    {
+                        var fallback = name is "a" or "d" ? 1f : 0f;
+                        var a = Number(matrices[m], name, fallback, -100000, 100000);
+                        var b = Number(nextMatrices[m], name, fallback, -100000, 100000);
+                        output[m].SetAttributeValue(name, (a + (b - a) * t).ToString(Invariant));
+                    }
+                target.Scene.EditFrame = sample;
+                target.Scene.Timeline.InsertBlankKeyframe(trackId, sample);
+                AddElement(target, layer, clone, Matrix3x2.Identity, sample, sample + 1, location,
+                    null, 0, null, "none", null);
+            }
+            if (end < duration) target.Scene.Timeline.InsertBlankKeyframe(trackId, end);
+            diagnostics.Add(new("stationary-shape-paint-tween-baked", location,
+                "Stationary shape tween baked to frame states with linearly interpolated paint matrices; Adobe easing parity is not verified."));
+            return true;
+        }
+
         private int _elements;
         private int _stateKeys;
+        private readonly Dictionary<string, BitmapFillSource> _bitmapFillSources = new(StringComparer.Ordinal);
+        private long _bitmapFillBytes;
+
+        private BitmapFillSource ResolveBitmapFill(string name, string location)
+        {
+            if (_bitmapFillSources.TryGetValue(name, out var cached)) return cached;
+            if (!bitmaps.TryGetValue(name, out var symbol) || !symbol.Scene.TryGetBitmapObjectData(0, out var data))
+                throw Failure(location, "Missing bitmap fill library image: " + name);
+            var asset = project.ImageAssets.FirstOrDefault(item => item.Id == data.ImageAssetId)
+                ?? throw Failure(location, "Missing bitmap fill pixel asset: " + name);
+            byte[] bytes;
+            if (Path.GetExtension(asset.SourcePath).Equals(".png", StringComparison.OrdinalIgnoreCase)) bytes = File.ReadAllBytes(asset.SourcePath);
+            else
+            {
+                using var bitmap = new Bitmap(asset.SourcePath);
+                using var png = new MemoryStream();
+                bitmap.Save(png, System.Drawing.Imaging.ImageFormat.Png);
+                bytes = png.ToArray();
+            }
+            _bitmapFillBytes += bytes.Length;
+            if (bytes.Length > ImportedSvgRasterizer.MaxImportSourceBytes || _bitmapFillBytes > 512L * 1024 * 1024)
+                throw Failure(location, "Bitmap fill pixels exceed the bounded SVG import budget.");
+            var result = new BitmapFillSource("data:image/png;base64," + Convert.ToBase64String(bytes), asset.PixelWidth,
+                asset.PixelHeight, asset.ImportSettings.FilterMode != ImageFilterMode.Point);
+            _bitmapFillSources.Add(name, result);
+            return result;
+        }
 
         internal void Build(DrawingObjectDefinition target, TimelineSpec spec)
         {
@@ -183,11 +328,12 @@ internal static partial class FlashDocumentImporter
                     native.LayerColorArgb[layerIndex] = ReadLayerColor(layer, location).ToArgb();
                 var kind = Text(layer, "layerType", "normal");
                 if (kind == "folder") native.LayerKinds[layerIndex] = DrawingLayerKind.Folder;
-                else if (kind is not ("normal" or "guided")) throw Failure(location, $"Layer type '{kind}' requires visual conversion (mask/rig layers are not approximated).");
+                else if (kind == "mask") { native.LayerKinds[layerIndex] = DrawingLayerKind.Mask; native.LayerLocked[layerIndex] = true; }
+                else if (kind is not ("normal" or "guided" or "masked")) throw Failure(location, $"Layer type '{kind}' requires visual conversion (mask/rig layers are not approximated).");
                 if (layer.Attribute("parentLayerIndex") is not null)
                 {
                     var parent = Integer(layer, "parentLayerIndex", -1, 0, layers.Length - 1);
-                    if (parent >= sourceIndex || Text(layers[parent], "layerType", "normal") is not ("folder" or "guide"))
+                    if (parent >= sourceIndex || Text(layers[parent], "layerType", "normal") is not ("folder" or "guide" or "mask"))
                         throw Failure(location, "Invalid or unsupported layer parent relationship.");
                     if (Text(layers[parent], "layerType", "normal") == "guide")
                     {
@@ -199,6 +345,11 @@ internal static partial class FlashDocumentImporter
                                 throw Failure(location, "Invalid guide folder relationship.");
                             native.LayerParentIds[layerIndex] = native.LayerIds[nativeIndices[folder]];
                         }
+                    }
+                    else if (Text(layers[parent], "layerType", "normal") == "mask")
+                    {
+                        if (!native.SetSharedLayerMask(layerIndex, nativeIndices[parent]))
+                            throw Failure(location, "Invalid Flash mask relationship.");
                     }
                     else native.LayerParentIds[layerIndex] = native.LayerIds[nativeIndices[parent]];
                 }
@@ -220,13 +371,16 @@ internal static partial class FlashDocumentImporter
                     var end = start + duration;
                     var frameLocation = location + $"/frame {start + 1}";
                     RejectVisualEffects(frame, frameLocation);
-                    EnsureChildNames(frame, frameLocation, "elements", "Actionscript", "script", "tweens", "motionObjectXML", "morphShape", "persistentData");
+                    EnsureChildNames(frame, frameLocation, "elements", "Actionscript", "script", "tweens", "motionObjectXML", "morphShape", "MorphShape", "persistentData");
                     if (frame.Descendants().Any(node => node.Name.LocalName is "Actionscript" or "script"))
                         diagnostics.Add(new("script-not-converted", frameLocation, "Frame scripts are not executed or converted; they may change playback behavior."));
                     if (!string.IsNullOrEmpty(frame.Attribute("soundName")?.Value))
                         diagnostics.Add(new("sound-not-converted", frameLocation, "Timeline sound is not converted."));
                     if (!string.IsNullOrEmpty(frame.Attribute("name")?.Value))
                         diagnostics.Add(new("label-not-converted", frameLocation, "Frame labels are not stored in the V2D timeline."));
+                    if (Text(frame, "tweenType", "none") == "shape"
+                        && TryBakeStationaryShapeTween(target, layerIndex, track.Id, frame, frames, frameIndex,
+                            start, end, spec.Duration, frameLocation)) continue;
                     var tween = Text(frame, "tweenType", "none");
                     if (Child(frame, "motionObjectXML") is not null || Child(frame, "morphShape") is not null)
                         throw Failure(frameLocation, "Object/shape tween geometry requires Adobe visual conversion.");
@@ -308,20 +462,34 @@ internal static partial class FlashDocumentImporter
             }
             else if (element.Name.LocalName == "DOMStaticText")
             {
-                EnsureChildNames(element, location, "matrix", "textRuns", "persistentData");
+                EnsureChildNames(element, location, "matrix", "transformationPoint", "textRuns", "filters", "color", "persistentData");
                 var runs = Children(Child(element, "textRuns"), "DOMTextRun").ToArray();
                 if (runs.Length != 1) throw Failure(location, "Multi-style static text is not mapped.");
                 var attrs = Child(Child(runs[0], "textAttrs"), "DOMTextAttrs") ?? throw Failure(location, "Missing static text style.");
-                var allowed = new[] { "aliasText", "lineHeight", "size", "bitmapSize", "face", "fillColor", "alpha", "bold", "italic", "alignment" };
-                if (attrs.HasElements || attrs.Attributes().Any(a => !a.IsNamespaceDeclaration && !allowed.Contains(a.Name.LocalName, StringComparer.Ordinal)))
-                    throw Failure(location, "Static text contains unsupported layout attributes.");
+                var allowed = new[] { "aliasText", "lineHeight", "lineSpacing", "size", "bitmapSize", "face", "fillColor", "alpha", "bold", "italic", "alignment", "autoKern" };
+                if (Number(attrs, "lineSpacing", 0, -100000, 100000) != 0)
+                    throw Failure(location, "Nonzero static-text lineSpacing is not mapped.");
+                var unsupportedAttributes = attrs.Attributes().Where(a => !a.IsNamespaceDeclaration
+                    && !allowed.Contains(a.Name.LocalName, StringComparer.Ordinal)).ToArray();
+                if (attrs.HasElements || unsupportedAttributes.Length > 0)
+                    throw Failure(location, "Static text contains unsupported layout data: "
+                        + string.Join(", ", unsupportedAttributes.Select(attribute => attribute.Name.LocalName + "=" + attribute.Value)
+                            .Concat(attrs.Elements().Select(child => child.Name.LocalName))) + ".");
                 var alignment = Text(attrs, "alignment", "left") switch
                 { "left" => TextHorizontalAlignment.Left, "center" => TextHorizontalAlignment.Center, "right" => TextHorizontalAlignment.Right,
                   _ => throw Failure(location, "Static text alignment is not mapped.") };
+                if (attrs.Attribute("autoKern") is not null)
+                    diagnostics.Add(new("text-kerning-approximated", location, "Flash autoKern uses native text layout; character spacing may differ."));
                 var family = Required(attrs, "face");
                 var width = Number(element, "width", 1, 1, 100000); var height = Number(element, "height", 1, 1, 100000);
+                // Animate omits size at its default but retains bitmapSize in twips.
+                // A 36px Adobe text run serializes as size=36, bitmapSize=720.
+                var fontSizePixels = attrs.Attribute("size") is not null
+                    ? Number(attrs, "size", 12, TextGeometry.MinimumFontSizePoints / 0.75f, TextGeometry.MaximumFontSizePoints / 0.75f)
+                    : Number(attrs, "bitmapSize", 240, TextGeometry.MinimumFontSizePoints / 0.75f * 20,
+                        TextGeometry.MaximumFontSizePoints / 0.75f * 20) / 20;
                 var data = new TextObjectData(Child(runs[0], "characters")?.Value ?? "", family,
-                    Number(attrs, "size", 12, TextGeometry.MinimumFontSizePoints / 0.75f, TextGeometry.MaximumFontSizePoints / 0.75f) * 0.75f,
+                    fontSizePixels * 0.75f,
                     Boolean(attrs, "bold", false) ? Boolean(attrs, "italic", false) ? TextFontStyle.BoldItalic : TextFontStyle.Bold
                         : Boolean(attrs, "italic", false) ? TextFontStyle.Italic : TextFontStyle.Regular, alignment,
                     new SizeF(VectorUnits.FromPixels(width), VectorUnits.FromPixels(height)));
@@ -341,7 +509,16 @@ internal static partial class FlashDocumentImporter
             else if (element.Name.LocalName == "DOMShape")
             {
                 EnsureChildNames(element, location, "matrix", "transformationPoint", "fills", "strokes", "edges", "persistentData");
-                var shape = ConvertShape(element, location);
+                var shapeTimer = System.Diagnostics.Stopwatch.StartNew();
+                var shape = ConvertShape(element, location, name => ResolveBitmapFill(name, location));
+                ShapeMilliseconds += shapeTimer.Elapsed.TotalMilliseconds;
+                if (shape.Sources.Count == 0) return;
+                if (shape.ApproximateHairline)
+                    diagnostics.Add(new("hairline-stroke-approximated", location,
+                        "Screen-space hairline strokes approximated as one source-pixel vector strokes; zoom and transforms may change their apparent width."));
+                if (shape.RepairedGaps != 0)
+                    diagnostics.Add(new("fill-subpixel-gaps-repaired", location,
+                        $"Connected {shape.RepairedGaps} fill gaps using nearest endpoints (maximum {shape.MaximumGap.ToString("0.###", Invariant)} source pixels; limit 4) with straight segments. Original curves remain unchanged; review the imported artwork."));
                 childSymbol = project.AddDrawingObject("XFL Shape");
                 childSymbol.Scene.CreateEmpty(frameCount: 1);
                 foreach (var source in shape.Sources.Reverse())
@@ -353,19 +530,27 @@ internal static partial class FlashDocumentImporter
                         new SizeF(VectorUnits.FromPixels(shape.Bounds.Width), VectorUnits.FromPixels(shape.Bounds.Height)), source, "XFL Shape");
                     // Gradient paints retain their original vector source until native
                     // gradient extraction can preserve every stop and affine mapping.
-                    bool vectorPaint = element.Descendants().Any(node => node.Name.LocalName is "LinearGradient" or "RadialGradient");
-                    if (editableGeometry && vectorPaint)
+                    var bitmapPaint = element.Descendants().Any(node => node.Name.LocalName == "BitmapFill");
+                    bool vectorPaint = bitmapPaint || element.Descendants().Any(node => node.Name.LocalName is "LinearGradient" or "RadialGradient");
+                    if (bitmapPaint)
+                        diagnostics.Add(new("bitmap-fill-svg-retained", location,
+                            "Bitmap paint retained with its vector paths, embedded PNG, affine mapping, tile/clamp boundaries and point/bilinear sampling. Native paint-node editing is unavailable; whole-stage Adobe pixel parity is not yet verified."));
+                    else if (editableGeometry && vectorPaint)
                         diagnostics.Add(new("gradient-vector-retained", location,
                             "Gradient shape retained as a whole SVG vector object; its original paths, paint stops and transforms remain in the project. Native node editing requires Break Apart, which may change the gradient representation."));
                     if (editableGeometry && !vectorPaint)
                     {
                         try
                         {
-                            part.Scene.BreakApartImportedSvgObjects([svgObject], requireExactGeometry: true);
+                            var nativeTimer = System.Diagnostics.Stopwatch.StartNew();
+                            try { part.Scene.BreakApartImportedSvgObjects([svgObject], requireExactGeometry: true); }
+                            finally { NativeMilliseconds += nativeTimer.Elapsed.TotalMilliseconds; }
                         }
                         catch (InvalidDataException exception) when (exception.Message == "The SVG requires flattened, omitted, or approximated geometry; exact editable conversion stopped."
                             || exception.Message == "Non-uniform SVG placement requires a flattened stroke outline; exact editable conversion stopped."
                             || exception.Message == "An SVG fill contour cannot be preserved as an editable native curve."
+                            || exception.Message == "An SVG fill collapses at native coordinate precision."
+                            || exception.Message == "The SVG contains no editable vector geometry."
                             || exception.Message == "An SVG part cannot be preserved as editable native geometry."
                             || exception.Message == "SVG break-apart output must not exceed 500000 points.")
                         {
@@ -395,7 +580,18 @@ internal static partial class FlashDocumentImporter
             if (symbolType == "button") throw Failure(location, "Button instances are not converted.");
             if (symbolType is not ("graphic" or "movie clip")) throw Failure(location, "Unknown symbol instance type: " + symbolType);
             if (loop is not ("loop" or "play once" or "single frame")) throw Failure(location, $"Unknown graphic playback mode: {loop}.");
-            if (firstFrame >= childSymbol.FrameCount) throw Failure(location, "Symbol firstFrame exceeds its duration.");
+            if (firstFrame >= childSymbol.FrameCount)
+            {
+                // Animate retains stale firstFrame offsets on single-frame looping
+                // graphics. All offsets render the same sole frame, including nested content.
+                if (symbolType == "graphic" && loop == "loop" && childSymbol.FrameCount == 1)
+                {
+                    diagnostics.Add(new("single-frame-loop-normalized", location,
+                        $"Looping one-frame graphic starts at frame {firstFrame}; its sole frame is sampled without changing its content or transform."));
+                    firstFrame = 0;
+                }
+                else throw Failure(location, "Symbol firstFrame exceeds its duration.");
+            }
             if (symbolType == "movie clip" && childSymbol.FrameCount > 1)
                 diagnostics.Add(new("movie-clip-sampled", location, "Movie clip playback is sampled from placement; independent scripted playback is not converted."));
             var endpointState = endpoint is null ? basis : ApplyAppearance(StateFromMatrix(basis, ReadMatrix(endpoint) * inherited, location), endpoint, location);
@@ -455,13 +651,16 @@ internal static partial class FlashDocumentImporter
             || Text(curves[0], "target", "all") != "all" || curves[0].HasElements)
             throw Failure(location, "Only one Ease curve targeting all properties is supported.");
         var method = Text(curves[0], "method", "none");
-        if (method is not ("none" or "cubicIn" or "cubicOut" or "cubicInOut"))
+        if (method is not ("none" or "quadIn" or "quadOut" or "quadInOut" or "cubicIn" or "cubicOut" or "cubicInOut"))
             throw Failure(location, $"Ease method '{method}' is not mapped.");
         return method;
     }
 
     private static float EvaluateEaseMethod(string method, float t) => method switch
     {
+        "quadIn" => t * t,
+        "quadOut" => t * (2 - t),
+        "quadInOut" => t < 0.5f ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t),
         "cubicIn" => t * t * t,
         "cubicOut" => 1 - (1 - t) * (1 - t) * (1 - t),
         "cubicInOut" => t < 0.5f ? 4 * t * t * t : 1 - MathF.Pow(-2 * t + 2, 3) / 2,
@@ -602,7 +801,7 @@ internal static partial class FlashDocumentImporter
     private static void RejectVisualEffects(XElement xml, string location)
     {
         var blend = ReadBlendMode(xml, location);
-        if (blend != LayerBlendMode.Normal && xml.Name.LocalName is not ("DOMSymbolInstance" or "DOMBitmapInstance"))
+        if (blend != LayerBlendMode.Normal && xml.Name.LocalName is not ("DOMSymbolInstance" or "DOMBitmapInstance" or "DOMStaticText"))
             throw Failure(location, $"Blend mode '{Text(xml, "blendMode", "normal")}' on {xml.Name.LocalName} is not mapped.");
         ReadFilters(xml, location);
         if (Child(xml, "matrix3D") is not null || Child(xml, "Matrix3D") is not null
@@ -620,12 +819,12 @@ internal static partial class FlashDocumentImporter
             throw Failure(location, "A Flash filter stack exceeds the supported limit of 32 filters.");
         if (filters.Any(item => item.Name.LocalName != "BlurFilter"))
         {
-            if (xml.Name.LocalName is not ("DOMSymbolInstance" or "DOMBitmapInstance"))
+            if (xml.Name.LocalName is not ("DOMSymbolInstance" or "DOMBitmapInstance" or "DOMStaticText"))
                 throw Failure(location, "Filters on this element cannot be represented as an isolated instance.");
             return new SymbolFilters { FlashFilters = new SymbolFlashFilterStack(filters.Select(item => ReadFlashFilter(item, location)).ToArray()) };
         }
         var filter = filters[0];
-        if (xml.Name.LocalName is not ("DOMSymbolInstance" or "DOMBitmapInstance")
+        if (xml.Name.LocalName is not ("DOMSymbolInstance" or "DOMBitmapInstance" or "DOMStaticText")
             || filters.Any(item => item.Name.LocalName != "BlurFilter"))
             throw Failure(location, $"Filter '{filter.Name.LocalName}' on {xml.Name.LocalName} is not mapped exactly (blurX={Text(filter, "blurX", "default")}, blurY={Text(filter, "blurY", "default")}, quality={Text(filter, "quality", "default")}, filters={filters.Length}, attrs={string.Join(",", filter.Attributes().Select(attribute => attribute.Name.LocalName))}, children={string.Join(",", filter.Elements().Select(child => child.Name.LocalName))}). Conversion stopped without omitting the effect.");
         if (filters.Any(item => item.HasElements || item.Attributes().Any(attribute =>

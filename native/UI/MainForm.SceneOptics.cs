@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 
 namespace VectorAnimationEngine;
 
@@ -62,7 +62,7 @@ internal sealed partial class MainForm
     private void RefreshSceneOpticsInspector()
     {
         var sceneWorkspace = IsSceneWorkspaceSelected;
-        var scene3D = sceneWorkspace && IsSceneCompositionContext() && IsScene3DView() && !IsSceneMaskEditing();
+        var scene3D = _applicationSettings.ExperimentalSceneLightingEnabled && sceneWorkspace && IsSceneCompositionContext() && IsScene3DView() && !IsSceneMaskEditing();
         var scene = scene3D ? ActiveScene() : null;
         if (!scene3D
             && !_sceneLightingPanel.Visible
@@ -550,7 +550,7 @@ internal sealed partial class MainForm
 
     private void RefreshSceneLightGizmo()
     {
-        var scene3D = IsSceneWorkspaceSelected
+        var scene3D = _applicationSettings.ExperimentalSceneLightingEnabled && IsSceneWorkspaceSelected
             && IsSceneCompositionContext()
             && IsScene3DView()
             && !IsSceneMaskEditing();

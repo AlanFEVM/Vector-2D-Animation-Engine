@@ -8,6 +8,7 @@ internal static partial class Benchmark
     {
         RunSceneDrawingInteractionRegression();
         RunSceneToolPaletteControlsRegression();
+        RunStageShortcutEditingRegression();
         RunSceneSymbolEditingRegression();
         RunRecursiveSceneSymbolEditingRegression();
         RunReferenceCameraKeyboardNavigationFixtureRegression();
@@ -851,6 +852,15 @@ internal static partial class Benchmark
 
             var projectedStart = Point.Round(projectedCenter);
             var projectedEnd = new Point(projectedStart.X + 28, projectedStart.Y + 18);
+            stageMouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, projectedStart.X, projectedStart.Y, 0)]);
+            if (spatialTransformEditSessionField.GetValue(form) is null)
+                throw new InvalidOperationException("Projected cancel fixture could not begin a move.");
+            var compositionBeforeCancel = RequireField(typeof(MainForm), "_sceneCompositionResult").GetValue(form);
+            RequireMethod(typeof(MainForm), "CancelProjectedSceneMovePointer").Invoke(form, null);
+            if (!ReferenceEquals(compositionBeforeCancel, RequireField(typeof(MainForm), "_sceneCompositionResult").GetValue(form))
+                || !activeScene.Instances.Any(instance => ReferenceEquals(instance, sourceSceneInstance))
+                || spatialTransformEditSessionField.GetValue(form) is not null || stage.Capture)
+                throw new InvalidOperationException("Cancelling an unchanged projected move rebuilt the scene or retained its session.");
             var instanceStart = sourceSceneInstance.EvaluateState(0);
             var undoCountBeforeMove = SceneUndoCount();
             stageMouseDown.Invoke(
@@ -2334,8 +2344,15 @@ internal static partial class Benchmark
             var endpoint = geometry.Endpoints[(int)axis - 1];
             var dx = endpoint.X - geometry.Origin.X;
             var dy = endpoint.Y - geometry.Origin.Y;
-            return MathF.Sqrt(dx * dx + dy * dy) >= 4f
-                ? Point.Round(endpoint)
+            var length = MathF.Sqrt(dx * dx + dy * dy);
+            if (length >= 4f) return Point.Round(endpoint);
+            // The pointer session preserves the direction of short projected
+            // axes; only an effectively zero projection falls back to up.
+            // Moving up for every short axis can instead request negative
+            // thickness, which correctly clamps to zero in the product.
+            return length > 0.001f
+                ? Point.Round(new PointF(geometry.Origin.X + dx / length * 72f,
+                    geometry.Origin.Y + dy / length * 72f))
                 : new Point(origin.X, origin.Y - 72);
         }
         void BeginMovedPointerGesture()
@@ -2731,7 +2748,14 @@ internal static partial class Benchmark
             MovePointer(scaleZEndpoint);
             if (CurrentState().ScaleZ <= 0)
             {
-                throw new InvalidOperationException("S Z did not extend the selected 2D instance thickness in vector units.");
+                var pointer = pointerSessionField.GetValue(form);
+                object? PointerValue(string name) => pointer?.GetType().GetProperty(name)?.GetValue(pointer);
+                throw new InvalidOperationException(
+                    $"S Z did not extend the selected 2D instance thickness in vector units. "
+                    + $"ScaleZ={CurrentState().ScaleZ}, origin={scaleOrigin}, endpoint={scaleZEndpoint}, "
+                    + $"cursor={stage.PointToClient(Cursor.Position)}, modal={ModalActive()}/{ModalAxis()}, "
+                    + $"start={PointerValue("StartScreen")}, axis={PointerValue("ScreenAxis")}, "
+                    + $"axisLength={PointerValue("ScreenAxisLength")}, worldLength={PointerValue("AxisWorldLength")}. ");
             }
             ReleasePointer(MouseButtons.Left, scaleZEndpoint);
             if (ModalActive()
@@ -2846,6 +2870,7 @@ internal static partial class Benchmark
             editor.Select();
             editor.Focus();
             Application.DoEvents();
+            var editorFocusedBeforeCancel = editor.Focused;
             InvokeKey(Keys.X);
             if (!editor.Focused
                 || ModalActive()
@@ -2854,7 +2879,11 @@ internal static partial class Benchmark
                 || UndoCount() != undoBeforeFocusCancel)
             {
                 throw new InvalidOperationException(
-                    "A focused editor did not receive its key after canceling the active spatial transform.");
+                    "A focused editor did not receive its key after canceling the active spatial transform: "
+                    + $"focusedBefore={editorFocusedBeforeCancel}, focusedAfter={editor.Focused}, "
+                    + $"modal={ModalActive()}, editSession={editSessionField.GetValue(form) is not null}, "
+                    + $"transformRestored={SameTransform(CurrentState(), focusCancelStart)}, "
+                    + $"undoBefore={undoBeforeFocusCancel}, undoAfter={UndoCount()}, activeControl={form.ActiveControl?.GetType().Name}.");
             }
             InvokeKey(Keys.G);
             if (ModalActive() || editSessionField.GetValue(form) is not null)
@@ -3634,16 +3663,15 @@ internal static partial class Benchmark
             0,
             new HashSet<int> { lowerObject });
 
-        if (!MainForm.TryResolveCompositionInstance(
+        var unmaskedCenterResolved = MainForm.TryResolveCompositionInstance(
                 composition,
                 compositionResult,
                 instances,
                 PointF.Empty,
                 0,
                 1,
-                out var unmaskedCenter)
-            || !ReferenceEquals(unmaskedCenter, topInstance)
-            || !MainForm.TryResolveCompositionInstance(
+                out var unmaskedCenter);
+        var maskedCenterResolved = MainForm.TryResolveCompositionInstance(
                 composition,
                 compositionResult,
                 instances,
@@ -3651,11 +3679,16 @@ internal static partial class Benchmark
                 0,
                 1,
                 out var maskedCenter,
-                [hiddenTopClip])
+                [hiddenTopClip]);
+        if (!unmaskedCenterResolved
+            || !ReferenceEquals(unmaskedCenter, topInstance)
+            || !maskedCenterResolved
             || !ReferenceEquals(maskedCenter, lowerInstance))
         {
             throw new InvalidOperationException(
-                "Scene Mask point selection did not skip a clipped top instance while preserving unmasked stack order.");
+                "Scene Mask point selection did not skip a clipped top instance while preserving unmasked stack order: "
+                + $"unmasked={unmaskedCenterResolved}/{unmaskedCenter?.Id}, masked={maskedCenterResolved}/{maskedCenter?.Id}, "
+                + $"lowerObject={lowerObject}, topObject={topObject}.");
         }
 
         if (MainForm.TryResolveCompositionInstance(
@@ -3690,6 +3723,24 @@ internal static partial class Benchmark
             throw new InvalidOperationException(
                 "Scene Mask marquee selection did not use the fully enclosed visible clipped geometry.");
         }
+
+        var strokeScene = new VectorScene();
+        strokeScene.CreateEmpty(layers: 2);
+        var coveredStroke = strokeScene.AddLineSegment(1, new PointF(-50, 0), new PointF(50, 0),
+            4, Color.Transparent, Color.Black, 4);
+        var opaqueCover = strokeScene.AddObject(0, PointF.Empty, new SizeF(100, 100),
+            0, 0, Color.Red, 4, ShapeKind.Rectangle);
+        var coveredHit = strokeScene.HitTestElement(PointF.Empty, 0, 1, _ => true);
+        var revealedHit = strokeScene.HitTestElement(PointF.Empty, 0, 1, index => index != opaqueCover);
+        if (!coveredHit.IsValid || coveredHit.Key.ObjectIndex != opaqueCover
+            || !revealedHit.IsValid || revealedHit.Key.ObjectIndex != coveredStroke)
+        {
+            throw new InvalidOperationException(
+                "Filtered selection must retain visible fill occlusion and reveal the stroke when its cover is clipped: "
+                + $"covered={coveredHit.IsValid}/{coveredHit.Key}, revealed={revealedHit.IsValid}/{revealedHit.Key}, "
+                + $"stroke={coveredStroke}, cover={opaqueCover}.");
+        }
+        Console.WriteLine("scene_mask_selection_filtered_occlusion=ok");
     }
 
     private static void RunMarqueeToolPolicyRegression()
@@ -6430,7 +6481,7 @@ internal static partial class Benchmark
         var strokeScene = new VectorScene();
         strokeScene.CreateEmpty();
         strokeScene.AddImportedSvgObject(0, PointF.Empty, new SizeF(5_500, 4_500), thinStrokeSource);
-        var strokePath = strokeScene.BreakApartImportedSvgObjects([0]).ProducedObjects.Single();
+        var strokePath = strokeScene.BreakApartImportedSvgObjects([0], createDrawingLayers: false).ProducedObjects.Single();
         AssertTimeline(strokeScene.TryGetFreehandBezierWorldNodes(strokePath, out var originalNodes)
             && originalNodes.Length == 2 && Math.Abs(strokeScene.Stroke[strokePath] - 10f) < 0.01f
             && !strokeScene.HasFill(strokePath),
@@ -8356,6 +8407,8 @@ internal static partial class Benchmark
                 "Dense zoom rebuilt unchanged selection commands during wheel frames.");
             AssertTimeline(stage.LastStats.TileLod && renderer.LastLodDetailObjectDraws == 0,
                 "Dense all-selected zoom bypassed tile preview or redrew selected object details.");
+            // Exercise the real idle-completion path instead of explicitly invalidating
+            // unchanged world-space geometry with Stage.Invalidate().
             RequireMethod(typeof(StageControl), "EndZoomLodPreview").Invoke(stage, [true]);
             stage.Refresh();
             Console.WriteLine($"dense_zoom_geometry_builds={renderer.SelectionGeometryBuilds - geometryBuilds},reuses={renderer.SelectionGeometryReuses}");
@@ -8989,6 +9042,11 @@ internal static partial class Benchmark
         var straightEnd = new PointF(-240, 240);
         var straight = scene.AddLineSegment(scene.ActiveLayer, PointF.Empty, straightEnd,
             12, Color.Transparent, Color.Black, 6);
+        scene.CompleteDeferredBuild();
+        // Packed line creation quantizes chord length; preserve the actual baseline endpoints.
+        scene.TryGetLineEndpoint(quadratic, true, out outerStart);
+        scene.TryGetLineEndpoint(cubic, false, out outerEnd);
+        scene.TryGetLineEndpoint(straight, false, out straightEnd);
         scene.TryGetLineCubic(cubic, out _, out var originalC1, out var originalC2, out _);
         scene.SetLineEndpoint(cubic, true, PointF.Empty, outerEnd, originalC1, originalC2, keepStraight: false);
         scene.SetLineEndpoint(straight, true, PointF.Empty, straightEnd, PointF.Empty, PointF.Empty, keepStraight: true);
@@ -9083,7 +9141,7 @@ internal static partial class Benchmark
             var neighbor = objectIndex == cubic ? quadratic : cubic;
             scene.TryGetLineCubic(neighbor, out var neighborStart, out var neighborC1,
                 out var neighborC2, out var neighborEnd);
-            var movedEndpoint = new PointF(endpoint.X - 60, endpoint.Y + 120);
+            var movedEndpoint = VectorUnits.Quantize(new PointF(endpoint.X - 60, endpoint.Y + 120));
             Pointer(down, endpoint);
             Pointer(move, movedEndpoint);
             AssertTimeline(scene.TryGetLineEndpoint(objectIndex, startEndpoint, out var actual)

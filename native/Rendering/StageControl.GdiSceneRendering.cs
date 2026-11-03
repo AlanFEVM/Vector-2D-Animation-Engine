@@ -48,7 +48,9 @@ internal sealed partial class StageControl : Control
                 var wx = tx * tileW - scene.StageWidth * 0.5f;
                 var wy = ty * tileH - scene.StageHeight * 0.5f;
                 var screen = WorldToScreen(wx, wy);
-                g.FillRectangle(BrushFor(scene.OverviewArgb[tile]), screen.X, screen.Y, Math.Max(1, WorldLengthToScreen(tileW) + 1), Math.Max(1, WorldLengthToScreen(tileH) + 1));
+                if (PlanarCanvasRotation == 0) g.FillRectangle(BrushFor(scene.OverviewArgb[tile]), screen.X, screen.Y, Math.Max(1, WorldLengthToScreen(tileW) + 1), Math.Max(1, WorldLengthToScreen(tileH) + 1));
+                else g.FillPolygon(BrushFor(scene.OverviewArgb[tile]), [WorldToScreen(wx, wy), WorldToScreen(wx + tileW, wy),
+                    WorldToScreen(wx + tileW, wy + tileH), WorldToScreen(wx, wy + tileH)]);
                 draws++;
             }
         }
@@ -84,7 +86,9 @@ internal sealed partial class StageControl : Control
                 var wx = tx * tileW - scene.StageWidth * 0.5f;
                 var wy = ty * tileH - scene.StageHeight * 0.5f;
                 var screen = WorldToScreen(wx, wy);
-                g.FillRectangle(BrushFor(scene.TileArgb[tile]), screen.X, screen.Y, Math.Max(1, WorldLengthToScreen(tileW) + 1), Math.Max(1, WorldLengthToScreen(tileH) + 1));
+                if (PlanarCanvasRotation == 0) g.FillRectangle(BrushFor(scene.TileArgb[tile]), screen.X, screen.Y, Math.Max(1, WorldLengthToScreen(tileW) + 1), Math.Max(1, WorldLengthToScreen(tileH) + 1));
+                else g.FillPolygon(BrushFor(scene.TileArgb[tile]), [WorldToScreen(wx, wy), WorldToScreen(wx + tileW, wy),
+                    WorldToScreen(wx + tileW, wy + tileH), WorldToScreen(wx, wy + tileH)]);
                 draws++;
             }
         }
@@ -118,10 +122,13 @@ internal sealed partial class StageControl : Control
             return DrawCollectedObjectsComposited(g, scene, drawLimit);
         }
 
+        var maskPlan = CompositionMasksFor(scene);
+        using var masks = maskPlan is null ? null : new SceneCompositionMaskRegions(
+            scene, maskPlan, Frame, index => CreateCompositionMaskObjectPaths(scene, index));
         var drawn = _renderOrder.DrawLayers(
             scene,
             drawLimit,
-            (layer, objects, start) => DrawLayerObjects(g, scene, layer, objects, start),
+            (layer, objects, start) => DrawLayerObjects(g, scene, layer, objects, start, masks, maskPlan),
             includeEmptyLayers: IsUnderlayHostScene(scene),
             firstLayer: _underlayDrawingRange?.Start ?? 0,
             endLayer: _underlayDrawingRange is { } range ? range.Start + range.Count : int.MaxValue);
@@ -145,9 +152,19 @@ internal sealed partial class StageControl : Control
         }
 
         var compositor = destinationCompositor ?? LayerCompositor();
+        var maskPlan = CompositionMasksFor(scene);
+        using var masks = maskPlan is null ? null : new SceneCompositionMaskRegions(
+            scene, maskPlan, Frame, index => CreateCompositionMaskObjectPaths(scene, index));
+        Region? LayerClip(int layer) => masks?.CreateLayerBoundaryClip(layer);
         void DrawLayer(Graphics layerGraphics, int layer)
         {
             if (_underlayDrawingRange is { } range && (layer < range.Start || layer >= range.Start + range.Count)) return;
+            if (maskPlan is not null)
+            {
+                if (scene.ShouldRenderLayerContent(layer) && !IsCompositionMaskArtworkHidden(scene, maskPlan, layer))
+                    DrawLayerContents(layerGraphics, scene, layer, _renderOrder.GetLayerObjects(layer), starts[layer]);
+                return;
+            }
             DrawLayerObjects(
                 layerGraphics,
                 scene,
@@ -159,9 +176,9 @@ internal sealed partial class StageControl : Control
         {
             graphics.Flush(FlushIntention.Sync);
             using var clip = graphics.Clip;
-            compositor.CompositeRangeOnto(destinationSurface, scene, selectedRange.Start, selectedRange.Count, clip, DrawLayer);
+            compositor.CompositeRangeOnto(destinationSurface, scene, selectedRange.Start, selectedRange.Count, clip, DrawLayer, LayerClip);
         }
-        else compositor.CompositeTo(graphics, scene, DrawLayer);
+        else compositor.CompositeTo(graphics, scene, DrawLayer, LayerClip);
         return new RenderStats(_renderOrder.VisibleCount, drawn, _renderOrder.VisibleAtoms, 0, _renderOrder.ScannedCount, false);
     }
 
@@ -366,8 +383,22 @@ internal sealed partial class StageControl : Control
         _collisionTerrainOverlayObjects = [];
     }
 
-    private void DrawLayerObjects(Graphics graphics, VectorScene scene, int layer, IReadOnlyList<int> objects, int start)
+    private void DrawLayerObjects(Graphics graphics, VectorScene scene, int layer, IReadOnlyList<int> objects, int start,
+        SceneCompositionMaskRegions? masks = null, SceneCompositionMaskPlan? maskPlan = null)
     {
+        if (masks is not null && maskPlan is not null)
+        {
+            if (!scene.ShouldRenderLayerContent(layer) || IsCompositionMaskArtworkHidden(scene, maskPlan, layer)) return;
+            using var clip = masks.CreateLayerClip(layer);
+            var saved = graphics.Save();
+            try
+            {
+                if (clip is not null) graphics.SetClip(clip, CombineMode.Intersect);
+                DrawLayerContents(graphics, scene, layer, objects, start);
+            }
+            finally { graphics.Restore(saved); }
+            return;
+        }
         var layerKind = scene.GetLayerKind(layer);
         if (!scene.ShouldRenderLayerContent(layer)) return;
         if (layerKind == DrawingLayerKind.Mask)
@@ -551,7 +582,7 @@ internal sealed partial class StageControl : Control
                 try
                 {
                     graphics.TranslateTransform(screen.X, screen.Y);
-                    graphics.RotateTransform(scene.Angle[objectIndex] * 57.29578f);
+                    graphics.RotateTransform((scene.Angle[objectIndex] + PlanarCanvasRotation) * 57.29578f);
                     graphics.DrawRectangle(pen, -width * 0.5f, -height * 0.5f, width, height);
                 }
                 finally
@@ -670,7 +701,7 @@ internal sealed partial class StageControl : Control
                 && scene.TryGetImportedSvgSource(i, out var source)
                 && !string.IsNullOrWhiteSpace(source))
             {
-                DrawImportedSvg(g, source, screen, w, h, scene.Angle[i], Color.FromArgb(scene.Argb[i]).A / 255f);
+                DrawImportedSvg(g, source, screen, w, h, scene.Angle[i] + PlanarCanvasRotation, Color.FromArgb(scene.Argb[i]).A / 255f);
             }
             return;
         }
@@ -768,11 +799,11 @@ internal sealed partial class StageControl : Control
             return;
         }
 
-        if (Math.Abs(scene.Angle[i]) > 0.01f || shape is not ShapeKind.Rectangle)
+        if (Math.Abs(scene.Angle[i] + PlanarCanvasRotation) > 0.00001f || shape is not ShapeKind.Rectangle)
         {
             var state = g.Save();
             g.TranslateTransform(screen.X, screen.Y);
-            g.RotateTransform(scene.Angle[i] * 57.29578f);
+            g.RotateTransform((scene.Angle[i] + PlanarCanvasRotation) * 57.29578f);
             DrawLocalShape(g, shape, shapeVertexCount, brush, strokeColor, scene.Stroke[i], screenStroke, w, h, pass);
             g.Restore(state);
             return;
@@ -1455,7 +1486,7 @@ internal sealed partial class StageControl : Control
                 ? InterpolationMode.NearestNeighbor
                 : InterpolationMode.HighQualityBicubic;
             graphics.TranslateTransform(screenCenter.X, screenCenter.Y);
-            graphics.RotateTransform(scene.Angle[objectIndex] * 57.29578f);
+            graphics.RotateTransform((scene.Angle[objectIndex] + PlanarCanvasRotation) * 57.29578f);
             var destination = new RectangleF(
                 -screenWidth * 0.5f,
                 -screenHeight * 0.5f,
@@ -2167,6 +2198,15 @@ internal sealed partial class StageControl : Control
         DrawWorldGridLines(g, scale, bounds.Left, bounds.Right, vertical: true);
         DrawWorldGridLines(g, scale, bounds.Top, bounds.Bottom, vertical: false);
 
+        if (PlanarCanvasRotation != 0)
+        {
+            using var xAxis = new Pen(Color.FromArgb(PlanarGridAlpha(205), 214, 82, 82), 1.6f);
+            using var yAxis = new Pen(Color.FromArgb(PlanarGridAlpha(205), 82, 190, 122), 1.6f);
+            g.DrawLine(xAxis, WorldToScreen(bounds.Left, 0), WorldToScreen(bounds.Right, 0));
+            g.DrawLine(yAxis, WorldToScreen(0, bounds.Top), WorldToScreen(0, bounds.Bottom));
+            return;
+        }
+
         if (origin.Y >= 0 && origin.Y <= Height)
         {
             _gridPen.Color = Color.FromArgb(PlanarGridAlpha(205), 214, 82, 82);
@@ -2318,6 +2358,16 @@ internal sealed partial class StageControl : Control
             var style = WorldGridLayout.ResolveLineStyle(index, scale, PlanarWorldGridOpacity);
             if (style.Color.A == 0) continue;
             var world = index * scale.StepWorld;
+            if (PlanarCanvasRotation != 0)
+            {
+                var bounds = VisibleWorldBounds();
+                _gridPen.Color = style.Color;
+                _gridPen.Width = style.Width;
+                var a = vertical ? new PointF((float)world, bounds.Top) : new PointF(bounds.Left, (float)world);
+                var b = vertical ? new PointF((float)world, bounds.Bottom) : new PointF(bounds.Right, (float)world);
+                graphics.DrawLine(_gridPen, WorldToScreen(a), WorldToScreen(b));
+                continue;
+            }
             var position = vertical ? WorldToScreen((float)world, 0).X : WorldToScreen(0, (float)world).Y;
             if (vertical && (position < -style.Width || position > Width + style.Width)
                 || !vertical && (position < -style.Width || position > Height + style.Width))
@@ -2418,9 +2468,9 @@ internal sealed partial class StageControl : Control
     {
         var scale = 0.035f * _referenceZoomScale;
         var perspective = ReferencePerspectiveScale(point.Z);
-        return new PointF(
+        return RotateCanvasScreenPoint(new PointF(
             Width * 0.5f + point.X * scale * perspective,
-            Height * 0.58f - point.Y * scale * perspective);
+            Height * 0.58f - point.Y * scale * perspective));
     }
 
     private static bool ClipNear(ref Point3 a, ref Point3 b)

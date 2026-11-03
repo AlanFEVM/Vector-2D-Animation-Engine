@@ -1,5 +1,27 @@
 # Vector 2D Animation Engine 用户指南
 
+面向创作者的操作入门请阅读 [中文图文使用手册（HTML）](manual/index.html)，包含实机截图、绘制与动画步骤，以及可离线传递的单文件版本。
+
+开启“吸附”和“紧贴”后，绘制线段或拖动线段端点时，会轻吸附到水平、15°、30°、45°、60°、垂直及其镜像方向。角度偏差不超过 4° 且端点修正距离在当前屏幕吸附容差内时才生效，远离目标方向后自由绘制；拖动端点以线段另一端为基准。对象／辅助线吸附与 C 键端点连接优先，Shift 或显式角度吸附仍按角度步长约束。
+With Snap and Tight Fit enabled, line drawing and endpoint drags gently snap to horizontal, 15°, 30°, 45°, 60°, vertical and mirrored directions. Both a 4° angular limit and the current screen tolerance apply. Endpoint drags use the opposite endpoint as origin. Object/guide snapping and C endpoint connection take priority; Shift and explicit angle snapping retain the configured angle step.
+
+吸附升级：开启顶部“吸附”总开关后，“紧贴”在移动时比较选中内容整体的可见边界，使边缘贴合；“对齐”比较边缘与中心，横纵方向独立求解，并可匹配同一行／列中的等距和连续重复间距。多选拖动使用整体位移，内部相对位置保持不变。基础绘图中的绘制点、节点和自由变换移动／缩放也可吸附到标尺辅助线与已设置画布的边缘、中心；二维场景前视中的实例移动支持边界、中心和间距对齐。三维及其他参考视图继续使用原有空间吸附，避免将深度压到二维。
+
+右键顶部“吸附”“紧贴”或“对齐”按钮，可分别设置辅助线、画布和等距选项，并选择 4／8／12／16 逻辑像素的容差（默认 8，按 DPI 换算）。轴向目标在 1.5 倍容差外脱离，减少临近目标抖动。命中关系以偏好设置的高亮色参考线显示，等距显示两段间距和 px 数值；松手、取消、切换编辑上下文或离开空闲舞台后清除参考线。普通对齐调整位置，C 键端点连接仍使用既有连接规则。
+
+选中内容后，在舞台右键菜单“对齐与分布”中使用六向对齐、水平／垂直等间距分布。对齐基准可选择“选择范围”“主选对象”或“画布”；主选对象为当前主要选中项，对齐时保持原位。分布要求至少三个对象，以选择范围或画布为跨度，比较对象之间的空隙而非中心距离。每次命令形成一次撤销；局部填色／描边先按既有规则实体化，再执行编辑与局部拓扑整理。混合本地图形与嵌套实例的对齐命令暂不提供。
+
+Snapping: Tight Fit compares the moved selection's visual edges; Align independently matches edges and centers on both axes, equal gaps between neighbours, and repeated gaps in the same row or column. Multi-selection movement preserves internal offsets. Basic Drawing points and Free Transform move/resize can snap to ruler guides and configured canvas edges/center; front-view 2D scene instances support layout snapping while other spatial views retain constrained 3D snapping. Right-click Snap, Tight Fit or Align for guide/canvas/spacing options and 4/8/12/16 logical-pixel tolerance (default 8, DPI-scaled). Axis targets release beyond 1.5 times the tolerance. Accent-colour guides show the relationship and matched gaps in pixels. C endpoint connection keeps its existing meaning. Stage context menu > Align and distribute offers six alignments and equal horizontal/vertical gaps, relative to selection, primary selected object, or canvas. Distribution requires three objects and a selection/canvas span; a key object stays fixed during alignment. Commands create one undo entry. Mixed local-object and nested-instance layout commands are currently unavailable.
+
+按住 `Ctrl` 在已有辅助线上拖动，可重新定位辅助线；拖到任一可见标尺上松手则删除。按 `Esc` 或在画布外松手会取消移动并保留原线。
+Hold `Ctrl` and drag an existing guide to reposition it. Release on either visible ruler to delete it; press `Esc` or release outside the canvas to cancel and retain the original.
+
+从底部标尺向画布拖动可创建水平辅助线，从右侧标尺拖动可创建垂直辅助线；在画布内松开鼠标放置，拖回标尺或移出画布松开则取消。辅助线使用偏好设置的高亮色系，保存于所属场景、元件或开放画布，保存工程后重新打开仍保留。场景辅助线位于 Z=0 平面，不参与作品导出。
+Drag from the bottom ruler into the canvas to place a horizontal guide, or from the right ruler to place a vertical guide. Release inside the canvas to place; release outside or back on the ruler to cancel. Guides follow the preference highlight colour and persist with their scene, symbol, or open canvas when the project is saved. Scene guides lie on Z=0 and are excluded from artwork export.
+
+顶部网格设置右侧的“标尺”按钮提供显示单位菜单：像素（px）、毫米（mm）、厘米（cm）、英寸（in）及隐藏标尺。开启后底部和右侧显示刻度，随舞台缩放和平移更新（包括“场景与动画”中的拖拽视图），零点对应舞台坐标原点。毫米、厘米与英寸采用固定 96 px/in 换算，不表示显示器上的实际物理尺寸。标尺是当前视图辅助，不写入工程文件。
+The Rulers button beside the grid settings offers pixels, millimetres, centimetres, inches, and Hide rulers. Bottom and right ticks follow zoom and pan, with zero at the Stage origin. Physical units use a fixed 96 px/in conversion, not the monitor's physical dimensions. Rulers are view aids and are not saved in the project.
+
 本文档描述当前代码对应的操作行为，重点说明工作流、交互规则和排查方法。具体版本的新增、修复和兼容性差异请查看[文档索引](README.md)中的 Release History。
 
 框选完成时，画布先呈现选择结果，检查器在该帧呈现后的界面消息中同步刷新，避免复杂曲线的属性面板阻塞首次选择反馈；几何拆分、选区、材质和单步撤销语义保持不变。
@@ -325,6 +347,10 @@ Background playback preparation on the CPU optical fallback uses the same optica
 
 反复播放并切换 `2D` / `3D` 后，可以继续调整窗口或面板大小、返回 `Drawing` 编辑；画布会持续更新并显示当前帧。
 
+从场景绘图切换 `2D` / `3D` 时，会同步重建当前组合并重新绑定对应的绘图或组合场景，避免保留上一维度的 Stage 绑定。编辑器按钮与 MCP 维度切换使用相同的组合同步规则。
+
+Switching scene dimensions rebuilds the current composition and rebinds the appropriate drawing or composed scene. The editor button and MCP dimension changes use the same composition synchronization rule.
+
 3D 播放对均匀环境光和没有局部光照层的对象使用等价的矢量 Direct2D 光照，避免空的逐像素 GPU dispatch；GPU 光学 surface 会按播放计划复用，编辑态仍保留完整光学 surface 契约。投影 SVG 的纹理按内容和尺寸复用缓存，播放期间不会降低纹理分辨率。
 
 右键环视只在 3D 场景视图中启用，不修改场景实例，也不产生撤销记录。按 `Escape`、失去焦点或切换帧、工具、工作区时会结束环视，不补弹右键菜单；`F`、`Home` 和小键盘视图命令会先结束环视，再切换镜头。环视期间滚轮不改变摄像机距离。
@@ -585,6 +611,8 @@ When a closed boundary crosses itself into two filled faces, both faces remain, 
 - 拖动未选中线段的中段会拉出平滑弧线：被拖到的曲线上那一点按鼠标位移移动，控制点由原曲线求解，不会在第一帧跳到光标位置；控制方格从偏离中心的位置抓取时也保留初始偏移。已选中线段的本体拖动则移动整段。`Ctrl+拖动` 中段会改用角点手势：原线段在命中处拆成两条独立 Line，两条线共享命中点的端点，拖动时该共享端点跟随指针、两条线的另一端保持不动。原本笔直的线段仍得到由两条直线段组成的折角；原本弯曲的线段按 de Casteljau 精确分割，拆分瞬间不改变形态，拖动时两半各自保留拆分得到的曲率——二次段保留自己的单控制点，三次段保留两个方向柄——只移动角点而不会把弧拉直，与 Animate 的角点行为一致。拖动过程中即使某一半暂时拉平，继续拖动仍沿用切分时的控制点，拖回起点可恢复切分时的弧形。拆分只在指针移动超过拖动阈值后提交，未拖动就松手会还原为原来的一条线段，一次 `Ctrl+Z` 可撤销整个手势。
 - `Ctrl+左键` 点击可编辑曲线可插入锚点；`Ctrl+右键` 点击真实锚点可删除。
 - `Alt+单击` 曲率控制柄可把该段恢复为直线。
+- 拖动线段端点时按住 `C`，可在 8 屏幕像素内吸附连接同图层的其他线段端点，即使对象吸附已关闭；松开 `C` 后恢复原吸附设置。该手势只吸附端点，不吸附线身。
+  Hold `C` while dragging a line endpoint to connect to another line endpoint in the same layer within 8 screen pixels, even with object snapping disabled. Release `C` to restore normal snapping. This gesture targets endpoints only.
 - 调整矩形等填色形状的一条边后，可直接拖动同一形状的另一条未选边继续调整弧度；快速连续操作不会切换为整形移动或连通描边选择。已选边的主体拖动仍保留原有移动/分离行为。
   填色边界弯曲沿用按下时的两个控制点与抓取位置，根据指针位移调整弧度，不再把两个控制点直接吸到鼠标处；第一帧立即响应，拖回按下位置恢复原边界。拖动填色边界上的锚点（含 `Ctrl` 插入的折点）时，填色区域同样随指针实时更新，取消拖动会恢复原边界。分离已选边时也保留从按下开始的完整位移。
   Fill-boundary bending preserves the original controls and grab offset, responds on the first drag sample and restores the original edge when dragged back. Dragging a fill-boundary anchor — including the corner Ctrl inserts — reshapes the filled region live as the pointer moves, and cancelling restores the original boundary. Detaching a selected edge also preserves the full displacement from the press position.
@@ -593,7 +621,7 @@ When a closed boundary crosses itself into two filled faces, both faces remain, 
 
 机制：Pencil 保存为开放的三次贝塞尔节点，并同步维护采样折线供渲染、命中、框选、擦除和填色边界计算使用；编辑、框选切分或交点切分都不会把笔迹转换为闭合 Path，也不会生成末点到首点的额外线段。Pencil 的预览和最终提交使用同一套连续平滑与拟合误差，平滑值越高，允许合并的轨迹跨度越长，但首尾点和误差边界保持稳定。旧工程中只有采样折线的 Pencil 会在首次实际拖动控制柄时生成精确节点，单纯悬停不会修改工程；一次拖动只产生一个撤销步骤。Pencil、独立 Line、填色边界和形状描边使用同一套交点关系；新笔画经过交点时会物化为可独立选择的开放曲线段。由平滑 Pencil 描边围成的新 Fill 会在误差范围内拟合为少量贝塞尔段，不会把每个采样点显示成锚点；自相交 Fill 的交点也会作为共享锚点同步移动。
 
-已选填色或线段在检测到首个位移时，会先平移已经缓存的选择几何并立即提交一个 GPU 覆盖层帧；CPU 随后准备轻量撤销状态、局部拓扑实体化和边界关系，完成后由真实模型帧接替预览。首次可见反馈以 `30 ms` 为预算，不再等待复杂拆分事务结束。后续指针输入按显示帧合并，并在松手前应用最后位置；层级、检查器和复杂覆盖层刷新会继续延迟到指针交互结束。密集场景处于低缩放级别时，舞台会保留 LOD 背景，并单独实时绘制当前编辑对象。
+已选填色或线段在检测到首个位移时，会先平移已经缓存的选择几何并立即提交一个 GPU 覆盖层帧；CPU 随后准备轻量撤销状态、局部拓扑实体化和边界关系，完成后由真实模型帧接替预览。首次可见反馈以 `30 ms` 为预算，不再等待复杂拆分事务结束。后续指针输入按显示帧合并，并在松手前应用最后位置；层级、检查器和复杂覆盖层刷新会继续延迟到指针交互结束。舞台在低缩放倍率、缩放操作和拖拽画布期间保持逐对象完整预览，不切换为摘要色块；密集场景的交互帧率可能因此降低。
 
 复杂场景中的选择轮廓保持静态高亮；较小场景保留脉冲动画，避免大型画布为了装饰动画持续整帧重绘。
 
@@ -686,6 +714,54 @@ In All view, layer rows in the same group share a background tint and swatch, us
 - Mask 图层可以和普通绘制图层一样，在两个有内容的关键帧之间创建 `Shape Tween`；中间帧使用现有形状补间规则生成遮罩轮廓。
 
 机制：遮罩先裁切，再执行图层混合和透明度计算。
+
+单元件 SVG 导出会保留锁定 Mask 的裁切；空、隐藏或当前帧为空白曝光的 Mask 会输出透明覆盖，不会露出原始内容。同一个 Mask 被多个内容层引用时，导出只生成一个遮罩定义。工程保存重开会保留已有的共享遮罩引用；当前 UI 建立遮罩关系仍使用单内容层绑定。FLA 中的 Mask 尚未开放导入，嵌套元件的遮罩组合仍在补齐。
+
+Single-symbol SVG export retains clipping from locked masks. Empty, hidden or blank-exposure masks suppress their content, and shared masks use one SVG definition. Save/Open preserves existing shared mask references; creating a mask link in the UI still binds one content layer. FLA mask import remains unsupported while nested-symbol mask composition is being completed.
+
+对元件内直接绘制的原生遮罩，重复放置元件时每次放置使用该位置的遮罩变换；同一元件经不同嵌套分支或场景实例出现时，不会与其它位置的遮罩串绑。
+
+Masks drawn directly in a native symbol keep their own transforms when that symbol is placed repeatedly, including placements reached through different nested branches or scene instances.
+
+普通二维矢量组合绘制已接入嵌套遮罩：不同遮罩取交集，同一遮罩内的独立图元取并集，保留曲线与复合路径孔洞；锁定遮罩的嵌套图形不作为正文显示。文件夹的滤镜先接收完整子层输入，再由父遮罩裁剪结果。场景参考投影、播放缓存等路径仍在对齐，因此这不表示 FLA 遮罩已支持直接导入。
+
+The standard 2D vector composition renderer intersects nested masks, unions separate objects within each mask, retains curves and compound-path holes, and hides the artwork nested inside locked masks. Folder filters receive their complete child input before the parent mask clips the result. Scene reference projection and playback-cache paths are still being aligned; direct FLA mask import remains unsupported.
+
+在 Basic Drawing 中编辑元件时，嵌套实例底图也会使用自身的组合遮罩计划；清除底图或切换编辑元件后会清除对应绑定，避免把旧遮罩用于新场景。宿主图层的原生遮罩仍在宿主绘制边界应用。
+
+While editing a symbol in Basic Drawing, nested instance underlays also use their own composition mask plans. Clearing the underlay or switching the edited symbol clears that binding, preventing old masks from being applied to another scene. Native host-layer masks still apply at the host drawing boundary.
+
+参考投影绘制也已接入组合遮罩计划。正交投影保留曲线和孔洞；穿越近裁剪面的图形及透视投影沿现有裁剪轮廓绘制。隔离滤镜/混合组沿现有 GDI 合成路径，在滤镜完成后的组边界应用遮罩；子层保留自身内遮罩，继承的父遮罩延后到父组。CPU 栅格播放预载和完整选择链路仍需进一步对齐，这些阶段性支持不表示 FLA 遮罩已可直接导入。
+
+Reference projection also uses composition mask plans. Orthographic projection retains curves and holes; geometry crossing the near plane and perspective views use the existing clipped contour representation. Isolated filter and blend groups use the existing GDI compositor, which applies masks at group boundaries after filtering. Children retain their own inner masks while inherited parent masks are deferred to the parent group. CPU raster playback preparation and the full selection pipeline still need further alignment, so direct FLA mask import remains unsupported.
+
+播放组合帧绑定保留遮罩计划；播放预载和工作区缓存会区分不同计划。尚未实现组合遮罩的 CPU 栅格预载会交回已有矢量绘制路径，避免套用未遮罩的旧位图；这不表示 CPU 栅格预载已支持遮罩，也不构成该路径的性能验收。
+
+Playback composition frames retain their mask plans, and playback preparation and workspace caches distinguish different plans. CPU raster preparation, which does not yet implement composition masks, leaves these frames to the existing vector renderer rather than reusing an unmasked bitmap. CPU raster mask support and its performance validation remain incomplete.
+
+参考投影的对象点选使用同一组合遮罩覆盖：交集外、孔洞内及曲线轮廓外的内容不可点选，锁定遮罩的嵌套图形保持隐藏。框选和其它预览路径仍需进一步核对。
+
+Object picking in reference projection uses the same composition mask coverage. Content outside intersections or curved boundaries, content inside holes, and hidden artwork within locked masks cannot be picked. Marquee selection and other preview paths still require further verification.
+
+从 Vault 拖入元件时，预览会保留元件的嵌套遮罩，并随拖动位置更新。普通二维和参考投影沿各自的遮罩绘制路径显示预览；取消拖入、普通预览重绑或切换场景会清除旧绑定。
+
+Symbol previews dragged from the Vault retain nested masks as their position changes. Both ordinary 2D and reference projection use their mask rendering paths. Canceling the drag, binding an ordinary preview, or switching scenes clears the previous composition binding.
+
+普通二维组合遮罩中的未畸变文字使用与文字绘制相同的字形轮廓，保留字形内孔；空白文字产生空覆盖。文字畸变和位图遮罩仍需继续核对；SVG 支持范围见下文。FLA 遮罩导入尚未开放。
+
+Undistorted text in ordinary 2D composition masks uses the same glyph contours as text drawing, including counters. Whitespace supplies empty coverage. Distorted text and bitmap masks still require further alignment; SVG support is limited as described below. Direct FLA mask import remains unsupported.
+
+普通二维组合遮罩中的未畸变 SVG，若可精确转换且只含填色，会使用独立填色的矢量轮廓，保留孔洞、重叠并集及对象缩放／旋转。正交参考视图在整个轮廓位于近裁剪面前时也使用这些轮廓进行绘制和点选。含描边、无法精确转换、透视投影或穿越近裁剪面的 SVG 仍沿原有边界／投影轮廓路径；这些情况尚未对齐 Adobe 遮罩语义。
+
+Undistorted SVG masks in ordinary 2D composition use independent vector fill contours when exact conversion succeeds and all parts are fills, preserving holes, overlapping unions, scaling and rotation. Orthographic reference drawing and picking also use these contours when the entire contour stays in front of the near plane. Strokes, content that cannot be converted exactly, perspective projection and near-plane crossings retain the existing boundary/projected-contour paths. These cases remain incomplete for Adobe mask parity.
+
+普通二维元件点选也使用组合遮罩计划：孔洞或裁剪范围外的内容不会命中，命中后仍选择原始根实例；锁定遮罩的图形不会作为可见内容命中。框选仍沿既有选择裁剪流程，尚未全面接入嵌套遮罩计划。
+
+Ordinary 2D instance picking also uses the composition mask plan: holes and clipped content do not hit, and visible hits retain root-instance ownership. Locked mask artwork does not hit as visible content. Marquee selection retains its existing clipping route and has not yet fully adopted nested composition mask plans.
+
+Scene Building 洋葱皮会保留每个相邻曝光的组合遮罩，合并前后帧时分别重映射遮罩层索引，并保留锁定状态；同一图层的同一保持曝光只预览一次。Basic Drawing 会按相邻曝光一起组合本地图形、嵌套实例和遮罩依赖；锁定遮罩及其嵌套图形用于计算覆盖，普通锁定内容仍不参与预览。遮罩使用相邻帧自身的曝光，空白或已结束的遮罩轨不会沿用当前帧的覆盖。关闭洋葱皮或切换场景会清除对应遮罩绑定。
+
+Scene Building onion skin retains each neighbouring exposure's composition masks, remaps mask layers separately when combining frames, and preserves locked state. Each held exposure appears once per layer. Basic Drawing composes local artwork, nested instances and mask dependencies together for each neighbouring exposure. Locked masks and their nested artwork supply coverage; ordinary locked content remains excluded. Masks use the neighbouring frame's exposure: blank or ended mask tracks do not reuse the current frame's coverage. Disabling onion skin or switching scenes clears the mask binding.
 
 ### 图层颜色与 Outline
 
@@ -940,7 +1016,12 @@ The `2D Camera` Stage overlay shows only the active frame, four corner handles, 
 - 空白相机关键帧表示该帧没有相机取景；端点、曲线或帧位置变化后，中间取景会重新求值；
 - 相机轨道的关键帧、补间和设置随场景时间轴保存，并经过独立的帧序、引用和轨道校验。
 
-相机预览会随相机选择、播放头和参数变化刷新。3D 相机的舞台辅助图形保留相机机身、取景平面和视锥线；透视相机使用会聚视锥，正交相机使用平行引导线。2D 相机只显示上述简易取景框。
+相机预览会随相机选择、播放头和参数变化刷新。3D 相机的舞台辅助图形保留相机机身、取景平面和视锥线；透视相机使用会聚视锥，正交相机使用平行引导线。2D 相机只显示上述简易取景框。拖动相机或取景框时不显示浮动操作提示框；悬停提示仍可用于查看操作说明。
+Camera and shot-frame drags hide the floating operation tooltip; hover hints remain available.
+
+镜头预览的显示时钟限制刷新派发频率，并在预览绘制完成后为界面事件留出处理间隔；显示器垂直同步等待立即返回时，也避免连续投递刷新导致界面操作或撤销等待。
+
+The shot preview display clock limits refresh dispatch and leaves time for UI events after drawing. A display whose vertical-sync wait returns immediately does not continuously queue preview updates ahead of interaction or undo.
 
 镜头与导演工作区始终显示当前场景的所有相机框，包括未选中相机、空白曝光和播放期间。选中的镜头框以橙色加粗高亮显示，未选中的框以普通蓝色细线显示；取消选择不会隐藏相机框。仅选中的镜头显示并可拖动缩放点、旋转环、轴杆和镜头滑杆；未选中的框不显示操作手柄。拖动选中镜头时其他框保持显示，播放期间手柄仅显示、不接受拖动。通过右侧相机列表或时间轴选择镜头，使用相机检查器调整位置、旋转、焦距和正交尺寸；框线随当前帧求值更新。离开导演工作区后隐藏这些辅助框。 同一视图下，绘制和命中查询复用相机框与手柄的投影结果；旋转视图、缩放、窗口尺寸、相机参数或舞台尺寸变化后重新计算，保留全部框线、操作手柄及近裁剪。
 
@@ -1123,6 +1204,18 @@ Transform 面板中的 `R Pivot` 和 `S Pivot` 分别编辑旋转锚点与缩放
 旋转操作以每个实例的 `R Pivot` 为中心，缩放操作以 `S Pivot` 为中心；多选时群组 gizmo 位于所有对应锚点的平均位置，并保持各实例锚点相对群组中心的运动关系。两个锚点会随复制、撤销、关键帧、经典补间、编辑器重启和工程保存一同保留；旧工程未包含锚点数据时默认使用零锚点，显示结果与原行为一致。
 
 轴或面拖动从按下时的固定原点、固定坐标基和固定约束面持续求解，不会把正在移动的 gizmo 位置反馈为下一次计算基准；普通拖动回到按下点会精确恢复原状态且不产生空撤销记录。中途切换精细调整后，按各阶段的调整速度累计位移，右键或 `Escape` 可完整恢复起始状态。旋转使用轴角矩阵连续合成，并在写回现有 X/Y/Z 旋转字段时选择最接近起始姿态的等价分支，因此旋转后的局部轴保持正交，接近 X 轴 ±90° 或连续跨过 ±180° 时也不会发生操作轴锁死或跳向。也可先按 `G`、`R` 或 `S` 进入移动、旋转或缩放，再按 `X`、`Y` 或 `Z` 约束当前坐标系的轴并移动鼠标。左键或 `Enter` 确认，右键或 `Escape` 取消。一次确认、一次 gizmo 拖动或一次连续数值编辑只产生一条撤销记录。
+
+键盘空间变换期间转入文本编辑框并输入时，会取消当前变换、恢复起始状态且不增加撤销记录；输入继续交给编辑框。
+
+Typing in a text editor during a keyboard spatial transform cancels the transform, restores its starting state without adding an undo entry, and leaves input with the editor.
+
+二维正面投影视图中的场景实例也显示 Distort 编辑包络，可沿现有实例畸变流程拖动和撤销。
+
+Scene instances in the 2D Front projected view also show the Distort envelope for the existing instance warp and undo workflow.
+
+场景遮罩裁掉的对象不会挡住下层实例的点击选择；仍可见的不透明填色继续遮挡其后的线条。
+
+Objects clipped out by Scene masks do not block picking instances beneath them. Visible opaque fills still occlude strokes behind them.
 
 在 3D 视图按 `F` 会聚焦全部选中实例，并保持当前镜头朝向和正交/透视模式。元件能以 100% 倍率完整显示时保持 100%；元件过大时才自动降低倍率以完整装入画面。聚焦只改变镜头，不修改实例坐标，也不产生撤销记录。
 
@@ -1330,10 +1423,15 @@ Converting content to a symbol preserves asset references, as does duplicating a
 在 Vault 元件上右键选择 `Export SVG...`，或在舞台右键的 `Symbol / 元件` 组中选择 `Export Symbol as SVG...`，可把当前元件导出为独立的 `.svg` 文件。舞台右键导出的是当前元件。
 
 - 导出范围只包含当前帧实际可见的内容：隐藏图层、父级文件夹被隐藏的图层、文件夹图层和遮罩图层本身都不会写入；被遮罩的绘制图层会生成对应的 SVG `mask` 后裁切输出。
+- 导出会包含二维嵌套元件在所选帧的内容，并保留元件自身的坐标。当前编辑元件使用播放头所在帧；其他元件会查找第一个有本地图形或可见引用实例曝光的帧。嵌套几何遮罩保留曲线、孔洞和内外遮罩交集；普通文件夹与图层透明度分别应用一次。应用内重新导入这些 SVG 时也会应用几何遮罩。
+- 含空间姿态的引用元件、启用滤镜的引用组合、隔离文件夹混合或 Invert 混合无法由当前导出器保真表示，会拒绝导出。位图对象的 SVG 输出仍为占位图形；需要保留图片与可编辑数据时使用工程或 `.V2DSymbol`。
+
 - SVG 画布按实际导出的图元范围收紧，计入描边、旋转和遮罩覆盖范围；显式像素尺寸按 `25 vu = 1 px` 换算。重新导入时不会再将整个工作区的透明空白算进对象边界。旧版已导出的 SVG 文件需从原元件重新导出；重启软件不会改写旧文件。
 - 图层顺序按舞台绘制顺序写入：更高索引的图层在下方，因此先出现在文档中，索引 `0` 的图层最后绘制并位于最上方；同一图层内按对象叠放顺序排列。
 - 图层混合模式会映射为等效的 CSS `mix-blend-mode`；没有标准等价模式的混合模式退回普通绘制。
 - 导出的是普通 SVG，不包含 `.Vault` 内部的可逆场景元数据，因此不能替代工程存储，也不能再次导入还原为可编辑元件。需要可再次导入的元件文件请使用下一节的 `.V2DSymbol`。
+
+Nested 2D symbols are exported at the selected frame in their authored coordinates. Inactive symbols select the first frame containing local geometry or a visible instance exposure. Geometric SVG masks retain curves, holes and nested intersections; layer and normal-folder opacity apply once each. Spatial instances, filtered compositions, isolated folder blends and Invert are rejected. Bitmap objects still export as placeholders; use the project or `.V2DSymbol` to preserve image assets.
 
 ### 导出与导入元件文件（.V2DSymbol）
 
@@ -1382,27 +1480,87 @@ Parameter dropdowns use centered inset selection fills. Focus cues follow the sy
 
 密集形状按流式边数据解析，完整保留线段与二次曲线。生成内容超过单个 SVG 对象的 8 MiB 预算时，仅在独立填色/描边路径之间分块，沿现有嵌套元件保存并保持覆盖顺序；同一填色的孔洞与闭合轮廓不拆散。单条路径或总形状预算仍超限时停止转换，不简化或跳过几何。
 
+FLA ZIP 中的库条目按完整逻辑名称读取，允许目录名末尾的空格或点；未压缩 XFL 的磁盘引用仍拒绝这些可能被 Windows 归一化的路径。空库元件可保留为无可见内容的原生元件；静态文本允许携带编辑变换中心，显示位置仍由其矩阵决定。
+
+Library entries inside FLA ZIP containers use exact logical names, including folder names ending in a space or dot. Uncompressed XFL disk references reject these Windows-normalized paths. Empty library symbols retain their identity without visible artwork; static text may carry an authoring transformation point, while its matrix determines placement.
+
+已验证的 `03 05` 内嵌无损位图支持透明、半透明和不透明像素。没有匹配原始 PNG 时，按预乘 ARGB 解码，保留内嵌 Alpha，并用整数舍入生成可保存的直通 RGB；重新预乘可还原内嵌的 8 位颜色。报告标记 `bitmap-premultiplied-decoded`，不宣称恢复量化前的原始直通颜色。Alpha 标志本身不会导致拒绝，预乘颜色通道大于 Alpha 的非法数据仍拒绝。
+
+Verified `03 05` lossless bitmaps support transparent, partial-alpha and opaque pixels. When no matching original PNG is available, embedded premultiplied ARGB is decoded with alpha unchanged and canonical integer rounding for straight RGB; rounded re-premultiplication recovers the embedded 8-bit colours. The report marks this as `bitmap-premultiplied-decoded`, without claiming recovery of the original pre-quantization straight colours. Premultiplied channels exceeding alpha are rejected. A library PNG is kept only when its alpha and rounded premultiplied colours match the embedded bitmap. Otherwise the embedded pixels are used and `bitmap-original-mismatch` is reported.
+
+ZIP 库文件名区分大小写，例如 `Hat.xml` 和 `hat.xml` 可分别引用；完全相同的重复条目仍拒绝。静态文本遇到未映射布局数据时，错误报告列出参数名和值，便于区分行距等不同阻断。
+
+ZIP library filenames are case-sensitive: `Hat.xml` and `hat.xml` remain distinct, while duplicate exact paths are rejected. Unsupported static-text layout errors list parameter names and values.
+
+静态文本允许显式 `lineSpacing="0"`；非零附加行距尚未映射，会停止转换。该参数对应 Adobe 的段落 leading，其他文本排版差异仍以导入诊断为准。[Adobe TextAttrs 参数目录](https://github.com/AdobeDocs/developers-animatesdk-docs/blob/master/JSAPI.md)。
+
+Static text accepts explicit `lineSpacing="0"`; nonzero leading stops conversion until mapped. Other text-layout limitations remain disclosed in import diagnostics.
+
+支持的静态文本使用独立元件承载外观，因此可保留与元件实例相同的已支持混合模式、颜色变换和 Blur/Glow/DropShadow 滤镜链。文本排版限制仍适用，不代表支持全部富文本或动态文本。
+
+Supported static text uses an isolated symbol for its supported blend modes, color transforms and Blur/Glow/DropShadow filter chain. Existing text-layout restrictions still apply; rich and dynamic text are not implied.
+
+直接导入的参数上限以当前解析器为准：舞台宽高各 1–100,000 像素，帧率 1–120 FPS；最多 128 个场景、16,384 个库元件、每条时间轴 4,096 层和 10,000 帧，元件嵌套不超过 64 层；最多导入 100,000 个视觉元素和烘焙 500,000 个实例状态。FLA 压缩文件与累计展开内容各不超过 512 MiB，ZIP 最多 20,000 个条目、单条目不超过 128 MiB。达到限制会停止转换并报告原因，不通过删除内容绕过限制。无法在本地节点精度下保留的极小填色保留完整 SVG，并产生 `shape-vector-retained` 诊断。
+
+Direct import accepts stage dimensions of 1–100,000 pixels and 1–120 FPS, with up to 128 scenes, 16,384 library symbols, 4,096 layers and 10,000 frames per timeline, and 64 levels of symbol nesting. Limits also include 100,000 visual elements and 500,000 baked instance states. Both archive size and total expanded size are bounded at 512 MiB; ZIP containers allow at most 20,000 entries, each no larger than 128 MiB. Exceeding a limit stops conversion with a report. Tiny fills that cannot survive native node precision retain their complete SVG with a `shape-vector-retained` diagnostic.
+
+XML 读取另有独立预算：单个 XML 文件不超过 128 MiB，单次导入累计读取不超过 384 MiB，XML 嵌套深度不超过 128，单文件 XmlReader 读取节点数不超过 4,000,000；禁止 DTD 与外部资源解析。以上预算同样约束未压缩 XFL，不代表达到 ZIP 展开上限前一定能够导入。视觉桥读取 `DOMDocument.xml` 的独立上限为 32 MiB。
+
+XML reading has separate limits: 128 MiB per XML file, 384 MiB total XML reads per import a maximum XML depth of 128 and at most 4,000,000 XmlReader nodes per file. DTDs and external resource resolution are prohibited. These limits also apply to uncompressed XFL; an archive below the ZIP expansion limit can still exceed the XML budget. The visual bridge reads `DOMDocument.xml` with a separate 32 MiB limit.
+
+库 Include 优先使用精确路径；路径不存在时，仅尝试移除一层 Adobe `&#038` ampersand 转义，且 Include 与元件的非空 `itemID` 必须一致，成功时报告 `library-path-escape-resolved`。不会反复解码、猜测相近文件名或补造缺失元件，路径与大小安全检查仍然适用。
+
+Library Includes prefer exact paths. A missing path may resolve one Adobe `&#038` ampersand-escape layer only when the nonempty Include and symbol `itemID` values match, with a `library-path-escape-resolved` diagnostic. No recursive decoding, approximate filename matching or fabricated symbols is performed; path and size validation still applies.
+
+源容器也可能列出已不存在的库文件。只有所有场景及所有已读库元件（包括未放置的元件）的实际引用均能解析时，才以 `library-stale-include` 报告这些不可用清单记录；报告保留源 href 和 itemID，不补造空元件。实际使用的元件若缺失，仍拒绝导入。同 ID 的多个文件不会作为猜测路径的依据。
+
+Some source manifests list library files that no longer exist. They produce `library-stale-include` diagnostics with the source href and itemID only after all references in every scene and available library symbol, including unplaced symbols, resolve. Missing referenced artwork still rejects the import. No empty replacement is created, and duplicate itemIDs are not used to guess a path.
+
+重复 Include 若解析到同一精确路径，且完整元件 XML 一致，只创建一个原生库元件并报告 `library-repeated-include`，报告保留 Include 与实际元件的 itemID。不同路径的同名元件仍视为冲突，不按内容近似程度或清单顺序择一。重复记录仍计入16,384条 Include 上限。
+
+Repeated Includes resolving to the same exact path and identical complete symbol XML retain one native library definition and produce `library-repeated-include`, with both Include and symbol itemIDs. Duplicate names at different paths remain conflicts; content similarity and manifest order do not select a winner. Repeated records still count toward the 16,384-Include limit.
+
 | 来源 | 转换路径与实际边界 |
 | --- | --- |
 | Flash CS5、CS5.5、CS6、Flash Professional CC、Animate 的 ZIP/XFL 型 `.fla` | 直接读取容器，无需安装 Adobe。也可选择未压缩工程的 `.xfl` 或 `DOMDocument.xml`。支持范围取决于实际内容，而不是文件版本号。 |
 | Flash 8、CS3、CS4 的二进制 `.fla` | 自动识别后选择空目录，生成源副本、`convert.jsfl` 与状态文件。在已安装的 Flash CS5+ / Animate 中通过 `Commands > Run Command` 运行脚本，成功后回到 V2D 导入 `converted.fla`。本软件不直接解码旧二进制格式，也不自动启动或安装 Adobe。 |
 | 直接映射不能表达的视觉内容 | 选择 `Create Flash Visual Bridge...`，在空目录生成脚本，在 Animate 2020+ 中运行，再通过 `Import Flash Project...` 选择生成的 `manifest.json`。视觉桥按场景顺序将逐帧 SVG 合成一条动画，原始库结构、可编辑补间、声音和脚本不保留。 |
 
-直接导入保留多场景、库元件和嵌套引用、普通图层及文件夹、显示/锁定状态、图层颜色/轮廓显示、填色/实线描边、二维仿射变换、空白帧与曝光时长。每个源库元件对应一个可复用的 V2D 元件，同一元件的多个实例共享定义；库目录映射到 Vault 目录，也保留空目录。目录名遵循现有 V2D 命名规则；首尾空白被规范化时会在报告中说明，源元件引用仍按原始完整路径区分。图形元件的首帧和循环通过实例状态重采样，普通曝光保留原始关键帧与延续帧；支持的经典实例补间会烘焙为逐帧关键帧，并在转换报告中说明。支持作用于全部属性的 CustomEase 分段三次 Bézier 曲线，以及 cubicIn、cubicOut、cubicInOut；实际采样帧存在歧义或超调时仍拒绝。末尾关键帧上的 motion 标记按普通曝光处理；支持范围内的运动引导路径会烘焙为普通逐帧关键帧，不增加 V2D 引导层功能；自定义旋转仍不支持。导入成功后，可精确表示的矢量叶节点自动拆离为 V2D 原生路径、贝塞尔控制点和原生描边。渐变、无法精确拆离的轮廓/描边及超过拆离点预算的形状保留完整 SVG 矢量，并在报告中说明，仍可移动、变换和随工程保存；逐节点编辑需要手动 Break Apart，其转换限制仍适用。导入不会因此静默栅格化、简化或跳过部件。
+直接导入保留多场景、库元件和嵌套引用、普通图层及文件夹、显示/锁定状态、图层颜色/轮廓显示、填色/实线描边、二维仿射变换、空白帧与曝光时长。每个源库元件对应一个可复用的 V2D 元件，同一元件的多个实例共享定义；库目录映射到 Vault 目录，也保留空目录。目录名遵循现有 V2D 命名规则；首尾空白被规范化时会在报告中说明，源元件引用仍按原始完整路径区分。图形元件的首帧和循环通过实例状态重采样，普通曝光保留原始关键帧与延续帧；支持的经典实例补间会烘焙为逐帧关键帧，并在转换报告中说明。支持作用于全部属性的 CustomEase 分段三次 Bézier 曲线，以及 quadIn、quadOut、quadInOut、cubicIn、cubicOut、cubicInOut；实际采样帧存在歧义或超调时仍拒绝。末尾关键帧上的 motion 标记按普通曝光处理；支持范围内的运动引导路径会烘焙为普通逐帧关键帧，不增加 V2D 引导层功能；自定义旋转仍不支持。导入成功后，可精确表示的矢量叶节点自动拆离为 V2D 原生路径、贝塞尔控制点和原生描边。渐变、无法精确拆离的轮廓/描边及超过拆离点预算的形状保留完整 SVG 矢量，并在报告中说明，仍可移动、变换和随工程保存；逐节点编辑需要手动 Break Apart，其转换限制仍适用。导入不会因此静默栅格化、简化或跳过部件。
 
 Flash guide 层的参考图不参与导出，会从 V2D 图层中省略，并报告 guide-layer-omitted。绑定该层的经典实例补间可沿单条开放、无分叉的直线／二次 Bézier 描边路径烘焙，按弧长和已有缓动计算每帧位置，支持反向路径、形状／组的二维变换和元件 transformationPoint；Orient to Path 会生成每帧朝向。结果是可编辑、可保存重开的普通关键帧，报告 guide-motion-baked。路径在整个补间区间必须保持静态，实例绑定点须与路径两端在 0.25 舞台像素内匹配；数值弧长采样容差为 0.01 舞台像素。闭合、分叉、分离的多路径、路径中段绑定、变化的变换中心或与端点旋转不一致的朝向暂不支持，直接导入仍会指出位置并停止；可使用 Adobe 视觉桥获得逐帧导出。尚未完成 Adobe 画面逐帧对比，导入通过不代表视觉完全一致。
 
 主场景的普通、未锁定顶层图层直接映射到 V2D 场景图层，实例保留二维位置、变换、外观、播放状态与原来的元件引用，按源图层和叠放顺序还原画面。V2D 场景图层没有文件夹/锁定字段，因此源顶层文件夹或锁定图层映射为场景中的分组元件：双击进入该元件，可编辑其原始子图层、锁定状态和各自时间轴；场景时间轴显示该组的合成曝光。组的顶层显示开关由场景图层控制；文件夹的轮廓开关留在组内，以保留子图层各自的轮廓颜色，其他顶层图层的轮廓开关由场景控制。导入报告会说明这些映射，不额外保留一份脱离场景的完整时间轴副本。库元件内部仍保留原有的完整图层结构。对支持的内容，画面位置和动画从源舞台坐标还原；这不表示不支持的效果也已还原。
 
-位图实例 `DOMBitmapInstance` 会映射为可复用的图片元件，像素资源保存到工程的 `.Vault/Images`，保留图层、曝光、位置及可表示的缩放/旋转。支持内嵌 JPEG，以及已验证的 `03 05` 分块 zlib 无损位图。不透明无损数据解码为 PNG；带透明度的数据要求工程内有与内嵌数据逐像素匹配的原始 PNG，以避免 Flash 预乘量化造成颜色或 Alpha 歧义。未知编码、调色板变体、缺少原 PNG 的有歧义透明数据会停止转换。成功保存后重载托管资源，后续保存不依赖临时图片。
+只有一帧的 Graphic 元件设置为 `loop` 时，允许源文件保留超出时长的 `firstFrame`：导入采样其唯一的第 0 帧，报告 `single-frame-loop-normalized`，保留外层变换。该规则已与 Adobe 对真实嵌套元件的逐帧 SVG 输出核对；其他越界播放设置仍拒绝。
+
+For a one-frame Graphic in `loop` mode, a stale `firstFrame` beyond its duration samples its sole frame 0 and reports `single-frame-loop-normalized`. Outer transforms are retained. This case was checked against Adobe's per-frame SVG output for a real nested symbol; other out-of-range playback settings remain rejected.
+
+完全透明或低于原生节点精度的形状，在无法精确拆分时保留完整 SVG，报告 `shape-vector-retained`；保留路径和原始透明度，可随工程保存重开。该保留方式不表示形状已转为可编辑的原生节点。
+
+Fully transparent shapes, or shapes below native node precision, retain their complete SVG when exact Break Apart is unavailable. `shape-vector-retained` identifies this representation; paths and original opacity survive Save/Open. This does not imply native node editability.
+
+`BitmapFill` 的平铺及边缘延展模式可保留为带内嵌 PNG 的完整 SVG 矢量形状，报告 `bitmap-fill-svg-retained`。保留路径、位图映射矩阵、透明度及库位图的 `allowSmoothing`：关闭时逐点采样，开启时在预乘颜色中双线性采样。矩阵四个线性分量从 twips 换算为像素，平移保持舞台像素单位；镜像和倾斜映射保留。源图像和生成 SVG 仍受既有大小/像素预算限制。该表示可保存重开，但不提供原生位图填充节点编辑；`bitmapIsClipped=true` 使用边缘像素延展（clamp），边界外不重复纹理；已用 Adobe 生成的合成样本核对。尚未完成整份工程与 Adobe 的画面一致性验收。
+
+Tiled and edge-clamped `BitmapFill` is retained as a whole SVG vector shape with embedded PNG pixels and a `bitmap-fill-svg-retained` diagnostic. Paths, affine mapping, opacity and the library bitmap's `allowSmoothing` are retained. Sampling is point or bilinear in premultiplied colour. The four linear matrix components convert twips to pixels; translation stays in stage pixels. Reflection and skew are retained. Existing image and SVG budgets still apply. This representation survives Save/Open but does not provide native bitmap-paint node editing. `bitmapIsClipped=true` extends edge texels without repeating the texture, as checked against an Adobe-generated synthetic fixture. Whole-document Adobe visual parity has not been established.
+
+位图实例 `DOMBitmapInstance` 会映射为可复用的图片元件，像素资源保存到工程的 `.Vault/Images`，保留图层、曝光、位置及可表示的缩放/旋转。支持内嵌 JPEG，以及已验证的 `03 05` ARGB 和 `03 03` 索引色分块 zlib 无损位图。索引色使用1–256项 ARGB 调色板、每像素一个索引，行长按4字节对齐；只读取可见像素，行尾填充不作为索引校验。调色板、索引和透明度已用 Adobe 导出位图核对。无损数据解码为 PNG；透明数据的预乘解码规则和诊断见上文。原始 PNG 仅在 Alpha 和重新预乘后的颜色与内嵌像素一致时原样保留；像素不一致时使用内嵌数据并报告 `bitmap-original-mismatch`。未知编码/压缩方式、越界索引、非法预乘数据、截断或超量像素会停止转换，仍使用现有图片尺寸与像素预算。成功保存后重载托管资源，后续保存不依赖临时图片。
+
+Lossless bitmap import supports verified chunked-zlib `03 05` ARGB and `03 03` indexed images. Indexed images use an ARGB palette of 1–256 entries and one index per pixel, with rows padded to four bytes. Padding bytes are not visible pixel indices. Stored alpha and premultiplied colours are retained; unknown formats/compression, invalid palettes/indices, truncation and oversized decoded data reject import under the existing image budgets. Adobe bitmap export comparisons cover opaque and partial-alpha samples; whole-document visual parity remains a separate check.
 
 直接映射元件实例的 normal、layer、multiply、screen、lighten、darken、difference、add、subtract、invert、overlay、hardlight；其中 add 对应 Linear Dodge，layer 对应 Isolated Group。alpha、erase、shader 和未确认的数字模式仍严格拒绝。导入在生成几何和解码位图前预检效果，报错显示元件、图层、帧及具体模式/滤镜名称。支持按源顺序保留最多 32 项 BlurFilter、GlowFilter 和 DropShadowFilter；不同模糊参数不再合并，Quality 各自保留 1–15，保留 Inner、Knockout 和 Hide Object。导入的效果链随保存、重启和复制保留，由 CPU/GPU 执行；现有滤镜面板尚不能逐项编辑导入的附加链。支持滤镜之前的 brightness、tint、RGB multiplier/offset 和 AlphaMultiplier，非零 alphaOffset 仍拒绝。经典补间可逐帧烘焙兼容的模糊宽度和颜色变换；离散 Quality 在区间内保持起点值，到端点使用终点值，转换报告会说明。BevelFilter、GradientGlowFilter、AdjustColorFilter 等尚未映射的 Flash 效果仍停止直接导入。元件内容保持透明，Flash 舞台背景颜色尚未映射为 V2D 原生场景背景；滤镜及补间尚未通过 Adobe 逐像素画面对比，不能从导入成功推断整份 FLA 外观完全一致。混合语义参考 [Adobe BlendMode](https://help.adobe.com/en_US/FlashPlatform/reference/actionscript/3/flash/display/BlendMode.html)，滤镜参数参考 [Adobe BlurFilter](https://help.adobe.com/en_US/FlashPlatform/reference/actionscript/3/flash/filters/BlurFilter.html)。
 
-单样式 DOMStaticText 映射为可编辑 V2D 文本，保留字符、请求的字体、字号、颜色、二维变换和左/中/右对齐。字体缺失时报告 text-font-missing，并使用 V2D 现有替代字体显示；原字体名称仍随工程保存。Flash 字形度量、行距和换行排版未做视觉匹配，报告 text-layout-mapped 会提示核对。多样式文本、动态/输入文本仍不支持。复杂形状补间、尚未支持的运动路径/其他高级缓动、遮罩/骨骼、按钮、视频、未映射的滤镜及三维/相机等内容不能保证直接映射；不支持的内容指明位置并拒绝直接导入。位图的倾斜、镜像或嵌套后产生的非正交变换仍受现有位图组合能力限制。声音、脚本和帧标签不会转移，转换前显示报告；脚本不会执行。独立 Movie Clip 播放仅从放置帧采样，不能复现脚本控制的交互。视觉桥也不能承诺 Adobe SVG 导出未支持的效果或交互无损，请核对输出画面。源文件属于旧版本时，Adobe 自身还可能转换已弃用的功能。
+单样式 DOMStaticText 映射为可编辑 V2D 文本，保留字符、请求的字体、字号、颜色、二维变换和左/中/右对齐。字号优先取 `size`（像素）；缺省时取 `bitmapSize / 20`，两者都缺省时为12像素，保存为 pt 时乘0.75，仍受4–512 pt限制。字体缺失时报告 text-font-missing，并使用 V2D 现有替代字体显示；原字体名称仍随工程保存。Flash 字形度量、行距和换行排版未做视觉匹配，报告 text-layout-mapped 会提示核对。多样式文本、动态/输入文本仍不支持。复杂形状补间、尚未支持的运动路径/其他高级缓动、遮罩/骨骼、按钮、视频、未映射的滤镜及三维/相机等内容不能保证直接映射；不支持的内容指明位置并拒绝直接导入。位图的倾斜、镜像或嵌套后产生的非正交变换仍受现有位图组合能力限制。声音、脚本和帧标签不会转移，转换前显示报告；脚本不会执行。独立 Movie Clip 播放仅从放置帧采样，不能复现脚本控制的交互。视觉桥也不能承诺 Adobe SVG 导出未支持的效果或交互无损，请核对输出画面。源文件属于旧版本时，Adobe 自身还可能转换已弃用的功能。
+
+Static text uses `size` in pixels, falling back to `bitmapSize / 20`, then 12 pixels when neither attribute exists. Conversion to points multiplies by 0.75; the existing 4–512 pt limit applies. Justified and multi-style text remain unsupported; glyph metrics and wrapping still require visual comparison.
 
 直接导入的纯色透明度分别写入 SVG 填色与描边属性，并在可精确拆离时转换为可编辑的原生填色和描边，避免把透明纯色误当作渐变进行外观轮廓化。斜向方形端帽计入源图边界，防止端帽角部被裁切。不能精确拆离的形状以完整 SVG 矢量叶节点保留，并在报告中标明。
 
 视觉桥要求 Adobe 的 SVG 导出设置使用完整舞台范围、将文本转为轮廓、将位图嵌入；仅接纳有尺寸和解码预算校验的 PNG/JPEG 内嵌图片。外部资源、脚本或不兼容的 SVG 会报错，不能靠拉伸裁剪框掩盖尺寸差异。失败后查看桥目录的状态文件和 Adobe Output 面板；重新生成桥时使用新的空目录。
+
+视觉桥创建阶段复用直接导入的 FLA 容器读取规则，包括已识别的 Animate ZIP 目录长度差异、唯一根文档的大小写或包内目录；原始文件按字节复制，不改写。根 XML 上限仍为32 MiB，禁止 DTD，重复根文档、重复条目和不安全路径仍拒绝。TLF 等外来文本命名空间可以交给 Adobe 导出，不代表直接导入支持 TLF 排版。
+
+Visual bridge preparation shares direct import's FLA container reader, including the recognized Animate ZIP directory-length variant and a unique root document with case or directory variations. The source is copied byte for byte. Root XML remains bounded at 32 MiB; DTDs, ambiguous roots, duplicate entries and unsafe paths are rejected. Foreign authoring namespaces such as TLF may be passed to Adobe for export; this does not add native TLF layout support.
 
 转换先读取、校验并构建独立项目，再处理当前工程的未保存提示。取消或解析失败不会替换当前工程；解析窗口的取消会在当前解析结束后丢弃结果。源中的危险路径、重复条目、XML DTD、过大内容、悬空引用和递归嵌套会被拒绝。直接导入上限包括 512 MiB 容器及展开内容、单 XML 128 MiB、累计 XML 384 MiB、10,000 帧、16,384 个库元件；高复杂度文件还受节点、图元、SVG 和帧状态预算限制。
 
@@ -1603,6 +1761,38 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:43521/mcp/' -Method Post `
 | 时间轴 | 选择当前可见图层 | 复制 / 粘贴所选 Cel |
 | 文本、搜索和数值编辑器 | 由编辑器处理文本选择 | 由编辑器处理文本或数值 |
 
+舞台选择与视图补充快捷键 / Additional Stage selection and view shortcuts：
+
+| 按键 / Gesture | 行为 / Behavior |
+| --- | --- |
+| `Alt+拖拽`，兼容 `Ctrl+Alt+拖拽` | 选择工具拖动已选本地图形或 2D 场景实例的本体时，复制后移动副本；单击不复制。Select tool: drag a selected local shape or 2D scene instance body to move a copy; a click creates no copy. |
+| 方向键 / `Shift+方向键` | 2D 选择微移 1 / 10 文档像素，支持本地图形、元件实例及混合选择。Nudge 2D geometry, instances or a mixed selection by 1 / 10 document pixels. |
+| `Alt+A` / `Ctrl+Shift+I` | 取消全选 / 对当前帧可选对象反选。Deselect / invert current-frame selectable objects. |
+| `Ctrl+D` | 原位复制并接管选择；移动刚复制的内容后再按，重复该位移；继续按可重复排列。复制不会替换内部剪贴板。Duplicate in place, then repeat the displacement after moving the copy; the internal clipboard is retained. |
+| `Ctrl+Shift+V` | 将内部剪贴板的图形或实例粘贴到原坐标。Paste internal clipboard geometry or instances at their original coordinates. |
+| `Ctrl+Alt+单击` | 依次选择指针下被遮挡的本地图形或场景根实例，场景命中遵循遮罩及锁定状态。Cycle through overlapping local shapes or scene root instances, respecting scene masks and locks. |
+| `Alt+框选` / `Shift+Alt+框选` | 从原选择减去框内对象 / 保留框内交集，支持本地图形及 2D 场景实例；在已选对象本体上使用 Alt 拖动时执行复制。Subtract / intersect a marquee with the original local geometry or 2D scene-instance selection; Alt dragging a selected body duplicates it. |
+| `Shift+拖拽` | 移动时按主要位移方向约束为水平或垂直；不改变旋转、缩放及端点编辑手势。Constrain translation to its dominant horizontal or vertical axis. |
+| `Backspace` | 与 `Delete` 相同，删除舞台选择。Delete the Stage selection. |
+| `Home` / `Ctrl+0` | 2D 适应画布或工作区 / 实际大小。Fit the 2D canvas or workspace / actual size. |
+| `Ctrl+=` / `Ctrl+-` / `Shift+2` | 2D 放大 / 缩小 / 缩放到选择。Zoom in / out / fit the 2D selection. |
+| `Alt+D` | 为所选元件实例创建引用同一源元件的新实例。Duplicate selected instances with their source Symbol shared. |
+| `Ctrl+Shift+单击` | 基础绘图中选中命中描边所属的连通描边。Select connected local strokes. |
+| `Ctrl+B` | 基础绘图中的拆散命令。Break Apart in Basic Drawing. |
+| `PageUp` / `PageDown` | 返回父级 / 进入选中元件。Return to the parent / enter the selected Symbol. |
+| `H` / `Alt+H` / `Shift+H` | 隐藏所选 / 显示全部 / 孤立所选。Hide selected / show all / isolate selected. |
+| `Ctrl+Alt+C` / `Ctrl+Alt+V` | 复制 / 粘贴外观。本地图形传递填色、描边与渐变；实例传递透明度、着色、滤镜与混合模式。Copy / paste appearance: fill, stroke and gradients for local geometry; opacity, tint, filters and blend mode for instances. |
+| `Shift+G` | 打开选择相同菜单：填色、描边或素材标签集合。Open Select Same: fill, stroke or an identical asset-tag set. |
+| `Ctrl+Numpad+` / `Ctrl+Numpad-` | 沿本地相连描边扩选 / 缩选一圈。Grow / shrink local connected-stroke selection by one ring. |
+| `Ctrl+Shift+G` / `Ctrl+Shift+R` / `Ctrl+Shift+S` | 2D 数值移动 / 旋转 / 缩放；输入数值后 Enter 确认，Esc 取消。移动以文档像素、旋转以度、缩放以倍率输入。X/Y 约束轴；逗号分隔两个轴数值。Start numeric 2D move / rotate / scale; Enter commits, Esc cancels. Values use document pixels, degrees and scale factors. X/Y constrains an axis; comma separates two axis values. |
+| `Ctrl+Y` / `Ctrl+Shift+Z` | 重做文档编辑；撤销后产生新编辑会清除重做分支。Redo document edits; a new edit after undo clears the redo branch. |
+| 时间轴聚焦时 `Up` / `Down` | 跳到活动轨道上一 / 下一关键帧。Jump to the previous / next keyframe on the active timeline track. |
+| `Ctrl+Shift+H` | 隐藏检查器和时间轴；再次按恢复原先的面板开关组合。Hide Inspector and Timeline, then restore their previous visibility combination. |
+
+水平翻转、垂直翻转、线转填色、合并线段及对象锁定/全部解锁已加入快捷键命令目录，默认不分配按键，右键菜单显示自定义绑定。舞台拥有焦点且有选择时，`Ctrl+2` 锁定所选、`Ctrl+3` 隐藏所选；其他上下文仍切换工作区。对象隐藏和锁定状态随场景或元件保存，可撤销。`Ctrl+D` 为所选实例复制独立的顶层源元件，源元件内部的嵌套引用沿用现有复制规则；`Alt+D` 共享原源元件。默认 `H` 改为隐藏，按住 Space 仍可平移。舞台有选择时 `Ctrl+Shift+S` 执行数值缩放，其余上下文保留另存为；数值缩放也可单独设置按键。按住 `Shift+Space` 并左键拖动可旋转 2D 画布视图；同时按 Ctrl 吸附 15°，双击归零，Esc 取消本次旋转。旋转不改变图形数据，视图角度支持编辑器重启恢复。
+
+Horizontal/vertical flip, Convert Line to Fill, Merge Lines, object locking and unlocking are configurable commands without default keys. With Stage focus and a selection, Ctrl+2 locks and Ctrl+3 hides selected objects; elsewhere they switch workspaces. Object visibility and locking are saved with scenes or Symbols and support undo. `Ctrl+D` duplicates each selected instance's top-level source Symbol; nested references follow the existing Symbol-copy rules. `Alt+D` shares the original source. Default H now hides objects; Space still pans. Ctrl+Shift+S scales numerically when the Stage has a selection and remains Save As elsewhere; numeric scaling can also receive a custom binding. Hold Shift+Space and drag with the left mouse button to rotate the 2D view. Ctrl snaps to 15 degrees, double-click resets, and Esc cancels the rotation. Geometry stays unchanged; editor restart restores the view angle.
+
 全局与舞台命令的默认绑定（下列文件、编辑和面板命令可在快捷键方案中调整；3D 交互键及工作区切换键仍按上下文保留）：
 
 | 按键 | 命令 |
@@ -1635,7 +1825,7 @@ Typing in a text or numeric editor during a spatial keyboard transform cancels t
 | --- | --- | --- | --- |
 | `V` | Black Arrow（整对象选择） | `A` | White Arrow（路径编辑） |
 | `Q` | Free Transform | | |
-| `H` | Hand | `R` | Rectangle |
+| `Space`（按住 / hold） | 临时平移 / Temporary pan | `R` | Rectangle |
 | `O` | Ellipse | `N` | Line |
 | `P` | Pen | `Y` | Pencil |
 | `T` | Text | `B` | Brush |
@@ -1751,7 +1941,7 @@ The brush commit microbenchmark collects the prior functional tests' heap after 
 
 - 当前复杂形状使用确定性的自动轮廓匹配，尚未提供 Adobe Animate 的 Shape Hints（a-z）和 Angular/Distributive 手动混合模式。自动结果不符合预期时，应像 Animate 官方建议一样增加中间关键形状来约束变化。
 - 通用路径节点编辑尚未覆盖所有对象类型；文本和未拆散 SVG 不开放内部节点。
-- Scene 时间轴实例支持关键帧状态，也支持在舞台多选后剪切、复制、粘贴和删除；但不直接创建传统补间或形状补间。元件图层中的单个嵌套实例可创建传统补间；形状补间只适用于本地矢量内容。
+- Scene 时间轴普通内容层在恰好包含一个场景实例时支持传统补间，不支持形状补间；多个实例需分到独立图层。元件图层中的单个嵌套实例可创建传统补间；形状补间只适用于本地矢量内容。
 - 导出能力分为两类：单个元件可导出为独立 SVG 文件（只保留外观），也可导出为可再次导入的 `.V2DSymbol` 元件包（保留完整可逆数据、嵌套关系与库元数据）。当前仍没有整场景或整段动画的作品导出命令。`.Vault` 中的 SVG 是工程内部可逆资产，与上述两种导出用途不同。
 - `.V2DSymbol` 以元件为粒度：包内只包含所选元件及其嵌套引用的元件，不会带上引用它们的场景、场景实例或时间轴播放设置。导入是“新增”而非“替换”，无法用它对已有元件做覆盖式更新。
 - 复杂 SVG 拆散是有限精度转换，无法保证与原始滤镜或混合效果逐像素一致。
@@ -1859,3 +2049,142 @@ The brush-tip panel uses the shared icon header and dividers. Preview, tip name,
 时间轴顶部的前、后、帧高和帧宽标签使用浅色次级文字，保证深色主题下的可读性。
 
 顶部网格与吸附工具使用统一高度和间距，吸附图标扩大可见绘制尺寸，辅助数值使用次级文字。配色色板弹窗统一分区标题、内边距和色块间距，默认色块与渐变预览使用柔和的主题边框，悬浮和选中仍保留清晰反馈。
+
+Quadratic classic-tween easing supports `quadIn`, `quadOut` and `quadInOut` when one Ease curve targets all properties. Compatible instance tweens are baked into ordinary frame states, including the endpoint; saved projects retain the sampled positions. Per-property curves and unsupported tween content still reject import. This does not establish whole-document Adobe visual parity.
+
+FLA/XFL ZIP 内的旧版库文件名可包含 DEL 等控制字符，并按原名匹配引用；磁盘 XFL 路径仍拒绝控制字符、目录穿越和不安全后缀。
+
+Legacy library names inside FLA/XFL ZIP archives may contain control characters such as DEL and are matched exactly; disk XFL paths still reject control characters, traversal and unsafe suffixes.
+
+FLA 导入忽略没有可见填充边界或描边的辅助边；完全无可见内容的形状不生成图元。
+
+FLA import ignores edges without a visible fill boundary or stroke; shapes with no visible content produce no artwork.
+
+FLA 填充轮廓按有向线段连接，支持连接点位于同一 Edge 内部的情况，保留原始曲线与方向。
+
+FLA fill contours join directed segments, including junctions inside an Edge, preserving original curves and direction.
+
+FLA 填充间隙允许最多 4 个源像素的近似：优先连接最近的方向不平衡端点，以坐标顺序确定等距情况，保留原曲线，添加直线连接。导入报告记录修补次数及最大距离；细节和孔洞可能变化，应复核外观。hairline 描边近似为 1 个源像素宽，缩放行为可能不同。形状变形动画等不支持内容仍可能阻止整份工程导入。
+
+FLA fill gaps allow an approximation of up to four source pixels: nearest degree-deficit endpoints are connected first, with coordinate ordering for ties. Original curves remain unchanged; straight connectors are added. Diagnostics report count and maximum distance; details and holes may change, so review the artwork. Hairline strokes use a one-source-pixel approximation and may scale differently. Unsupported content such as morph animation can still prevent full-project import.
+
+FLA 支持固定轮廓的 MorphShape 渐变矩阵动画，按帧线性插值并记录诊断；末端关键帧保持至空白曝光。真实轮廓变形仍不支持，Flash 缓动外观尚未核对。
+
+FLA stationary-contour MorphShape paint matrices are baked using linear per-frame interpolation, with diagnostics. Terminal keys hold until blank exposure. Actual contour morphing remains unsupported; Flash easing parity is unverified.
+
+FLA 导入支持锁定原生遮罩及多个内容层共享遮罩；一帧 shape 曝光保留该帧内容，无中间形变采样。静态文字 autoKern 沿用原生排版并报告字距近似。
+
+FLA imports locked native masks with shared content links. One-frame shape exposures retain their key artwork without intermediate morph samples. Static-text autoKern uses native layout and reports a spacing approximation.
+
+黑箭头与白箭头工具在画布上显示对应颜色的紧凑箭头光标（原尺寸的 80%），随 DPI 缩放；手柄操作和临时导航仍显示对应操作光标。
+
+Black and White Arrow tools display matching compact DPI-scaled arrow cursors (80% of the original size) on the canvas; handles and temporary navigation retain their action cursors.
+
+底部状态栏显示缩放百分比、元件及帧信息，不再显示原子数量与模块热重载状态。
+
+The bottom status bar retains zoom percentage, symbol and frame information, and omits atom count and module hot-reload status.
+
+三角形、多边形和星形工具的拖拽预览边框按实际顶点范围显示。
+
+Triangle, polygon and star drawing previews show bounds fitted to their actual vertices.
+
+三角形、多边形、星形的对象世界边界按实际旋转顶点计算，任意变形框不再使用外接椭圆的参数矩形。
+
+Triangle, polygon and star world bounds use their rotated vertices; transform bounds no longer use the ellipse parameter rectangle.
+
+任意变形工具点击选择与黑箭头使用相同的填充/描边命中单位，Shift 可追加选择。数字键和传统 Flash 内置快捷键方案均提供 V 黑箭头、A 白箭头。
+
+Free Transform uses the same fill/stroke hit selection as Black Arrow, with Shift additive selection. Both built-in shortcut profiles provide V for Black Arrow and A for White Arrow.
+
+无修饰键 V、A 在所有快捷键方案（含旧自定义方案）中分别切换黑箭头、白箭头；文字输入时保留输入行为。
+
+Unmodified V and A select Black Arrow and White Arrow across all profiles, including existing custom profiles; text entry keeps normal typing.
+
+大型矢量场景的 Direct2D 路径缓存达到容量时保留已驻留几何、逐项释放替换，避免每帧全量清空重建；缓存容量和绘制精度不变。
+
+Large vector scenes retain resident Direct2D path geometry at cache capacity and replace entries individually, avoiding full-cache rebuilds while retaining the same capacity and drawing precision.
+
+软件首次启动为当前用户注册 .v2d 和 .v2dProject 的图标与打开命令；正式发行版关联到外层启动器，保证运行时与主体部署完成后打开工程。已有系统默认应用选择可能需在 Windows“打开方式”中选择本软件。
+
+First launch registers per-user icons and open commands for .v2d and .v2dProject. Distribution associations target the outer launcher so runtime and application deployment run before opening projects. An existing Windows default-app choice may require selecting this app using Open with.
+
+二维组合遮罩在同一帧、场景内容及画布变换未变化时复用覆盖几何；内容、帧、遮罩计划或画布变换改变后重新生成，设备资源释放时清理。
+
+2D composition masks reuse coverage geometry while frame, content and canvas transform remain unchanged; changes rebuild coverage and device cleanup releases it.
+
+带滤镜或特殊混合模式的二维帧在内容与视图不变时复用软件合成结果；切换帧或编辑内容后重新生成。普通不透明图层直接绘入所属组，保留滤镜、透明度及遮罩边界。
+
+2D frames with filters or special blend modes reuse software composition while content and view remain unchanged, rebuilding after frame or content changes. Ordinary opaque layers draw directly into their parent group while preserving filter, opacity and mask boundaries.
+
+场景空间渲染不再对投影面积严格为零且不参与光学投影的挤出侧面进行相交和排序计算；斜视图中的可见侧面继续正常绘制。
+
+Spatial scene rendering excludes extrusion walls with exactly zero projected area from intersection and ordering work when optical projection is inactive; visible walls in angled views remain rendered.
+
+未启用光学投影时，空间渲染在相交和排序前剔除视口外表面，剔除范围保守包含描边尖角与滤镜扩展。
+
+When optical projection is inactive, spatial rendering culls offscreen surfaces before intersection and sorting, conservatively including stroke miters and filter padding.
+
+场景灯光为实验性功能：设置中的‘启用实验性场景灯光’是全局开关，默认关闭。关闭后不计算场景灯光效果，也不显示灯光和光学材质编辑面板；工程中的灯光数据仍保留。开启后恢复相关功能。
+Scene lighting is experimental. Settings > Enable experimental scene lighting is a global switch, off by default. Disabling it bypasses scene lighting and hides lighting/material editors while preserving project data.
+
+Flash/XFL 对象拆离：不新增图层时也保留可编辑描边；非等比缩放等必要转换仍可能将描边轮廓化。
+
+.Vault 文件整理：新保存的工程使用元件名称作为 SVG 文件名，并按素材库文件夹建立目录。同名或不适合 Windows 文件系统的名称会安全调整；内部引用仍使用稳定 ID。旧工程打开后重新保存即可采用新布局，新格式需要支持格式 8 的软件读取。
+
+Flash 转换性能诊断：应用日志中的 Flash import build 会记录主体转换、XFL 形状解析及原生几何转换耗时，便于定位复杂文档的瓶颈；转换精度和编辑模式不变。
+
+V2D 工程生成：独立元件文件最多双路并行生成，清单顺序保持稳定；文件落盘、SHA-256、暂存工程重读校验和恢复日志仍在提交前完成。
+
+工程文件写入会在文件内容完成后显式落盘，再校验并提交，减少重复的同步写入等待；暂存校验和恢复流程保留。
+
+Flash 转换后生成 V2D 工程时，进度窗口显示已生成文件数、总数及当前元件名。准备数据、完整校验和提交阶段显示等待动画及阶段名称；生成文件完成不代表整个工程已保存成功，窗口在保存完成后关闭。
+
+FLA/XFL 解析窗口显示读取元件、检查引用、读取位图、转换元件和场景的阶段。元件、位图及场景阶段显示当前项目名称和已完成数量；各阶段分别计数，文档读取及引用检查使用等待动画。取消仍在解析结束后丢弃结果。
+
+复杂场景的空闲预渲染会根据已测得的几何准备耗时暂停，避免在界面线程连续处理未显示的重帧；同一视图和当前帧下，每个候选帧最多预渲染一次。切帧、相机及内容变化后重新评估。此调度不改变当前帧的画质或可见内容。
+
+场景中的 SVG 元件在缩放及透视投影时，按实际缓存纹理尺寸映射完整图像，避免复用较大纹理后出现局部裁切。已有工程可直接重新打开，无需重新转换。
+
+场景在无灯光、正交前视图下，会跳过纯 Z 厚度投影面积为零的侧面计算；前后表面和选择边仍保留。旋转视角、开启光学或存在横向厚度时恢复完整侧面计算。该优化不代表复杂场景交互已达到 200 FPS。
+
+无灯光的正交前视图中，符合条件的路径场景会复用 GPU 矢量几何，连续缩放和平移不再逐帧重建全部路径；SVG 保持原有前后顺序，并按当前缩放解析纹理。屏幕外批次只暂停绘制，平移进入视野后正常显示。编辑内容、切帧、改变视角或重建设备会重新准备缓存；灯光、遮罩、滤镜及其他不适用的场景继续使用原渲染路径。
+
+
+快速导航预览：作为核心渲染功能默认启用，可在设置的常规选项中关闭。后续手动关闭会保存。适用的无灯光正交前视图会在连续缩放、平移时复用带外围余量的图像缓存，交互期间抗锯齿和 SVG 清晰度可能暂时有差异；停止输入 250 ms 后恢复完整矢量绘制。超出缓存覆盖区域时重新准备，编辑、切帧、改变视角、调整窗口或重建设备后缓存失效。首次准备和缓存重建仍可能停顿，此选项不保证所有操作稳定达到 200 FPS，不影响可编辑工程数据。
+Fast navigation preview is a core rendering feature enabled by default, with a switch in general Settings. Subsequent manual changes are saved. Eligible unlit orthographic front views reuse an expanded image during zoom and pan. Antialiasing and SVG sharpness may differ temporarily; native vector rendering returns after 250 ms without input. Leaving the cached area requires preparation again. Content, frame, view, window size and device changes invalidate the cache. Preparation can still stall; this option does not guarantee a sustained 200 FPS or change editable project data.
+
+
+快速导航预览现在保留停止导航后仍有效的图像；同倍率平移超出外围余量时，以整数像素搬移重叠区域，只补画新露出的条带，提交绘制命令前按条带剔除无关批次，亚像素位移保留在显示变换中。双缓冲纹理复用，避免反复分配；预览倍率偏离缓存倍率超过两倍时重新准备。停止后仍完整绘制矢量，内容、窗口尺寸及设备变化会清除缓存。这些改进属于默认启用的快速导航功能，不代表所有帧都在 5 ms 内。
+Fast navigation preview retains useful images after navigation stops. At a fixed zoom, crossing the overscan boundary copies overlapping whole pixels and paints only exposed strips, culling unrelated batches before submission; fractional displacement stays in the display transform. Two textures are reused rather than allocated repeatedly. A zoom ratio outside 0.5–2 requires a fresh image. Settled frames still use native vector rendering; content, size and device changes clear cached resources. Fast navigation is enabled by default and does not guarantee a 5 ms frame budget.
+
+
+快速导航预览会检查完整矢量批次与 SVG 的保守边界。如果全部内容已包含在缓存中，平移进入周围空白区域无需再补画；边界不明确或仍有缓存外内容时保留增量补画。内容编辑、切帧及设备重建会重新判断。此优化用于默认启用的快速导航，停止后恢复完整矢量画质。
+Fast navigation preview checks conservative bounds for all retained vector batches and SVGs. When the image already contains all content, panning into surrounding empty space no longer triggers rasterization. Unknown bounds or uncached content retain incremental drawing. Content edits, frame changes and device recreation re-evaluate completeness. This optimization is part of default-enabled fast navigation; settled frames retain full vector quality.
+
+
+打开工程时显示进度窗口：元件、图片和场景阶段按实际数量显示进度及当前名称；恢复检查、清单读取、引用校验、文档还原和单文件工程解包显示阶段等待动画。计数分别对应各阶段，不代表整体百分比。读取在后台执行；取消会等待当前读取结束后丢弃结果并保留当前工程。校验成功后才将新工程绑定到工作台。
+Opening a project shows a progress window. Symbols, images and scenes report actual counts and current names; recovery checks, manifest reading, reference validation, restoration and package extraction show indeterminate progress. Counts belong to each stage rather than a global percentage. Reading runs in the background. Cancel waits for reading to finish and discards the result, keeping the current project. The workbench adopts the new document only after successful validation.
+
+Flash 场景中的纯 RGB 乘色隔离组可在无灯光正交前视图中使用 GPU 合成，避免少量乘色元件使整个场景回退到软件绘制。组边界与绘制顺序保留，矢量命令随导航复用，SVG 按当前倍率解析；编辑颜色、切帧或重建设备时重新准备。GPU 沿用普通路径的预乘 Alpha 合成，半透明交叠与 GDI 的 HighQuality Gamma 合成可能有颜色差异。颜色偏移、组透明度、模糊、其他混合模式和遮罩等暂不支持的组合仍走软件路径。默认完整矢量绘制即可受益；快速导航预览默认启用，首次准备与缓存重建不保证 5 ms。
+RGB-multiplied isolation groups in Flash scenes can use GPU compositing in unlit orthographic front views, so a few tinted symbols no longer force the whole scene through software rendering. Group boundaries and paint order are retained, vector commands survive navigation, and SVGs resolve at the current zoom. Colour edits, frame changes and device recreation rebuild resources. GPU compositing follows the ordinary path renderer's premultiplied Alpha convention; translucent overlaps may differ from GDI HighQuality gamma compositing. Unsupported combinations such as colour offsets, group opacity, blur, other blend modes and masks retain software rendering. Full vector rendering benefits by default; fast navigation preview is enabled by default. Initial preparation and cache rebuilding do not guarantee 5 ms frames.
+
+场景投影选择会跳过锁定图层、锁定父文件夹和锁定元件中的内容；前方锁定内容不会挡住后方可编辑元件的点击选择。框选同样排除锁定内容。鼠标命中查询缓存当前视图的轮廓边界，先剔除指针以外的对象，再执行精确轮廓及遮罩检查；内容或视图变化后重新准备。
+Projected scene selection skips locked layers, locked parent folders and locked instances. Locked artwork in front does not block clicks on editable instances behind it. Marquee selection also excludes locked content. Pointer queries cache contour bounds for the current view, rejecting distant objects before exact contour and mask checks; content or view changes rebuild those bounds.
+
+工程加载窗口显示当前阶段的数量与百分比、正在处理的元件或场景名称、文件相对路径，以及完整性校验、绘制数据解码、时间轴读取等子步骤。已用时间持续更新；单文件工程解包也显示文件数量和路径。百分比仅代表当前阶段，无法量化的校验和文档还原继续显示等待动画。
+Project loading shows counts and percentages for the current stage, the current symbol or scene, its relative file path, and checksum, drawing decoding or timeline reading steps. Elapsed time keeps updating. Package extraction also reports file counts and paths. Percentages describe the current stage only; unquantified validation and document restoration remain indeterminate.
+
+无灯光正交前视图中移动场景元件时，适用内容使用临时位移预览：按绘制顺序分离静态内容与移动内容，复用静态 GPU 图像，移动内容与选择轮廓缓存为带完整边界的局部图像，仅更新位移；隔离组乘色和透明度保留在原组边界。滤镜组使用原滤镜算法生成独立缓存，移动整组时复用；组内部分内容单独移动时沿用完整更新。拖动及导航时亚像素抗锯齿可能暂时不同，停止后恢复当前缩放的完整结果。拖动期间不反复重建场景组合和时间轴，松开后一次提交，取消恢复原位。首次缓存准备和松开后的提交仍可能耗时。遮罩、空间姿态、Alt 拖动复制或 GPU 回退等不适用情形沿用完整更新路径；关闭快速导航也关闭此缓存策略。
+Eligible scene-instance moves in unlit orthographic front views use a temporary translation preview. Static content and moving content stay in paint order, reusing static GPU images and bounded local images of moving content and selection outlines while preserving isolated colour and opacity groups. Filter groups cache the original filter algorithm's output and reuse it when moved as a whole; moving only part of a filtered group retains full updates. Subpixel antialiasing may differ during dragging and navigation; settling restores the full result at the current zoom. Dragging avoids repeated composition and timeline rebuilds; release commits once and cancel restores the original position. Initial preparation and release may still stall. Masks, spatial poses, Alt-drag duplication and GPU fallback retain full updates. Disabling fast navigation also disables this cache strategy.
+
+场景编辑视口以 144 Hz 为刷新目标，静止时复用已绘制的底图，刷新请求合并且不累积补帧；隐藏或最小化窗口暂停呈现。编辑时不在 UI 线程预渲染不可见的场景帧，避免后台准备阻塞输入。实际帧率取决于当前内容、首次准备、GPU 和系统负载。
+The scene editor targets 144 Hz, reusing the rendered base image while idle and coalescing refresh requests without accumulating catch-up frames. Hidden or minimized windows pause presentation. Invisible scene frames are not speculatively rendered on the UI thread while editing, keeping that preparation from blocking input. Actual rates depend on content, initial preparation, GPU and system load.
+
+场景静止刷新会复用图层状态及渲染路径检查结果，内容和图层变化时重新计算。同一视图中移动完整元件时，尽量复用已准备的矢量命令、滤镜和选择轮廓，仅重新划分移动与静止部分；取消未改动文档的拖动时保留这些缓存。首次栅格准备、局部滤镜编辑或视图变化仍可能产生额外耗时。
+Idle scene refreshes reuse layer state and rendering eligibility checks until content or layers change. Moving a complete instance in the same view reuses prepared vector commands, filters and selection outlines where possible, repartitioning moving and stationary content. Cancelling a display-only drag preserves these caches. Initial raster preparation, partial filter edits and view changes may still take additional time.
+
+连续滚轮缩放时，状态栏缩放读数合并刷新；停止输入后显示最终倍率。
+During continuous wheel zoom, zoom readout updates are coalesced; the final scale is shown when navigation settles.
+
+可编辑文字也支持场景导航和元件移动缓存。导入的短文本框在本机替代字体的行高不同时，若原布局无法生成任何字形，会恢复完整字形轮廓供显示和组合使用；原文字内容、字体设置和文本框数据保留。
+Editable text also supports cached scene navigation and instance movement. If an imported short text box produces no glyphs because a substituted font has different line metrics, glyph outlines are recovered for rendering and composition. Text content, font settings and stored layout data are preserved.

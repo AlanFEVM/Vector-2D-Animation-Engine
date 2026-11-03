@@ -763,6 +763,7 @@ internal sealed partial class MainForm
         }
         if (_selectionToolGroup.Contains(_tool)) _selectionToolGroup.ActiveTool = _tool;
         if (_transformToolGroup?.Contains(_tool) == true) _transformToolGroup.ActiveTool = _tool;
+        RebuildSceneComposition(refreshScenePanels: false);
         UpdateSceneDimensionButton();
         UpdateSpatialTransformPanelState();
         RefreshSceneOpticsInspector();

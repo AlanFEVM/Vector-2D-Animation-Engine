@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Runtime.InteropServices;
 using Microsoft.Win32;
 
@@ -24,22 +24,28 @@ internal static class ProjectFileAssociation
     {
         try
         {
-            var executablePath = Environment.ProcessPath;
+            var executablePath = Environment.GetEnvironmentVariable("V2D_ASSOCIATION_EXECUTABLE")
+                ?? Environment.ProcessPath;
             if (string.IsNullOrEmpty(executablePath) || !File.Exists(executablePath)) return;
             if (!TryWriteIconFile()) return;
 
             var expectedCommand = $"\"{executablePath}\" \"%1\"";
             var expectedIcon = $"\"{IconTargetPath}\",0";
 
-            using var extensionKey = Registry.CurrentUser.CreateSubKey(@"Software\Classes\" + PackageExtension);
-            var currentProgId = extensionKey.GetValue(string.Empty) as string;
-            var changed = !string.Equals(currentProgId, ProgId, StringComparison.Ordinal);
-            extensionKey.SetValue(string.Empty, ProgId);
-            using var openWithKey = extensionKey.CreateSubKey("OpenWithProgids");
-            if (openWithKey.GetValue(ProgId) is not byte[])
+            var changed = false;
+            foreach (var extension in new[] { PackageExtension, ".v2dProject" })
             {
-                openWithKey.SetValue(ProgId, Array.Empty<byte>(), RegistryValueKind.Binary);
-                changed = true;
+                using var extensionKey = Registry.CurrentUser.CreateSubKey(@"Software\Classes\" + extension);
+                var currentProgId = extensionKey.GetValue(string.Empty) as string;
+                changed |= !string.Equals(currentProgId, ProgId, StringComparison.Ordinal);
+                extensionKey.SetValue(string.Empty, ProgId);
+                using var openWithKey = extensionKey.CreateSubKey("OpenWithProgids");
+                if (openWithKey.GetValue(ProgId) is not byte[])
+                {
+                    openWithKey.SetValue(ProgId, Array.Empty<byte>(), RegistryValueKind.Binary);
+                    changed = true;
+                }
+
             }
 
             using var progIdKey = Registry.CurrentUser.CreateSubKey(@"Software\Classes\" + ProgId);
@@ -66,7 +72,7 @@ internal static class ProjectFileAssociation
             if (changed)
             {
                 NotifyShellAssociationChanged();
-                AppLog.Info("Registered .v2d project file association.");
+                AppLog.Info("Registered .v2d and .v2dProject project file associations.");
             }
         }
         catch (Exception exception)

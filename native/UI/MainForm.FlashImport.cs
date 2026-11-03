@@ -1,4 +1,4 @@
-namespace VectorAnimationEngine;
+﻿namespace VectorAnimationEngine;
 
 internal sealed partial class MainForm
 {
@@ -47,7 +47,7 @@ internal sealed partial class MainForm
                 var sourcePath = Path.GetFullPath(dialog.FileName);
                 progress.Shown += async (_, _) =>
                 {
-                    try { imported = await Task.Run(() => LoadFlashImportSource(sourcePath)); }
+                    try { imported = await Task.Run(() => LoadFlashImportSource(sourcePath, progress)); }
                     catch (Exception exception) { importError = exception; }
                     finally { progress.Complete(); }
                 };
@@ -79,7 +79,7 @@ internal sealed partial class MainForm
                 saving.BeginSaving();
                 saving.Shown += async (_, _) =>
                 {
-                    try { manifestPath = await Task.Run(() => SaveImportedFlashProject(imported, destinationDirectory)); }
+                    try { manifestPath = await Task.Run(() => SaveImportedFlashProject(imported, destinationDirectory, saving)); }
                     catch (Exception exception) { saveError = exception; }
                     finally { saving.Complete(); }
                 };
@@ -140,14 +140,18 @@ internal sealed partial class MainForm
     }
 
     internal static string SaveImportedFlashProject(FlashDocumentImportResult imported, string directory)
+        => SaveImportedFlashProject(imported, directory, null);
+
+    private static string SaveImportedFlashProject(FlashDocumentImportResult imported, string directory,
+        IProgress<ProjectSaveProgress>? progress)
     {
         // Recheck after parsing and dialogs: never adopt an existing managed project.
         directory = ValidateFlashProjectDirectory(directory);
         return ProjectVaultStore.Save(imported.Project,
-            Path.Combine(directory, SafeProjectFileName(imported.Name).TrimEnd('.', ' ') + ProjectVaultStore.ProjectExtension));
+            Path.Combine(directory, SafeProjectFileName(imported.Name).TrimEnd('.', ' ') + ProjectVaultStore.ProjectExtension), progress);
     }
 
-    private static FlashDocumentImportResult LoadFlashImportSource(string sourcePath)
+    private static FlashDocumentImportResult LoadFlashImportSource(string sourcePath, IProgress<FlashParseProgress>? progress = null)
     {
         var directory = Path.GetDirectoryName(sourcePath)!;
         if (Path.GetFileName(sourcePath).Equals("converted.fla", StringComparison.OrdinalIgnoreCase)
@@ -159,7 +163,7 @@ internal sealed partial class MainForm
                 throw new InvalidDataException(error);
         }
         if (!Path.GetExtension(sourcePath).Equals(".json", StringComparison.OrdinalIgnoreCase))
-            return FlashDocumentImporter.Load(sourcePath, editableGeometry: true);
+            return FlashDocumentImporter.Load(sourcePath, editableGeometry: true, progress: progress);
         if (File.Exists(Path.Combine(directory, "visual-conversion-status.txt")))
         {
             var plan = new FlashVisualConversionPlan(Path.Combine(directory, "source-copy.fla"),

@@ -23,6 +23,7 @@ internal sealed record MarqueeMaterializationResult(
 
 internal sealed partial class VectorScene : ITimelineContext
 {
+    internal List<RulerGuide> RulerGuides { get; } = [];
     private const float FillMergeDistanceUnits = 10f;
     private const float LineMergeDistanceUnits = 5f;
     private const float LineMergeDirectionTolerance = 0.0001f;
@@ -165,6 +166,8 @@ internal sealed partial class VectorScene : ITimelineContext
     public uint[] AtomCount { get; private set; } = [];
     public int[] Argb { get; private set; } = [];
     public int[] StrokeArgb { get; private set; } = [];
+    public bool[] ObjectHidden { get; private set; } = [];
+    public bool[] ObjectLocked { get; private set; } = [];
     public bool[] FillAutoMergeProtected { get; private set; } = [];
     public bool[] FillBoundaryLinkDetached { get; private set; } = [];
     public bool[] QuadraticLineEditing { get; private set; } = [];
@@ -554,7 +557,7 @@ internal sealed partial class VectorScene : ITimelineContext
         MixingBrushRegionData Region,
         bool Selected);
 
-    private readonly record struct GradientPaintData(
+    internal readonly record struct GradientPaintData(
         GradientKind Kind,
         GradientStop[] Stops,
         PointF Start,

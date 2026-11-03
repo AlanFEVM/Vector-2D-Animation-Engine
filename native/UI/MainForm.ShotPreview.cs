@@ -48,6 +48,7 @@ internal sealed partial class MainForm
         private string _displayName;
         private int _stopped;
         private bool _captureFailureLogged;
+        private long _lastTickFinishedAt;
 
         public ShotPreviewDisplayClock(MainForm owner, string displayName)
         {
@@ -65,6 +66,12 @@ internal sealed partial class MainForm
         }
 
         private void Tick()
+        {
+            try { TickCore(); }
+            finally { Interlocked.Exchange(ref _lastTickFinishedAt, Stopwatch.GetTimestamp()); }
+        }
+
+        private void TickCore()
         {
             if (Volatile.Read(ref _stopped) != 0 || !ReferenceEquals(_owner._shotPreviewDisplayClock, this)) return;
             _owner.UpdateShotPreviewScheduler();
@@ -120,16 +127,17 @@ internal sealed partial class MainForm
                             continue;
                         }
                     }
-                    else
-                    {
-                        var now = Stopwatch.GetTimestamp();
-                        var interval = (long)(Stopwatch.Frequency * fallbackMilliseconds / 1000d);
-                        nextFallbackAt += interval;
-                        if (nextFallbackAt <= now) nextFallbackAt = now + interval;
-                        var wait = Math.Max(1, (int)Math.Ceiling(
-                            (nextFallbackAt - now) * 1000d / Stopwatch.Frequency));
-                        if (_cancellation.Token.WaitHandle.WaitOne(wait)) break;
-                    }
+                    // DXGI can return immediately for an inactive/remote output.
+                    // Keep a display-rate deadline even when WaitForVBlank
+                    // succeeds, and leave the UI pump a gap after a slow tick.
+                    var now = Stopwatch.GetTimestamp();
+                    var interval = Math.Max(1L, (long)(Stopwatch.Frequency * fallbackMilliseconds / 1000d));
+                    nextFallbackAt = Math.Max(nextFallbackAt + interval, now);
+                    var afterUiTick = Interlocked.Read(ref _lastTickFinishedAt)
+                        + Math.Max(1L, Stopwatch.Frequency / 1000);
+                    var nextPostAt = Math.Max(nextFallbackAt, afterUiTick);
+                    var wait = (int)Math.Ceiling((nextPostAt - now) * 1000d / Stopwatch.Frequency);
+                    if (wait > 0 && _cancellation.Token.WaitHandle.WaitOne(wait)) break;
 
                     if (_cancellation.IsCancellationRequested || !_gate.TryReserve()) continue;
                     try { _owner.BeginInvoke(_callback); }

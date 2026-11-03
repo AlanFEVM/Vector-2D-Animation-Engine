@@ -1,4 +1,4 @@
-using System.Buffers;
+﻿using System.Buffers;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
@@ -792,6 +792,20 @@ internal sealed partial class VectorScene
             }
 
             return RectangleF.FromLTRB(left - margin, top - margin, right + margin, bottom + margin);
+        }
+
+        if (shape is VectorAnimationEngine.ShapeKind.Triangle or VectorAnimationEngine.ShapeKind.Polygon
+            or VectorAnimationEngine.ShapeKind.Star)
+        {
+            var halfW = Width[i] * 0.5f;
+            var halfH = Height[i] * 0.5f;
+            var vertices = shape == VectorAnimationEngine.ShapeKind.Star
+                ? StarBoundary(GetShapeVertexCount(i), halfW, halfH)
+                : RegularBoundary(shape == VectorAnimationEngine.ShapeKind.Triangle ? 3 : GetShapeVertexCount(i),
+                    halfW, halfH, -MathF.PI / 2);
+            var world = vertices.Select(point => LocalToWorld(i, point.X, point.Y)).ToArray();
+            return RectangleF.FromLTRB(world.Min(point => point.X) - margin, world.Min(point => point.Y) - margin,
+                world.Max(point => point.X) + margin, world.Max(point => point.Y) + margin);
         }
 
         var halfWShape = Width[i] * 0.5f;

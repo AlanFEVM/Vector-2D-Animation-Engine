@@ -2386,6 +2386,12 @@ internal static partial class Benchmark
             $"offscreen={offscreen}, secondary={retainedSecondary}.");
     }
 
+    private sealed class ProjectLoadProgressRecorder : IProgress<ProjectLoadProgress>
+    {
+        internal List<ProjectLoadProgress> Values { get; } = [];
+        public void Report(ProjectLoadProgress value) => Values.Add(value);
+    }
+
     private static void RunProjectVaultPersistenceRegression()
     {
         var temporaryRoot = CreateTemporaryDirectory("project-vault-regression");
@@ -2532,7 +2538,10 @@ internal static partial class Benchmark
 
             var drawingTrackId = root.Scene.Timeline.Tracks[0].Id;
             var savedManifest = ProjectVaultStore.Save(project, manifestPath);
-            var svgPath = Path.Combine(temporaryRoot, ".Vault", $"{root.Id}.svg");
+            using var savedDescriptor = System.Text.Json.JsonDocument.Parse(File.ReadAllText(manifestPath));
+            var relativeSvg = savedDescriptor.RootElement.GetProperty("drawingObjects").EnumerateArray()
+                .Single(entry => entry.GetProperty("id").GetString() == root.Id).GetProperty("svgPath").GetString()!;
+            var svgPath = Path.Combine(temporaryRoot, relativeSvg);
             var drawingTimelinePath = Path.Combine(temporaryRoot, ".TimeLine", "Drawings", $"{root.Id}.json.br");
             var sceneTimelinePath = Path.Combine(temporaryRoot, ".TimeLine", "Scenes", $"{project.Scenes[0].Id}.json.br");
             var svg = File.ReadAllText(svgPath);
@@ -2549,7 +2558,20 @@ internal static partial class Benchmark
                 && svg.Contains("data:image/svg+xml;base64,", StringComparison.Ordinal),
                 "Project Vault did not write the manifest, SVG assets, timeline library, or standard SVG preview.");
 
-            var restored = ProjectVaultStore.Load(manifestPath);
+            var loadProgress = new ProjectLoadProgressRecorder();
+            var restored = ProjectVaultStore.Load(manifestPath, loadProgress);
+            AssertTimeline(loadProgress.Values.LastOrDefault()?.Stage == "Project loaded"
+                && loadProgress.Values.Any(value => value.Stage == "Loading project symbols"
+                    && value.Total > 0 && value.Completed == value.Total)
+                && loadProgress.Values.Any(value => value.Stage == "Loading project scenes"
+                    && value.Total > 0 && value.Completed == value.Total)
+                && loadProgress.Values.All(value => value.Completed >= 0 && value.Completed <= value.Total),
+                "Project open progress did not reflect completed validated symbols and scenes.");
+            AssertTimeline(loadProgress.Values.Any(value => value.Operation == "Decoding drawing data"
+                    && !string.IsNullOrEmpty(value.Item) && !string.IsNullOrEmpty(value.RelativePath))
+                && loadProgress.Values.Any(value => value.Operation == "Reading timeline data")
+                && loadProgress.Values.Any(value => value.Operation == "Verifying file checksums"),
+                "Project open progress omitted current file and decoding/checksum steps.");
             var restoredRoot = restored.DrawingObjects.Single(item => item.Id == root.Id);
             var restoredChild = restored.DrawingObjects.Single(item => item.Id == child.Id);
             var restoredScene = restored.Scenes.Single(item => item.Id == project.Scenes[0].Id);

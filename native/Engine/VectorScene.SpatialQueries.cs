@@ -494,13 +494,13 @@ internal sealed partial class VectorScene
                 {
                     var i = CellObjects[p];
                     if ((uint)i >= ObjectCount) continue;
-                    if (ObjectKeyframeFrame[i] != _queryActiveKeyframes[ObjectLayer[i]]) continue;
+                    if (ObjectHidden[i] || ObjectKeyframeFrame[i] != _queryActiveKeyframes[ObjectLayer[i]]) continue;
                     result.Add(i);
                 }
 
                 foreach (var i in GetPendingSpatialCellObjects(cell))
                 {
-                    if (ObjectKeyframeFrame[i] != _queryActiveKeyframes[ObjectLayer[i]]) continue;
+                    if (ObjectHidden[i] || ObjectKeyframeFrame[i] != _queryActiveKeyframes[ObjectLayer[i]]) continue;
                     result.Add(i);
                 }
             }
@@ -531,7 +531,7 @@ internal sealed partial class VectorScene
                 {
                     var i = CellObjects[p];
                     if ((uint)i >= ObjectCount) continue;
-                    if (ObjectKeyframeFrame[i] != _queryActiveKeyframes[ObjectLayer[i]]) continue;
+                    if (ObjectHidden[i] || ObjectKeyframeFrame[i] != _queryActiveKeyframes[ObjectLayer[i]]) continue;
                     if (!ObjectIntersectsBounds(i, bounds)) continue;
 
                     result.Add(i);
@@ -544,7 +544,7 @@ internal sealed partial class VectorScene
 
                 foreach (var i in GetPendingSpatialCellObjects(cell))
                 {
-                    if (ObjectKeyframeFrame[i] != _queryActiveKeyframes[ObjectLayer[i]]) continue;
+                    if (ObjectHidden[i] || ObjectKeyframeFrame[i] != _queryActiveKeyframes[ObjectLayer[i]]) continue;
                     if (!ObjectIntersectsBounds(i, bounds)) continue;
 
                     result.Add(i);
@@ -1254,7 +1254,7 @@ internal sealed partial class VectorScene
             {
                 for (var i = start; i < end; i++)
                 {
-                    if (!ShouldRenderLayerContent(ObjectLayer[i])) continue;
+                    if (ObjectHidden[i] || !ShouldRenderLayerContent(ObjectLayer[i])) continue;
                     var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
                     var color = Color.FromArgb(useFillColorForStrokeShapes
                         ? Argb[i]

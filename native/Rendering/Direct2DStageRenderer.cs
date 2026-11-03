@@ -1,4 +1,4 @@
-using System.Buffers;
+﻿using System.Buffers;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -552,7 +552,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         int Frame,
         int ViewportWidth,
         int ViewportHeight,
-        ulong LayerRenderState);
+        ulong LayerRenderState,
+        SceneCompositionMaskPlan? CompositionMasks);
 
     private sealed class CachedReference3DWorkspaceFrame(
         Reference3DWorkspaceFrameCacheKey key,
@@ -626,6 +627,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     public int LastBaseFrameCacheBuilds { get; private set; }
     public int LastBaseFrameCacheReuses { get; private set; }
     public double LastBaseFrameCopyMilliseconds { get; private set; }
+    internal string? LastBaseFrameCacheFailure { get; private set; }
 
     /// <summary>Scene-collection (culling plus ordering) time of the presented frame.</summary>
     public double DiagnosticCollectMilliseconds { get; private set; }
@@ -779,7 +781,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             stage.BeginScenePassOrder();
             if (stage.RendersReferenceProjection)
             {
-                if (CanReuseBaseFrame(stage))
+                if (stage.InstanceMovePreviewObjects is null && CanReuseBaseFrame(stage))
                 {
                     DrawBaseFrame();
                     ReplayBaseScenePassOrder(stage);
@@ -800,7 +802,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                     stats = DrawReference3DScene(stage);
                     LastReference3DSceneMilliseconds +=
                         Stopwatch.GetElapsedTime(referenceSceneStarted).TotalMilliseconds;
-                    if (_reference3DCpuRasterUsedThisFrame
+                    if (stage.InstanceMovePreviewObjects is not null || _reference3DCpuRasterUsedThisFrame
                         || stage.Reference3DPlaybackActive)
                     {
                         // A continuously changing playback frame is not reused
@@ -814,11 +816,14 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                     else
                     {
                         var baseStoreStarted = Stopwatch.GetTimestamp();
-                        StoreBaseFrame(stage, stats, stats);
+                        if (_referenceNavigationKey is not null && stage.ReferenceNavigationPreviewActive)
+                            StoreBaseFrameIfStable(stage, stats, stats);
+                        else StoreBaseFrame(stage, stats, stats);
                         LastReference3DBaseStoreMilliseconds +=
                             Stopwatch.GetElapsedTime(baseStoreStarted).TotalMilliseconds;
                         var workspaceStoreStarted = Stopwatch.GetTimestamp();
-                        StoreReference3DWorkspaceFrame(stage, stats);
+                        if (_referenceNavigationKey is null || LastBaseFrameCacheBuilds != 0)
+                            StoreReference3DWorkspaceFrame(stage, stats);
                         LastReference3DWorkspaceStoreMilliseconds +=
                             Stopwatch.GetElapsedTime(workspaceStoreStarted).TotalMilliseconds;
                     }
@@ -1020,6 +1025,14 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 DrawBrushColorPalette(stage);
             }
             DrawShotFramingGizmo(stage);
+            foreach (var line in stage.SmartSnapScreenLines())
+            {
+                _target.DrawLine(new Vector2(line.Start.X, line.Start.Y), new Vector2(line.End.X, line.End.Y), BrushFor(Theme.Accent.ToArgb()), 1);
+                if (!string.IsNullOrEmpty(line.Label))
+                    DrawSmartSnapLabel(stage, line);
+            }
+            foreach (var guide in stage.RulerGuideSegments())
+                _target.DrawLine(new Vector2(guide.Start.X, guide.Start.Y), new Vector2(guide.End.X, guide.End.Y), BrushFor(Theme.Accent.ToArgb()), 1);
 
             LastCommandMilliseconds = Stopwatch.GetElapsedTime(commandStarted).TotalMilliseconds;
             var framePresentStarted = Stopwatch.GetTimestamp();
@@ -1069,7 +1082,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
     private static bool RequiresSoftwareLayerCompositing(StageControl stage)
     {
-        return stage.Scene.RequiresIsolatedLayerCompositing
+        return stage.Scene.RequiresIsolatedLayerCompositing && !CanDrawReferenceColorGroups(stage)
             || stage.UnderlayScene?.RequiresIsolatedLayerCompositing == true
             || stage.OnionSkinScene?.RequiresIsolatedLayerCompositing == true
             || stage.DragPreviewScene?.RequiresIsolatedLayerCompositing == true;
@@ -1133,6 +1146,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private void StoreBaseFrame(StageControl stage, RenderStats stats, RenderStats editableStats)
     {
         if (_target is null) return;
+        LastBaseFrameCacheFailure = null;
 
         _currentWorkspaceFrame = null;
 
@@ -1149,7 +1163,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             if (_baseFrameBitmap is null)
             {
                 var properties = new BitmapProperties(
-                    new PixelFormat(Format.B8G8R8A8_UNorm, DCommonAlphaMode.Ignore),
+                    _target.PixelFormat,
                     96,
                     96);
                 _baseFrameBitmap = _target.CreateBitmap(
@@ -1164,6 +1178,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             LastBaseFrameCopyMilliseconds = Stopwatch.GetElapsedTime(copyStarted).TotalMilliseconds;
             if (result.Failure)
             {
+                LastBaseFrameCacheFailure = result.ToString();
                 ClearBaseFrameCache();
                 return;
             }
@@ -1176,8 +1191,9 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             _baseFrameEditableStats = editableStats;
             LastBaseFrameCacheBuilds = 1;
         }
-        catch
+        catch (Exception exception)
         {
+            LastBaseFrameCacheFailure = exception.ToString();
             ClearBaseFrameCache();
         }
     }
@@ -1233,7 +1249,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             stage.Frame,
             _targetSize.Width,
             _targetSize.Height,
-            stage.Reference3DWorkspaceFrameLayerRenderState);
+            stage.Reference3DWorkspaceFrameLayerRenderState,
+            stage.CompositionMasksFor(stage.Scene));
     }
 
     private bool TryRestoreReference3DWorkspaceFrame(
@@ -1241,7 +1258,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         out RenderStats stats)
     {
         stats = default;
-        if (!stage.RendersReferenceProjection || _target is null) return false;
+        if (!stage.RendersReferenceProjection || _target is null
+            || _reference3DWorkspaceFrameCache.Count == 0 || stage.InstanceMovePreviewObjects is not null) return false;
 
         var key = CreateReference3DWorkspaceFrameCacheKey(stage);
         for (var index = 0; index < _reference3DWorkspaceFrameCache.Count; index++)
@@ -1525,84 +1543,15 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         int objectDrawLimit,
         bool forceObjectRenderer = false)
     {
-        var pixelZoom = EffectivePixelZoom(stage.Zoom);
-        var interactionTiles = !forceObjectRenderer && UsesInteractionTileLod(stage, pixelZoom);
-        LastSceneDrawPath = forceObjectRenderer ? "forced-objects"
-            : stage.IsUnderlayHostScene(stage.Scene) ? "underlay-host"
-            : stage.HasSceneCompositionMaskClips(stage.Scene) ? "mask-clip-objects"
-            : SceneRenderOrder.RequiresObjectRenderer(stage.Scene) ? "required-objects"
-            : stage.MarqueeLodPreviewActive && stage.Scene.ObjectCount > 0 ? "marquee-tiles"
-            : stage.ZoomLodPreviewActive && stage.Scene.ObjectCount >= SceneRenderOrder.DenseObjectLodMinimumVisibleObjects && !stage.Scene.HasDisplayLayerEffects ? "zoom-tiles"
-            : interactionTiles ? "interaction-tiles"
-            : stage.Scene.HasDisplayLayerEffects || pixelZoom >= 0.18f ? "detail-objects"
-            : stage.Scene.ObjectCount >= 5000 ? "dense-tiles"
-            : "collected-objects";
-        if (stage.IsUnderlayHostScene(stage.Scene))
-            return DrawObjects(stage, forceObjectRenderer ? int.MaxValue : objectDrawLimit);
-        if (forceObjectRenderer)
-        {
-            return DrawObjects(stage, int.MaxValue);
-        }
-        if (stage.HasSceneCompositionMaskClips(stage.Scene)) return DrawObjects(stage, objectDrawLimit);
-        if (SceneRenderOrder.RequiresObjectRenderer(stage.Scene)) return DrawObjects(stage, objectDrawLimit);
-        if (stage.MarqueeLodPreviewActive && stage.Scene.ObjectCount > 0)
-        {
-            return pixelZoom < 0.08f
-                ? DrawOverviewTiles(stage)
-                : DrawTiles(stage);
-        }
-        if (stage.ZoomLodPreviewActive
-            && stage.Scene.ObjectCount >= SceneRenderOrder.DenseObjectLodMinimumVisibleObjects
-            && !stage.Scene.HasDisplayLayerEffects)
-        {
-            return pixelZoom < 0.08f
-                ? DrawOverviewTiles(stage)
-                : DrawTiles(stage);
-        }
-        if (stage.Scene.HasDisplayLayerEffects || pixelZoom >= 0.18f)
-        {
-            if (!interactionTiles) return DrawObjects(stage, objectDrawLimit);
-            var tiled = pixelZoom < 0.08f ? DrawOverviewTiles(stage) : DrawTiles(stage);
-            return tiled.TileDraws > 0 ? tiled : DrawObjects(stage, objectDrawLimit);
-        }
-        if (stage.Scene.ObjectCount >= 5000)
-        {
-            return pixelZoom < 0.08f
-                ? DrawOverviewTiles(stage)
-                : DrawTiles(stage);
-        }
-
-        if (stage.Scene.ObjectCount < SceneRenderOrder.DenseObjectLodMinimumVisibleObjects)
-        {
-            return DrawObjects(stage, objectDrawLimit);
-        }
-
-        var bounds = stage.VisibleWorldBounds();
-        _renderOrder.Collect(stage.Scene, bounds, stage.Frame);
-        if (SceneRenderOrder.ShouldUseDenseObjectLod(stage.Scene, pixelZoom, bounds, _renderOrder))
-        {
-            return pixelZoom < 0.08f
-                ? DrawOverviewTiles(stage)
-                : DrawTiles(stage);
-        }
-
-        return DrawCollectedObjects(stage, objectDrawLimit);
+        // Keep the original geometry during zoom and camera navigation.
+        LastSceneDrawPath = "detail-objects";
+        return DrawObjects(stage, int.MaxValue);
     }
 
-    private static int ObjectDrawLimit(float zoom) => EffectivePixelZoom(zoom) < 0.35f ? 95_000 : 220_000;
+    private static int ObjectDrawLimit(float zoom) => int.MaxValue;
 
     private static bool UsesObjectRenderer(StageControl stage, VectorScene scene, float zoom)
-    {
-        return scene.ObjectCount > 0
-            && (stage.HasSceneCompositionMaskClips(scene)
-                || SceneRenderOrder.RequiresObjectRenderer(scene)
-                || stage.RequiresObjectRendererForDragPreview(scene)
-                || scene.ObjectCount < 5000
-                || scene.HasDisplayLayerEffects
-                || EffectivePixelZoom(zoom) >= 0.18f);
-    }
-
-    private static float EffectivePixelZoom(float zoom) => zoom * VectorUnits.PixelsPerUnit;
+        => scene.ObjectCount > 0;
 
     private RenderStats DrawOverviewTiles(StageControl stage)
     {
@@ -1676,13 +1625,19 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     {
         var scene = stage.Scene;
         var bitmap = LodBitmap(scene, overview);
-        var topLeft = stage.WorldToScreen(-scene.StageWidth * 0.5f, -scene.StageHeight * 0.5f);
-        var bottomRight = stage.WorldToScreen(scene.StageWidth * 0.5f, scene.StageHeight * 0.5f);
+        var topLeft = stage.UnrotateCanvasScreenPoint(stage.WorldToScreen(-scene.StageWidth * 0.5f, -scene.StageHeight * 0.5f));
+        var bottomRight = stage.UnrotateCanvasScreenPoint(stage.WorldToScreen(scene.StageWidth * 0.5f, scene.StageHeight * 0.5f));
         var destination = Rect(topLeft.X, topLeft.Y, bottomRight.X - topLeft.X, bottomRight.Y - topLeft.Y);
         var columns = overview ? scene.OverviewColumnCount : scene.TileColumnCount;
         var rows = overview ? scene.OverviewRowCount : scene.TileRowCount;
         var source = Rect(0, 0, columns, rows);
-        _target!.DrawBitmap(bitmap, destination, 1, BitmapInterpolationMode.NearestNeighbor, source);
+        var old = _target!.Transform;
+        try
+        {
+            _target.Transform = stage.CanvasScreenRotationTransform;
+            _target.DrawBitmap(bitmap, destination, 1, BitmapInterpolationMode.NearestNeighbor, source);
+        }
+        finally { _target.Transform = old; }
         LastLodBitmapSubmissions++;
     }
 
@@ -1768,10 +1723,12 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     {
         var scene = stage.Scene;
         var drawStarted = Stopwatch.GetTimestamp();
+        var maskPlan = stage.CompositionMasksFor(scene);
+        var masks = GetCompositionMasks(stage, scene, maskPlan);
         var drawn = _renderOrder.DrawLayers(
             scene,
             drawLimit,
-            (layer, objects, start) => DrawLayerObjects(stage, scene, layer, objects, start),
+            (layer, objects, start) => DrawLayerObjects(stage, scene, layer, objects, start, masks, maskPlan),
             includeEmptyLayers: stage.IsUnderlayHostScene(scene),
             firstLayer: _underlayDrawingRange?.Start ?? 0,
             endLayer: _underlayDrawingRange is { } range ? range.Start + range.Count : int.MaxValue);
@@ -1940,8 +1897,28 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         return geometry;
     }
 
-    private void DrawLayerObjects(StageControl stage, VectorScene scene, int layer, IReadOnlyList<int> objects, int start)
+    private void DrawLayerObjects(StageControl stage, VectorScene scene, int layer, IReadOnlyList<int> objects, int start,
+        CompositionMaskGeometries? masks = null, SceneCompositionMaskPlan? maskPlan = null)
     {
+        if (masks is not null && maskPlan is not null)
+        {
+            if (!scene.ShouldRenderLayerContent(layer) || StageControl.IsCompositionMaskArtworkHidden(scene, maskPlan, layer)) return;
+            using var clip = masks.CreateLayerClip(layer);
+            if (clip is null) DrawLayerContents(stage, scene, layer, objects, start);
+            else
+            {
+                using var clipLayer = _target!.CreateLayer();
+                _target.PushLayer(new LayerParameters
+                {
+                    ContentBounds = Rect(0, 0, _targetSize.Width, _targetSize.Height),
+                    GeometricMask = clip, MaskAntialiasMode = AntialiasMode.PerPrimitive,
+                    MaskTransform = Matrix3x2.Identity, Opacity = 1f, LayerOptions = LayerOptions.None
+                }, clipLayer);
+                try { DrawLayerContents(stage, scene, layer, objects, start); }
+                finally { _target.PopLayer(); }
+            }
+            return;
+        }
         var layerKind = scene.GetLayerKind(layer);
         if (!scene.ShouldRenderLayerContent(layer)) return;
         if (layerKind == DrawingLayerKind.Mask)
@@ -2111,7 +2088,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             var old = _target!.Transform;
             try
             {
-                _target.Transform = Matrix3x2.CreateRotation(scene.Angle[objectIndex], new Vector2(screen.X, screen.Y));
+                _target.Transform = Matrix3x2.CreateRotation(scene.Angle[objectIndex] + stage.PlanarCanvasRotation, new Vector2(screen.X, screen.Y));
                 _target.DrawRectangle(in bounds, brush, 1f);
             }
             finally
@@ -2166,7 +2143,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         try
         {
             _target.Transform = Matrix3x2.CreateScale(scale)
-                * Matrix3x2.CreateRotation(scene.Angle[objectIndex])
+                * Matrix3x2.CreateRotation(scene.Angle[objectIndex] + stage.PlanarCanvasRotation)
                 * Matrix3x2.CreateTranslation(screen.X, screen.Y);
             _target.DrawGeometry(geometry, brush, 1f / Math.Max(0.0001f, scale), RoundStrokeStyle());
         }
@@ -2285,7 +2262,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                     screen,
                     w,
                     h,
-                    scene.Angle[i],
+                    scene.Angle[i] + stage.PlanarCanvasRotation,
                     GdiColor.FromArgb(scene.Argb[i]).A / 255f);
             }
             return;
@@ -2359,7 +2336,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         var old = _target!.Transform;
         try
         {
-            _target.Transform = Matrix3x2.CreateRotation(scene.Angle[i], new Vector2(screen.X, screen.Y));
+            _target.Transform = Matrix3x2.CreateRotation(scene.Angle[i] + stage.PlanarCanvasRotation, new Vector2(screen.X, screen.Y));
             DrawLocalShape(shape, shapeVertexCount, brush, strokeBrush, scene.Stroke[i], screenStroke, screen.X, screen.Y, w, h, pass);
         }
         finally
@@ -2491,7 +2468,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         try
         {
             _target.Transform = Matrix3x2.CreateRotation(
-                scene.Angle[objectIndex],
+                scene.Angle[objectIndex] + stage.PlanarCanvasRotation,
                 new Vector2(screenCenter.X, screenCenter.Y));
             _target.DrawBitmap(
                 bitmap,
@@ -2816,8 +2793,10 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         var cached = ShapeGradientBitmap(stage, scene, objectIndex, stops);
         if (cached is null) return false;
 
-        var topLeft = WorldToVector(stage, new GdiPointF(cached.WorldBounds.Left, cached.WorldBounds.Top));
-        var bottomRight = WorldToVector(stage, new GdiPointF(cached.WorldBounds.Right, cached.WorldBounds.Bottom));
+        var first = stage.UnrotateCanvasScreenPoint(stage.WorldToScreen(cached.WorldBounds.Left, cached.WorldBounds.Top));
+        var last = stage.UnrotateCanvasScreenPoint(stage.WorldToScreen(cached.WorldBounds.Right, cached.WorldBounds.Bottom));
+        var topLeft = new Vector2(first.X, first.Y);
+        var bottomRight = new Vector2(last.X, last.Y);
         var destination = Rect(topLeft.X, topLeft.Y, bottomRight.X - topLeft.X, bottomRight.Y - topLeft.Y);
         var source = Rect(0, 0, cached.PixelWidth, cached.PixelHeight);
         var parameters = new LayerParameters
@@ -2836,12 +2815,15 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         if (maskIsObjectLocal) ReinforceObjectLocalGeometryEdge(stage, scene, objectIndex, mask, edgeBrush);
         else ReinforceWorldGeometryEdge(stage, mask, edgeBrush);
         _target!.PushLayer(parameters, ShapeGradientMaskLayer());
+        var oldTransform = _target.Transform;
         try
         {
+            _target.Transform = stage.CanvasScreenRotationTransform;
             _target.DrawBitmap(cached.Bitmap, destination, 1f, BitmapInterpolationMode.Linear, source);
         }
         finally
         {
+            _target.Transform = oldTransform;
             _target.PopLayer();
         }
 
@@ -2885,8 +2867,10 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             {
                 _target.AntialiasMode = AntialiasMode.PerPrimitive;
             }
-            _target.DrawGeometry(geometry, brush, edgeCoverageWidth);
-            _target.FillGeometry(geometry, brush);
+            if (!TryRecordReferenceNavigationFillEdge(geometry, brush, edgeCoverageWidth))
+                _target.DrawGeometry(geometry, brush, edgeCoverageWidth);
+            if (!TryRecordReferenceNavigationGeometry(geometry, brush, true))
+                _target.FillGeometry(geometry, brush);
         }
         finally
         {
@@ -3047,7 +3031,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         try
         {
             _target.Transform = Matrix3x2.CreateScale(scale)
-                * Matrix3x2.CreateRotation(scene.Angle[objectIndex])
+                * Matrix3x2.CreateRotation(scene.Angle[objectIndex] + stage.PlanarCanvasRotation)
                 * Matrix3x2.CreateTranslation(screen.X, screen.Y);
             _target.DrawGeometry(geometry, brush, scene.Stroke[objectIndex], SvgStrokeStyle(scene, objectIndex));
         }
@@ -3226,6 +3210,15 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         DrawWorldGridLines(stage, scale, bounds.Left, bounds.Right, vertical: true);
         DrawWorldGridLines(stage, scale, bounds.Top, bounds.Bottom, vertical: false);
 
+        if (stage.PlanarCanvasRotation != 0)
+        {
+            _target!.DrawLine(WorldToVector(stage, new GdiPointF(bounds.Left, 0)), WorldToVector(stage, new GdiPointF(bounds.Right, 0)),
+                BrushFor(GdiColor.FromArgb(GridAlpha(stage.PlanarWorldGridOpacity, 205), 214, 82, 82).ToArgb()), 1.6f);
+            _target.DrawLine(WorldToVector(stage, new GdiPointF(0, bounds.Top)), WorldToVector(stage, new GdiPointF(0, bounds.Bottom)),
+                BrushFor(GdiColor.FromArgb(GridAlpha(stage.PlanarWorldGridOpacity, 205), 82, 190, 122).ToArgb()), 1.6f);
+            return;
+        }
+
         if (origin.Y >= 0 && origin.Y <= stage.Height)
         {
             var xAxis = BrushFor(GdiColor.FromArgb(GridAlpha(stage.PlanarWorldGridOpacity, 205), 214, 82, 82).ToArgb());
@@ -3387,6 +3380,14 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             var style = WorldGridLayout.ResolveLineStyle(index, scale, stage.PlanarWorldGridOpacity);
             if (style.Color.A == 0) continue;
             var world = index * scale.StepWorld;
+            if (stage.PlanarCanvasRotation != 0)
+            {
+                var bounds = stage.VisibleWorldBounds();
+                var a = vertical ? new GdiPointF((float)world, bounds.Top) : new GdiPointF(bounds.Left, (float)world);
+                var b = vertical ? new GdiPointF((float)world, bounds.Bottom) : new GdiPointF(bounds.Right, (float)world);
+                _target!.DrawLine(WorldToVector(stage, a), WorldToVector(stage, b), BrushFor(style.Color.ToArgb()), style.Width);
+                continue;
+            }
             var position = vertical ? stage.WorldToScreen((float)world, 0).X : stage.WorldToScreen(0, (float)world).Y;
             if (vertical && (position < -style.Width || position > stage.Width + style.Width)
                 || !vertical && (position < -style.Width || position > stage.Height + style.Width))
@@ -3732,6 +3733,10 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         var w = Math.Max(2, stage.WorldLengthToScreen(Math.Abs(dx)));
         var h = Math.Max(2, stage.WorldLengthToScreen(Math.Abs(dy)));
         var screenStroke = Math.Max(0.1f, stage.WorldLengthToScreen(stage.DrawingPreviewStroke));
+        var previewTransform = _target!.Transform;
+        _target.Transform = Matrix3x2.CreateRotation(stage.PlanarCanvasRotation, new Vector2(center.X, center.Y)) * previewTransform;
+        try
+        {
         DrawLocalShape(
             stage.DrawingPreviewShape,
             stage.DrawingPreviewShapeVertexCount,
@@ -3763,6 +3768,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             center.Y + h * 0.5f);
         var bounds = BrushFor(GdiColor.FromArgb(180, 255, 255, 255).ToArgb());
         _target!.DrawRectangle(rect, bounds, 1, PreviewBoundsStrokeStyle());
+        }
+        finally { _target!.Transform = previewTransform; }
     }
 
     private void DrawPenDirectionHandles(StageControl stage)
@@ -4405,10 +4412,14 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             }
         }
 
-        if (_objectPathGeometryCache.Count >= MaxObjectPathGeometryCacheEntries
-            || _objectPathGeometryContentCache.Count >= MaxObjectPathGeometryCacheEntries)
+        // Preserve the resident working set on oversized sequential drawings.
+        // Clearing the entire cache here caused every subsequent frame to rebuild
+        // all geometry. Reuse one overflow slot instead of flushing all entries.
+        if (_objectPathGeometryCache.Count >= MaxObjectPathGeometryCacheEntries)
         {
-            ClearObjectPathGeometryCache();
+            var victim = _objectPathGeometryCache.Last();
+            _objectPathGeometryCache.Remove(victim.Key);
+            ReleaseObjectPathGeometry(victim.Value);
         }
 
         var geometry = _factory!.CreatePathGeometry();
@@ -4611,7 +4622,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         var screen = stage.WorldToScreen(scene.X[objectIndex], scene.Y[objectIndex]);
         var scale = VectorUnits.PixelsPerUnit * stage.Zoom;
         return Matrix3x2.CreateScale(scale)
-            * Matrix3x2.CreateRotation(scene.Angle[objectIndex])
+            * Matrix3x2.CreateRotation(scene.Angle[objectIndex] + stage.PlanarCanvasRotation)
             * Matrix3x2.CreateTranslation(screen.X, screen.Y);
     }
 

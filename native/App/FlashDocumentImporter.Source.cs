@@ -1,4 +1,4 @@
-using System.IO.Compression;
+﻿using System.IO.Compression;
 using System.Xml;
 using System.Xml.Linq;
 
@@ -6,6 +6,14 @@ namespace VectorAnimationEngine;
 
 internal static partial class FlashDocumentImporter
 {
+    // The visual bridge needs the same archive compatibility and path validation,
+    // but must not apply native feature restrictions (for example TLF namespaces).
+    internal static byte[] ReadVisualBridgeDocument(string path)
+    {
+        using var source = new XflSource(path);
+        return source.ReadBytes("DOMDocument.xml", 32L * 1024 * 1024);
+    }
+
     // Entries are read through bounded streams; XML never resolves external resources.
     private sealed class XflSource : IDisposable
     {
@@ -13,7 +21,7 @@ internal static partial class FlashDocumentImporter
         private const long MaximumTotalXmlBytes = 384 * 1024 * 1024;
         private readonly string? _root;
         private readonly ZipArchive? _archive;
-        private readonly Dictionary<string, ZipArchiveEntry> _entries = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, ZipArchiveEntry> _entries = new(StringComparer.Ordinal);
         private readonly string _prefix = "";
         private long _readBytes;
 
@@ -54,6 +62,11 @@ internal static partial class FlashDocumentImporter
                         || name.EndsWith("/DOMDocument.xml", StringComparison.OrdinalIgnoreCase)).ToArray();
                     if (documents.Length != 1) throw new InvalidDataException("The Flash archive must contain exactly one DOMDocument.xml.");
                     _prefix = documents[0][..^"DOMDocument.xml".Length];
+                    // Root discovery historically accepts case variants. Keep that single
+                    // resolved root accessible without folding case for library entries.
+                    var canonicalRoot = _prefix + "DOMDocument.xml";
+                    if (!string.Equals(documents[0], canonicalRoot, StringComparison.Ordinal))
+                        _entries.Add(canonicalRoot, _entries[documents[0]]);
                 }
                 catch { _archive.Dispose(); throw; }
             }
@@ -93,6 +106,7 @@ internal static partial class FlashDocumentImporter
         {
             relativePath = SafeRelativePath(relativePath);
             if (_archive is not null) return _entries.ContainsKey(_prefix + relativePath);
+            ValidateDiskRelativePath(relativePath);
             var path = Path.Combine(_root!, relativePath.Replace('/', Path.DirectorySeparatorChar));
             EnsureSafePath(path);
             return File.Exists(path);
@@ -148,6 +162,7 @@ internal static partial class FlashDocumentImporter
                 if (entry.Length > MaximumXmlBytes) throw new InvalidDataException($"XFL entry too large: {relativePath}.");
                 return entry.Open();
             }
+            ValidateDiskRelativePath(relativePath);
             var path = Path.GetFullPath(Path.Combine(_root!, relativePath.Replace('/', Path.DirectorySeparatorChar)));
             if (!path.StartsWith(_root!.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("XFL paths must stay inside the source directory.");
@@ -168,10 +183,19 @@ internal static partial class FlashDocumentImporter
         internal static string SafeRelativePath(string path)
         {
             path = path.Replace('\\', '/');
-            if (path.Length is 0 or > 1024 || path.StartsWith('/') || path.Contains(':') || path.Any(char.IsControl)
-                || path.Split('/').Any(part => part is "" or "." or ".." || part.EndsWith(' ') || part.EndsWith('.')))
+            if (path.Length is 0 or > 1024 || path.StartsWith('/') || path.Contains(':') || path.Contains('\0')
+                || path.Split('/').Any(part => part is "" or "." or ".."))
                 throw new InvalidDataException($"Unsafe XFL relative path: {path}.");
             return path;
+        }
+
+        private static void ValidateDiskRelativePath(string path)
+        {
+            // ZIP names are exact logical keys and may contain legacy control characters.
+            // Reject those characters when resolving actual Windows file paths.
+            if (path.Any(char.IsControl)
+                || path.Split('/').Any(part => part.EndsWith(' ') || part.EndsWith('.')))
+                throw new InvalidDataException($"Unsafe XFL disk relative path: {path}.");
         }
 
         public void Dispose() => _archive?.Dispose();

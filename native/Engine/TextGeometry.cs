@@ -291,6 +291,21 @@ internal static class TextGeometry
             emSize,
             new RectangleF(0, 0, data.LayoutSize.Width, data.LayoutSize.Height),
             format);
+        // Imported Flash boxes can be shorter than the line metrics of the
+        // locally substituted font. LineLimit then suppresses every glyph.
+        // Preserve the authored width/alignment and allow the measured height
+        // only when the original layout produced no visible geometry.
+        if (path.PointCount == 0 && !string.IsNullOrWhiteSpace(data.Content))
+        {
+            var fallbackHeight = Math.Max(data.LayoutSize.Height, MeasureLayoutHeight(data));
+            // MeasureString and AddString can disagree on the substituted
+            // font's final line height. Do not suppress that entire line again
+            // when recovering an otherwise empty imported text outline.
+            format.FormatFlags &= ~StringFormatFlags.LineLimit;
+            format.FormatFlags |= StringFormatFlags.NoClip;
+            path.AddString(data.Content, family, (int)style, emSize,
+                new RectangleF(0, 0, data.LayoutSize.Width, fallbackHeight), format);
+        }
         if (path.PointCount == 0) return Array.Empty<PointF[]>();
 
         var flatteningTolerance = Math.Max(0.5f, emSize / 1024f);

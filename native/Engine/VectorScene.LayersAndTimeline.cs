@@ -93,6 +93,7 @@ internal sealed partial class VectorScene
     {
         return (uint)objectIndex < ObjectCount
             && IsObjectActive(objectIndex, frame)
+            && !ObjectLocked[objectIndex]
             && !IsLayerEffectivelyLocked(ObjectLayer[objectIndex]);
     }
 
@@ -138,6 +139,12 @@ internal sealed partial class VectorScene
     }
 
     public bool SetLayerMask(int contentLayer, int maskLayer)
+        => SetLayerMaskCore(contentLayer, maskLayer, shareMask: false);
+
+    internal bool SetSharedLayerMask(int contentLayer, int maskLayer)
+        => SetLayerMaskCore(contentLayer, maskLayer, shareMask: true);
+
+    private bool SetLayerMaskCore(int contentLayer, int maskLayer, bool shareMask)
     {
         if ((uint)contentLayer >= LayerCount
             || (uint)maskLayer >= LayerCount
@@ -151,7 +158,7 @@ internal sealed partial class VectorScene
         var changed = false;
         for (var layer = 0; layer < LayerCount; layer++)
         {
-            if (layer == contentLayer || !string.Equals(LayerMaskIds[layer], maskId, StringComparison.Ordinal)) continue;
+            if (shareMask || layer == contentLayer || !string.Equals(LayerMaskIds[layer], maskId, StringComparison.Ordinal)) continue;
             LayerMaskIds[layer] = string.Empty;
             changed = true;
         }
@@ -324,8 +331,9 @@ internal sealed partial class VectorScene
             }
 
             if (GetLayerKind(layer) != DrawingLayerKind.Mask) return;
-            var contentLayer = GetMaskContentLayerIndex(layer);
-            if (contentLayer >= 0) AppendLayer(contentLayer);
+            for (var contentLayer = 0; contentLayer < LayerCount; contentLayer++)
+                if (string.Equals(LayerMaskIds[contentLayer], LayerIds[layer], StringComparison.Ordinal))
+                    AppendLayer(contentLayer);
         }
 
         for (var layer = 0; layer < LayerCount; layer++)
@@ -1135,6 +1143,7 @@ internal sealed partial class VectorScene
                 var destinationLayer = destinationLayerOffset + sourceLayer;
                 LayerNames[destinationLayer] = source.LayerNames[sourceLayer];
                 LayerKinds[destinationLayer] = source.LayerKinds[sourceLayer];
+                LayerLocked[destinationLayer] = source.LayerLocked[sourceLayer];
                 LayerVisible[destinationLayer] = source.LayerVisible[sourceLayer];
                 LayerOpacity[destinationLayer] = source.LayerOpacity[sourceLayer] * sourceItem.Opacity;
                 LayerBlendModes[destinationLayer] = source.LayerBlendModes[sourceLayer];
@@ -1197,7 +1206,7 @@ internal sealed partial class VectorScene
 
     public bool IsObjectActive(int objectIndex, int frame)
     {
-        if ((uint)objectIndex >= ObjectCount) return false;
+        if ((uint)objectIndex >= ObjectCount || ObjectHidden[objectIndex]) return false;
         var layer = ObjectLayer[objectIndex];
         if ((uint)layer >= LayerCount || !IsLayerEffectivelyVisible(layer)) return false;
 
@@ -1775,7 +1784,6 @@ internal sealed partial class VectorScene
     {
         var result = Enumerable.Repeat(string.Empty, layerIds.Count).ToArray();
         if (source is null) return result;
-        var claimedMaskIds = new HashSet<string>(StringComparer.Ordinal);
         var indexes = layerIds
             .Select((id, index) => (id, index))
             .ToDictionary(item => item.id, item => item.index, StringComparer.Ordinal);
@@ -1790,7 +1798,6 @@ internal sealed partial class VectorScene
                 continue;
             }
 
-            if (!claimedMaskIds.Add(maskId)) continue;
             result[layer] = maskId;
         }
 

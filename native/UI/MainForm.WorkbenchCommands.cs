@@ -652,7 +652,7 @@ internal sealed partial class MainForm : Form
             _stage.ClearBrushTipCursor();
             _stage.ClearFillToolCursor();
             ClearFillHoverPreview();
-            _stage.Cursor = _tool == ToolMode.Hand ? Cursors.SizeAll : Cursors.Default;
+            _stage.Cursor = _tool == ToolMode.Hand ? Cursors.SizeAll : SelectionToolCursor();
             return;
         }
         if (_stage.ClientRectangle.Contains(screen) && UpdateSceneLightGizmoCursor(screen)) return;
@@ -670,7 +670,7 @@ internal sealed partial class MainForm : Form
             _stage.ClearBrushTipCursor();
             _stage.ClearFillToolCursor();
             ClearFillHoverPreview();
-            _stage.Cursor = _tool == ToolMode.Hand ? Cursors.SizeAll : Cursors.Default;
+            _stage.Cursor = _tool == ToolMode.Hand ? Cursors.SizeAll : SelectionToolCursor();
             return;
         }
         if (_altEyedropperHeld && IsAltEyedropperTool(_tool))
@@ -742,8 +742,12 @@ internal sealed partial class MainForm : Form
         }
         _stage.Cursor = IsDrawingTool(_tool)
             ? Cursors.Cross
-            : _tool == ToolMode.Hand ? Cursors.SizeAll : Cursors.Default;
+            : _tool == ToolMode.Hand ? Cursors.SizeAll : SelectionToolCursor();
     }
+
+    private Cursor SelectionToolCursor() => IsSelectionArrow(_tool)
+        ? _stage.SelectionArrowCursorFor(_tool == ToolMode.Select, StageControl.SelectionArrowCursorFeedback.None)
+        : Cursors.Default;
 
     private void UpdateInteractionCursor(Point screen)
     {
@@ -836,7 +840,7 @@ internal sealed partial class MainForm : Form
             _stage.ClearBrushTipCursor();
             _stage.ClearFillToolCursor();
             ClearFillHoverPreview();
-            _stage.Cursor = _tool == ToolMode.Hand ? Cursors.SizeAll : Cursors.Default;
+            _stage.Cursor = _tool == ToolMode.Hand ? Cursors.SizeAll : SelectionToolCursor();
             return;
         }
         if (UpdateSceneLightGizmoCursor(screen)) return;
@@ -854,7 +858,7 @@ internal sealed partial class MainForm : Form
             _stage.ClearBrushTipCursor();
             _stage.ClearFillToolCursor();
             ClearFillHoverPreview();
-            _stage.Cursor = _tool == ToolMode.Hand ? Cursors.SizeAll : Cursors.Default;
+            _stage.Cursor = _tool == ToolMode.Hand ? Cursors.SizeAll : SelectionToolCursor();
             return;
         }
 
@@ -1203,6 +1207,8 @@ internal sealed partial class MainForm : Form
             RevealInspectorCategory(InspectorCategory.Camera, "shot page");
         };
         _workspaceTabs.WorldGridOpacityChanged += (_, _) => _stage.WorldGridOpacity = _workspaceTabs.WorldGridOpacity / 100f;
+        _workspaceTabs.RulerMenuRequested += (sender, _) => { if (sender is Control anchor) _stage.ShowRulerMenu(anchor); };
+        _stage.RulerGuidesChanged += (_, _) => SetProjectDirty(true);
         _workspaceTabs.WorldGridTypeChanged += (_, _) => _stage.WorldGridType = _workspaceTabs.WorldGridType;
         _brushTipPanel.ImportRequested += (_, _) => ImportBrushTip();
         _brushTipPanel.SoftRoundRequested += (_, _) => RestoreDefaultBrushTip();
@@ -1637,6 +1643,7 @@ internal sealed partial class MainForm : Form
         _stage.MouseMove += StageMouseMove;
         _stage.MouseLeave += (_, _) =>
         {
+            if (!_stage.Capture) ResetSmartSnapping();
             _stage.SetMotionTrackHover(-1);
             ClearMotionTrackHoverHint();
             ClearShotFramingFeedback();
@@ -1657,6 +1664,8 @@ internal sealed partial class MainForm : Form
         _stage.DragDrop += StageDragDrop;
         Deactivate += (_, _) =>
         {
+            EndCanvasRotation(cancel: true);
+            CancelStageNumericTransform();
             EndTransientViewNavigation(restoreFeedback: false);
             CancelReferenceCameraRightLook();
             CancelReferenceCameraKeyboardNavigation();
@@ -1770,31 +1779,47 @@ internal sealed partial class MainForm : Form
         OpenProjectFile(path, promptUnsaved: true);
     }
 
+    private bool _openingProjectFile;
+
     private void OpenProjectFile(string fileName, bool promptUnsaved)
     {
+        if (_openingProjectFile) return;
         if (promptUnsaved && !TryContinueAfterUnsavedChanges()) return;
 
+        _openingProjectFile = true;
         Cursor = Cursors.WaitCursor;
         try
         {
             var fullPath = Path.GetFullPath(fileName);
             SessionBreadcrumbs.Record("Project", $"Opening {fullPath}");
-            VectorProject project;
-            string manifestPath;
-            string packagePath;
-            if (ProjectPackageStore.IsPackagePath(fullPath))
+            VectorProject? project = null;
+            string manifestPath = fullPath;
+            string packagePath = "";
+            Exception? loadError = null;
+            using (var progress = new FlashImportProgressDialog(openingProject: true))
             {
-                var (packagedProject, workspaceManifestPath) = ProjectPackageStore.OpenPackage(fullPath);
-                project = packagedProject;
-                manifestPath = workspaceManifestPath;
-                packagePath = fullPath;
+                progress.Shown += async (_, _) =>
+                {
+                    try
+                    {
+                        if (ProjectPackageStore.IsPackagePath(fullPath))
+                        {
+                            var loaded = await Task.Run(() => ProjectPackageStore.OpenPackage(fullPath, progress));
+                            project = loaded.Project;
+                            manifestPath = loaded.ManifestPath;
+                            packagePath = fullPath;
+                        }
+                        else project = await Task.Run(() => ProjectVaultStore.Load(fullPath, progress));
+                    }
+                    catch (Exception exception) { loadError = exception; }
+                    finally { progress.Complete(); }
+                };
+                progress.ShowDialog(this);
+                if (progress.CancellationRequested) return;
             }
-            else
-            {
-                project = ProjectVaultStore.Load(fullPath);
-                manifestPath = fullPath;
-                packagePath = "";
-            }
+            if (loadError is not null)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(loadError).Throw();
+            if (project is null) throw new InvalidDataException("The project loader returned no document.");
 
             StopPlayback();
             FinishPointerInteractionForFrameChange();
@@ -1810,6 +1835,7 @@ internal sealed partial class MainForm : Form
         }
         finally
         {
+            _openingProjectFile = false;
             Cursor = Cursors.Default;
         }
     }
@@ -2176,6 +2202,7 @@ internal sealed partial class MainForm : Form
 
     private void ResetUndoHistory()
     {
+        _documentRedo.Clear();
         _canvasSettingsUndo.Clear();
         _canvasSettingsRedo.Clear();
         ResetCanvasUndoHistory();
@@ -2185,6 +2212,7 @@ internal sealed partial class MainForm : Form
 
     private void ResetCanvasUndoHistory()
     {
+        if (!_replayingDocumentHistory) _documentRedo.Clear();
         _undoStack.Clear();
         _undoCapturedForPointerEdit = false;
         _pointerUndoSnapshot = null;
@@ -2637,6 +2665,7 @@ internal sealed partial class MainForm : Form
             if (frameChanged) _stage.InvalidatePreservingWorkspaceFrameCache();
             else _stage.Invalidate();
         }
+        if (!_playing && IsSceneCompositionContext()) ApplyPreparedWorkspaceBitmap();
         return true;
     }
 
@@ -2676,6 +2705,10 @@ internal sealed partial class MainForm : Form
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if (keyData == Keys.Escape && _canvasRotationHeld) { EndCanvasRotation(cancel: true); return true; }
+        if (_stageNumericMode != '\0' && _stage.ContainsFocus && !ContainsFocusedEditor(this)
+            && HandleStageNumericTransformKey(keyData)) return true;
+
         if (HandleShotWorkspaceShortcut(keyData)) return true;
         if (HandleInspectorCategoryShortcut(keyData)) return true;
         if (HandleInspectorCategoryKey(keyData)) return true;
@@ -2683,6 +2716,14 @@ internal sealed partial class MainForm : Form
         var profile = ShortcutProfiles.ResolveProfile(
             _applicationSettings.ActiveShortcutProfileId,
             _applicationSettings.CustomShortcutProfiles);
+        // Object shortcuts take precedence only when the Stage owns a selection.
+        // Elsewhere the existing workspace number shortcuts remain available.
+        if (_stage.ContainsFocus && !ContainsFocusedEditor(this)
+            && (_selectedObjects.Count > 0 || _selectedSceneInstanceIds.Count > 0))
+        {
+            if (keyData == (Keys.Control | Keys.D2) && ChangeStageObjectVisibility(locked: true)) return true;
+            if (keyData == (Keys.Control | Keys.D3) && ChangeStageObjectVisibility()) return true;
+        }
         if (_workspaceTabs.TrySelectWorkspaceShortcut(keyData)) return true;
         if (ContainsFocusedEditor(this)
             && (keyData is (Keys.Control | Keys.A) or (Keys.Control | Keys.X) or (Keys.Control | Keys.C)
@@ -2708,9 +2749,14 @@ internal sealed partial class MainForm : Form
         var focusedEditor = ContainsFocusedEditor(this);
         var interactiveControlFocused = ContainsFocusedInteractiveControl(this);
         var commandButtonFocused = ContainsFocusedButton(this);
+        if (_stageNumericMode != '\0')
+        {
+            if (focusedEditor || interactiveControlFocused) CancelStageNumericTransform();
+            else if (HandleStageNumericTransformKey(physicalKeyData)) return true;
+        }
         if (!focusedEditor && _materialEditSession is null
-            && (keyData == (Keys.Control | Keys.Y) || keyData == (Keys.Control | Keys.Shift | Keys.Z))
-            && RedoCanvasSettings()) return true;
+            && keyData == (Keys.Control | Keys.Y)
+            && RedoLastEdit()) return true;
         if (keyData == Keys.Escape && ReferenceCameraRightLookSessionActive)
         {
             CancelReferenceCameraRightLook();
@@ -2762,6 +2808,10 @@ internal sealed partial class MainForm : Form
         }
         if (HasActiveCanvasPointerInteraction()
             && (BlocksModelCommandDuringPointerInteraction(keyData)
+                || ToolShortcutMap.ResolveCommandId(profile, physicalKeyData)?.StartsWith("stage.", StringComparison.Ordinal) == true
+                || keyData == Keys.Back
+                || !IsScene3DView() && (keyData & Keys.Modifiers) is Keys.None or Keys.Shift
+                    && (keyData & Keys.KeyCode) is Keys.Left or Keys.Right or Keys.Up or Keys.Down
                 || IsScene3DView() && IsReferenceCameraKeyboardShortcut(keyData)))
         {
             return true;
@@ -2783,6 +2833,7 @@ internal sealed partial class MainForm : Form
         }
         if (keyData == (Keys.Control | Keys.Shift | Keys.S))
         {
+            if (_stage.ContainsFocus && !focusedEditor && !IsScene3DView() && BeginStageNumericTransform('S')) return true;
             SaveProjectAs();
             return true;
         }
@@ -2837,12 +2888,14 @@ internal sealed partial class MainForm : Form
                 UndoLastEdit();
                 return true;
             }
+            if (keyData is Keys.Up or Keys.Down && JumpStageTimelineKeyframe(keyData == Keys.Down)) return true;
             if (HandleTimelineShortcut(keyData)) return true;
         }
         // Director mode disables geometry shortcuts, but still owns scene history.
         // Text/numeric editors retain local undo; active gestures remain guarded above.
         if (IsShotDirectorContext() && !focusedEditor && _materialEditSession is null
             && keyData == (Keys.Control | Keys.Z) && UndoLastEdit()) return true;
+        if (keyData == (Keys.Shift | Keys.Space) && HoldCanvasRotation()) return true;
         if (keyData == Keys.Space && TryHoldTemporaryCanvasPan()) return true;
         if (keyData == Keys.Escape && (_spacePanHeld || _spacePanPointerActive))
         {
@@ -2937,6 +2990,8 @@ internal sealed partial class MainForm : Form
             if (keyData == Keys.Escape && CancelPenCurve()) return true;
             if (keyData == Keys.Escape && IsSymbolEditing) return ExitParentSymbolEditing();
             if (!(commandButtonFocused && physicalKeyData == Keys.Enter) && HandleTimelineShortcut(keyData)) return true;
+            if (HandleConfiguredStageShortcut(profile, physicalKeyData)) return true;
+            if (HandleAdditionalStageShortcut(keyData)) return true;
             if (TryActivateConfiguredToolShortcut(physicalKeyData)) return true;
             if (keyData == Keys.OemOpenBrackets && AdjustFreehandWidth(increase: false)) return true;
             if (keyData == Keys.Oem6 && AdjustFreehandWidth(increase: true)) return true;
@@ -2961,7 +3016,7 @@ internal sealed partial class MainForm : Form
         if (drawingObjectStackDirection != 0
             && MoveSelectedDrawingObjectsInStack(drawingObjectStackDirection)) return true;
 
-        if (keyData == Keys.Delete && stageDeleteEnabled && DeleteSelectedObject()) return true;
+        if (keyData is Keys.Delete or Keys.Back && stageDeleteEnabled && DeleteSelectedObject()) return true;
         return base.ProcessCmdKey(ref msg, physicalKeyData);
     }
 

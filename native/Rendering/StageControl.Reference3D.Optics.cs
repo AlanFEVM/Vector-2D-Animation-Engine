@@ -249,6 +249,21 @@ internal sealed partial class StageControl
         AddReference3DHashInt(ref hash, BitConverter.SingleToInt32Bits(value.Z));
     }
 
+    private bool RequiresReference3DOffscreenOpticalSurfaces
+    {
+        get
+        {
+            if (!UsesSceneOpticsProjection || _referenceSceneDefinition is not { } definition) return false;
+            foreach (var light in definition.Lights)
+            {
+                if (light.Kind != SceneLightKind.Ambient
+                    && definition.TryEvaluateLightSettings(light.Id, Math.Max(0, Frame), out var settings)
+                    && settings.Enabled && settings.Intensity > 0f && settings.IsValid(light.Kind)) return true;
+            }
+            return false;
+        }
+    }
+
     private Reference3DRenderItem[] ApplyReference3DOptics(Reference3DRenderItem[] items)
     {
         LastReference3DOpticalLightEvaluations = 0;
@@ -275,6 +290,14 @@ internal sealed partial class StageControl
                 && settings.Intensity > 0f
                 && settings.IsValid(light.Kind);
         });
+        // With no illumination, non-metallic, non-transmitting materials have
+        // exactly their authored colour/opacity. Do not rasterize thousands of
+        // identity optical surfaces (or widen strokes) to reproduce that colour.
+        if (!hasEffectiveLighting && items.All(item =>
+        {
+            var material = GetReference3DOpticalMaterial(item.ObjectIndex).Normalize();
+            return material.Transmission == 0f && material.Metallic == 0f;
+        })) return items;
         // Ambient-only lighting is spatially uniform, so vector evaluation is exact for small plans.
         var hasOnlyUniformLighting = !lights.Any(light =>
         {

@@ -8,6 +8,7 @@ internal static partial class Benchmark
 {
     private static void RunSnapPointModelRegression()
     {
+        RunSmartSnapGeometryRegression();
         var project = VectorProject.CreateEmpty();
         var drawingObject = project.DrawingObjects[0];
         var addedFirst = project.TryAddDrawingObjectSnapPoint(
@@ -119,6 +120,51 @@ internal static partial class Benchmark
         RunSnapPointTransformRegression();
         RunSnapPointVaultRegression(project, drawingObject.Id);
         Console.WriteLine("snap_point_model_regression=ok");
+    }
+
+    private static void RunSmartSnapGeometryRegression()
+    {
+        var index = new SmartSnapIndex([new RectangleF(100, 100, 20, 20)], points: [new PointF(100, 100)]);
+        var axes = index.Resolve(new RectangleF(98, 119, 0, 0), 8, true, false, false, false);
+        AssertTimeline(axes.Correction == new PointF(2, 1), "Smart alignment did not resolve X and Y independently.");
+        var first = index.Resolve(new RectangleF(94, 30, 0, 0), 8, true, false, false, false);
+        var retained = index.Resolve(new RectangleF(89, 30, 0, 0), 8, true, false, false, false, first);
+        var released = index.Resolve(new RectangleF(87, 30, 0, 0), 8, true, false, false, false, retained);
+        AssertTimeline(first.X?.Coordinate == 100 && retained.X?.Coordinate == 100 && released.X is null,
+            "Smart alignment did not retain and release a target at the hysteresis thresholds.");
+        var tight = index.Resolve(new RectangleF(75, 100, 20, 20), 8, false, true, false, false);
+        AssertTimeline(tight.Correction.X == 5, "Tight fit did not compare object edges.");
+        var unrelated = index.Resolve(new RectangleF(75, 0, 20, 20), 8, false, true, false, false);
+        AssertTimeline(!unrelated.Snapped, "Tight fit attracted an unrelated row.");
+        AssertTimeline(index.TryPoint(new PointF(103, 104), 8, out var point) && point == new PointF(100, 100),
+            "Geometry point snap did not use radial distance.");
+        var guides = new SmartSnapIndex([], [new RulerGuide(false, -100), new RulerGuide(true, 50)]);
+        AssertTimeline(guides.Resolve(new RectangleF(-96, 46, 0, 0), 8, false, false, true, false).Correction == new PointF(-4, 4),
+            "Ruler guide snapping failed at negative coordinates.");
+        AssertTimeline(!guides.Resolve(new RectangleF(-96, 46, 0, 0), 8, false, false, false, false).Snapped,
+            "Disabled guide snapping remained active.");
+        var gaps = new SmartSnapIndex([new RectangleF(0, 0, 20, 20), new RectangleF(100, 0, 20, 20), new RectangleF(50, 1000, 20, 20)]);
+        var equal = gaps.Resolve(new RectangleF(47, 0, 20, 20), 8, false, false, false, true);
+        AssertTimeline(equal.X is { Kind: SmartSnapKind.Gap, Correction: 3, Comparison: not null },
+            "Equal spacing did not ignore unrelated rows or publish both measured gaps.");
+        var repeat = new SmartSnapIndex([new RectangleF(0, 0, 20, 20), new RectangleF(50, 0, 20, 20)]);
+        AssertTimeline(repeat.Resolve(new RectangleF(103, 0, 20, 20), 8, false, false, false, true).Correction.X == -3,
+            "Repeated spacing did not extend the previous gap.");
+        var grid = new SmartSnapIndex([]).Resolve(new RectangleF(-93, 107, 20, 20), 8, false, false, false, false, gridStep: 100);
+        AssertTimeline(grid.Correction == new PointF(-7, -7), "Grid fallback did not use the moved bounds.");
+        RectangleF[] layout = [new(0, 0, 20, 20), new(70, 40, 30, 30), new(130, 80, 10, 10)];
+        var offsets = SmartLayout.Plan(layout, SmartLayoutAction.GapsX, SmartLayoutReference.Selection, 0, null);
+        AssertTimeline(offsets[0] == PointF.Empty && offsets[1] == new PointF(-10, 0) && offsets[2] == PointF.Empty,
+            "Distribution did not preserve outer edges and equalize free space for unequal sizes.");
+        var key = SmartLayout.Plan(layout, SmartLayoutAction.Left, SmartLayoutReference.KeyObject, 1, null);
+        AssertTimeline(key[0].X == 70 && key[1] == PointF.Empty && key[2].X == -60,
+            "Key-object alignment moved the reference object.");
+        var page = SmartLayout.Plan(layout, SmartLayoutAction.CenterX, SmartLayoutReference.Canvas, 0, new RectangleF(-200, -200, 400, 400));
+        AssertTimeline(page[0].X == -10 && page[1].X == -85 && page[2].X == -135,
+            "Canvas centering did not use the document origin.");
+        AssertTimeline(!index.Resolve(new RectangleF(float.NaN, 0, 20, 20), 8, true, true, true, true).Snapped,
+            "Invalid snapping input produced a result.");
+        Console.WriteLine("smart_snap_geometry_regression=ok");
     }
 
     private static void RunSnapPointTransformRegression()
@@ -245,6 +291,7 @@ internal static partial class Benchmark
 
     private static void RunSnapPointToolRegression()
     {
+        RunSmartSnapPointerRegression();
         var projectField = RequireField(typeof(MainForm), "_project");
         var sceneField = RequireField(typeof(MainForm), "_scene");
         var stageField = RequireField(typeof(MainForm), "_stage");
@@ -380,6 +427,36 @@ internal static partial class Benchmark
             throw new InvalidOperationException("Undo did not restore a deleted snap point and its overlay.");
         }
         Console.WriteLine("snap_point_tool_regression=ok");
+    }
+
+    private static void RunSmartSnapPointerRegression()
+    {
+        using var form = CreateOffscreenSnapPointForm();
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var settings = (DrawSettings)RequireField(typeof(MainForm), "_drawSettings").GetValue(form)!;
+        scene.CreateEmpty();
+        var source = scene.AddObject(0, PointF.Empty, new SizeF(100, 100), 0, 0, Color.Teal, Color.Transparent, 8, ShapeKind.Rectangle);
+        scene.AddObject(0, new PointF(300, 0), new SizeF(100, 100), 0, 0, Color.Coral, Color.Transparent, 8, ShapeKind.Rectangle);
+        scene.CompleteDeferredBuild();
+        settings.SnapEnabled = true; settings.AdhesionEnabled = true;
+        settings.SnapToGuides = false; settings.SnapToCanvas = false;
+        settings.SnapToObjects = false; settings.AlignmentEnabled = false;
+        RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]).Invoke(form, [source, false]);
+        var resolve = RequireMethod(typeof(MainForm), "ResolveSmartMovePointer");
+        var tolerance = stage.ScreenLengthToWorld(settings.SnapTolerancePixels * stage.DeviceDpi / 96f);
+        var input = new PointF(200 - Math.Min(2, tolerance / 2), 0);
+        var snapped = (PointF)resolve.Invoke(form, [input, PointF.Empty, null])!;
+        AssertTimeline(Math.Abs(snapped.X - 200) < 0.01f && snapped.Y == 0 && stage.SmartSnapLines.Count > 0,
+            "Selection snapping did not align the moved edge or publish an indicator.");
+        var returned = (PointF)resolve.Invoke(form, [PointF.Empty, PointF.Empty, null])!;
+        AssertTimeline(returned == PointF.Empty && stage.SmartSnapLines.Count == 0,
+            "Returning to the pointer origin did not restore identity and clear guides.");
+        RequireMethod(typeof(MainForm), "ResetSmartSnapping").Invoke(form, null);
+        settings.SnapEnabled = false;
+        AssertTimeline((PointF)resolve.Invoke(form, [input, PointF.Empty, null])! == input,
+            "Disabling the snapping master switch still changed movement.");
+        Console.WriteLine("smart_snap_pointer_regression=ok");
     }
 
     private static void RunSnapPointSceneRegression()

@@ -157,11 +157,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private ApplicationSettings _applicationSettings = ApplicationSettingsStore.Load();
     private VectorScene _scene;
     private readonly Icon _applicationIcon = new(typeof(MainForm), "Application.ico");
-    private readonly VectorScene _sceneEditStage = new();
+    private VectorScene _sceneEditStage = new();
     private readonly VectorScene _drawingObjectUnderlayStage = new();
     private readonly VectorScene _onionSkinStage = new();
-    private readonly VectorScene _localOnionSkinStage = new();
-    private readonly VectorScene _nestedOnionSkinStage = new();
     private readonly VectorScene _sceneOnionSkinStage = new();
     private readonly VectorScene _dragPreviewStage = new();
     private readonly VectorScene _brushAreaPreviewStage = new();
@@ -639,7 +637,10 @@ internal sealed partial class MainForm : Form, IMessageFilter
         long MemoryBytes = 0,
         MarqueeMaterializationSession? MarqueeSession = null,
         VectorSceneSnapshot? MarqueeSnapshot = null,
-        IEditableSnapPointOwner? SnapPointOwner = null);
+        IEditableSnapPointOwner? SnapPointOwner = null)
+    {
+        public string[] CreatedDrawingObjectIds { get; init; } = [];
+    }
 
     private sealed record SceneTimelineUndoEntry(
         SceneDefinition Scene,
@@ -652,7 +653,10 @@ internal sealed partial class MainForm : Form, IMessageFilter
         SceneLightDefinition[]? LightSnapshot = null,
         string? SelectedLightId = null,
         SceneOnionSkinState? OnionSkinState = null,
-        SceneShotSnapshot[]? ShotSnapshot = null);
+        SceneShotSnapshot[]? ShotSnapshot = null)
+    {
+        public string[] CreatedDrawingObjectIds { get; init; } = [];
+    }
 
     private sealed class OnionSkinRangeEditSession
     {
@@ -847,6 +851,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
         BitmapObjectData? BitmapData)
     {
         public bool QuadraticLineEditing { get; init; }
+        public VectorScene? Geometry { get; init; }
+        public int GeometryIndex { get; init; }
     }
 
     private sealed record ClipboardDrawingObjectInstance(
@@ -919,6 +925,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
         _stage = new StageControl(_scene)
         {
+            ContinuousSceneRefreshEnabled = true,
+            ExperimentalSceneLightingEnabled = _applicationSettings.ExperimentalSceneLightingEnabled,
+            NavigationPreviewEnabled = _applicationSettings.NavigationPreviewEnabled,
             Experimental3DEnabled = _applicationSettings.Experimental3DEnabled,
             SimpleSelectionHighlightEnabled = _applicationSettings.SimpleSelectionHighlightEnabled,
             Dock = DockStyle.Fill,
@@ -953,6 +962,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             _drawSettings.PressureBrushSmoothing);
         _mixingBrushSettingsPanel.SetSettings(_drawSettings.MixingBrushSettings);
         _drawSnappingStrip = new DrawSnappingStrip(_drawSettings);
+        _drawSettings.Changed += (_, _) => ResetSmartSnapping();
         _shapeFlyoutHideTimer.Interval = 100;
         _shapeFlyoutHideTimer.Tick += (_, _) => UpdateShapeToolFlyoutVisibility();
         _lineFlyoutHideTimer.Interval = 100;
@@ -1036,6 +1046,11 @@ internal sealed partial class MainForm : Form, IMessageFilter
         });
         _deleteNestedInstanceMenuItem.Click += (_, _) =>
             DeleteNestedDrawingObjectInstance(_stageContextMenuNestedInstanceId);
+        _breakApartMenuItem.Tag = ShortcutCommandIds.BreakApart;
+        _flipHorizontalMenuItem.Tag = ShortcutCommandIds.FlipHorizontal;
+        _flipVerticalMenuItem.Tag = ShortcutCommandIds.FlipVertical;
+        _convertLineToFillMenuItem.Tag = ShortcutCommandIds.ConvertLineToFill;
+        _mergeAndSimplifyLinesMenuItem.Tag = ShortcutCommandIds.MergeLines;
         _breakApartMenuItem.Click += (_, _) => BreakApartStageSelection();
         _convertToSymbolMenuItem.Click += (_, _) => ConvertStageSelectionToSymbol();
         _flipHorizontalMenuItem.Click += (_, _) => FlipSelectedDrawingObjects(horizontal: true);
@@ -1150,6 +1165,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
             _symbolGroupMenuItem.Visible = true;
         };
         BuildRandomFractureContextMenu();
+        BuildSmartLayoutMenu();
+        BuildStageObjectCommandMenu();
     }
 
     private void BuildUi()
@@ -1895,6 +1912,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
             _applicationSettings.WindowCornerStyle,
             _applicationSettings.Experimental3DEnabled,
             _applicationSettings.ToolbarPosition);
+        dialog.ExperimentalSceneLightingEnabled = _applicationSettings.ExperimentalSceneLightingEnabled;
+        dialog.NavigationPreviewEnabled = _applicationSettings.NavigationPreviewEnabled;
         dialog.SetCodexSettings(_applicationSettings, AppHost.Current?.CodexBridgeStatus ?? "Stopped");
         dialog.SetSelectionSettings(_applicationSettings.SelectionArrows);
         void PreviewCorners(object? sender, EventArgs e) => ApplyWindowCornerStyle(dialog.SelectedWindowCornerStyle);
@@ -1941,6 +1960,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
             AccentBrightnessPercent = dialog.SelectedAccentBrightnessPercent,
             SimpleSelectionHighlightEnabled = dialog.SimpleSelectionHighlightEnabled,
             SelectionArrows = dialog.SelectionSettings,
+            ExperimentalSceneLightingEnabled = dialog.ExperimentalSceneLightingEnabled,
+            NavigationPreviewEnabled = dialog.NavigationPreviewEnabled,
             Experimental3DEnabled = dialog.Experimental3DEnabled,
             FreeTransformShiftProportionalEnabled = dialog.FreeTransformShiftProportionalEnabled,
             ToolbarPosition = dialog.SelectedToolbarPosition,
@@ -1960,6 +1981,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
         var experimental3DChanged = _applicationSettings.Experimental3DEnabled != settings.Experimental3DEnabled;
         _applicationSettings = settings;
+        _stage.ExperimentalSceneLightingEnabled = settings.ExperimentalSceneLightingEnabled;
+        _stage.NavigationPreviewEnabled = settings.NavigationPreviewEnabled;
+        RefreshSceneOpticsInspector();
         HideToolFlyouts();
         LayoutToolPalette();
         RefreshShortcutMenuDisplay();
@@ -2045,6 +2069,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
         });
         if (settings == _applicationSettings) return;
         _applicationSettings = settings;
+        _stage.ExperimentalSceneLightingEnabled = settings.ExperimentalSceneLightingEnabled;
+        _stage.NavigationPreviewEnabled = settings.NavigationPreviewEnabled;
+        RefreshSceneOpticsInspector();
         if (!ApplicationSettingsStore.TrySave(settings))
             AppLog.Warn("Theme colors could not be saved; the current session keeps the selected colors.");
     }
@@ -2495,6 +2522,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             ClearSymbolEditingSession();
             StopShotPreviewScheduler();
             StopPlaybackCompositionPreload();
+            ClearPreparedWorkspaceFrames();
             PersistTimelineFrameWidth();
             PersistTimelineFrameHeight();
             _shapeFlyoutHideTimer.Dispose();
@@ -2638,17 +2666,11 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _statusBar.Items.Add(StatusSeparator());
         _statusBar.Items.Add(_drawStatus);
         _statusBar.Items.Add(StatusSeparator());
-        _statusBar.Items.Add(_atomsStatus);
-        _statusBar.Items.Add(StatusSeparator());
         _statusBar.Items.Add(_zoomStatus);
         _statusBar.Items.Add(StatusSeparator());
         _statusBar.Items.Add(_timelineFrameStatus);
+        _statusBar.Items.Add(_preparedFramesStatus);
         UpdateTimelineFrameStatus();
-        if (IsModuleHotReloadEnabled())
-        {
-            _statusBar.Items.Add(StatusSeparator());
-            _statusBar.Items.Add(_devReloadStatus);
-        }
     }
 
     private static void PaintBottomBorder(Control control)
@@ -2987,6 +3009,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         }
         if (_selectionToolGroup.Contains(_tool)) _selectionToolGroup.ActiveTool = _tool;
         if (_transformToolGroup?.Contains(_tool) == true) _transformToolGroup.ActiveTool = _tool;
+        RebuildSceneComposition(refreshScenePanels: false);
         UpdateSceneDimensionButton();
         UpdateSpatialTransformPanelState();
         RefreshSceneOpticsInspector();
@@ -3388,6 +3411,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         if (!IsSceneBuildingContext()) return;
         RestoreEditableCompositionScene();
         var sceneDefinition = ActiveScene();
+        var frameCompositionCached = PrepareSceneFrameCompositionCache(sceneDefinition, preserveWorkspaceFrameCache);
         var editable = sceneDefinition?.ActiveMaskScene()
             ?? (ShouldUseSceneDrawingSurface(sceneDefinition) ? sceneDefinition!.DrawingScene : _sceneEditStage);
         if (!ReferenceEquals(_scene, editable))
@@ -3399,7 +3423,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
             InvalidateSceneCompositionCache();
         }
         _scene.EditFrame = _frame;
-        _lastSceneCompositionReused = reuseCachedComposition && CanReuseSceneComposition(sceneDefinition);
+        _lastSceneCompositionReused = frameCompositionCached
+            || reuseCachedComposition && CanReuseSceneComposition(sceneDefinition);
         if (!_lastSceneCompositionReused)
         {
             _sceneCompositionResult = SceneCompositionBuilder.Build(
@@ -3411,6 +3436,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
                 includeDirectDrawing: !IsSceneDrawingContext(),
                 compositeWithHostLayers: IsSceneDrawingContext());
             CaptureSceneCompositionCache(sceneDefinition);
+            StoreSceneFrameCompositionCache(sceneDefinition);
         }
         _stage.SetSceneCompositionResult(
             _sceneCompositionResult,
@@ -3442,7 +3468,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
         UpdateSceneInstanceSelectionOverlay();
         UpdateTransformOverlay();
         RefreshStageLayerContentHighlight();
-        _stage.Invalidate();
+        if (preserveWorkspaceFrameCache) _stage.InvalidatePreservingWorkspaceFrameCache();
+        else _stage.Invalidate();
     }
 
     private bool CanReuseSceneComposition(SceneDefinition? sceneDefinition)
@@ -3491,6 +3518,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
     private void InvalidateSceneCompositionCache()
     {
+        ClearPreparedWorkspaceFrames();
+        _sceneFrameCompositions.Clear();
         _sceneCompositionCacheValid = false;
         _lastSceneCompositionReused = false;
         _sceneCompositionCacheScene = null;
@@ -3528,7 +3557,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             compositeWithHostLayers: true);
         _sceneInstancePreviewDirty = false;
         RefreshSelectedSceneInstanceObjectIndices();
-        _stage.BindUnderlayScene(_drawingObjectUnderlayStage, _drawingObjectUnderlayResult.HostLayerRanges);
+        _stage.BindUnderlayComposition(_drawingObjectUnderlayStage, _drawingObjectUnderlayResult);
         RebuildOnionSkinPreview();
         UpdateSceneInstanceSelectionOverlay();
         UpdateTransformOverlay();
@@ -3563,33 +3592,14 @@ internal sealed partial class MainForm : Form, IMessageFilter
             return;
         }
 
-        _scene.BuildOnionSkinPreview(_localOnionSkinStage, _frame);
-        SceneCompositionBuilder.BuildDrawingObjectOnionSkin(
-            _nestedOnionSkinStage,
+        var masks = SceneCompositionBuilder.BuildDrawingObjectOnionSkin(
+            _onionSkinStage,
             ActiveDrawingObject(),
             _drawingObjects,
             _frame,
-            _playbackSettings.Fps);
-        if (_localOnionSkinStage.ObjectCount == 0 && _nestedOnionSkinStage.ObjectCount == 0)
-        {
-            if (_stage.OnionSkinScene is not null) _stage.BindOnionSkinScene(null);
-        }
-        else if (_localOnionSkinStage.ObjectCount == 0)
-        {
-            _stage.BindOnionSkinScene(_nestedOnionSkinStage);
-        }
-        else if (_nestedOnionSkinStage.ObjectCount == 0)
-        {
-            _stage.BindOnionSkinScene(_localOnionSkinStage);
-        }
-        else
-        {
-            _onionSkinStage.CombineOnionSkinPreviews([
-                (_localOnionSkinStage, 1f, null),
-                (_nestedOnionSkinStage, 1f, null)
-            ]);
-            _stage.BindOnionSkinScene(_onionSkinStage);
-        }
+            _playbackSettings.Fps,
+            includeLocalArtwork: true);
+        _stage.BindOnionSkinComposition(_onionSkinStage, masks);
     }
 
     /// <summary>
@@ -3605,13 +3615,13 @@ internal sealed partial class MainForm : Form, IMessageFilter
             return;
         }
 
-        SceneCompositionBuilder.BuildSceneOnionSkin(
+        var masks = SceneCompositionBuilder.BuildSceneOnionSkin(
             _sceneOnionSkinStage,
             sceneDefinition,
             _drawingObjects,
             _frame,
             _playbackSettings.Fps);
-        _stage.BindOnionSkinScene(_sceneOnionSkinStage.ObjectCount == 0 ? null : _sceneOnionSkinStage);
+        _stage.BindOnionSkinComposition(_sceneOnionSkinStage, masks);
     }
 
     private void SelectDrawingObject(int index)

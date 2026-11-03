@@ -336,7 +336,7 @@ internal sealed class SceneRenderOrderBuffer
                 if ((uint)index >= scene.ObjectCount) continue;
                 var layer = scene.ObjectLayer[index];
                 if (!scene.ShouldRenderLayerContent(layer)) continue;
-                if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
+                if (scene.ObjectHidden[index] || scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
                 var objectBounds = CachedWorldBounds(index);
                 if (objectBounds.Right < left
                     || objectBounds.Left > right
@@ -357,7 +357,7 @@ internal sealed class SceneRenderOrderBuffer
                 if ((uint)index >= scene.ObjectCount) continue;
                 var layer = scene.ObjectLayer[index];
                 if (!scene.ShouldRenderLayerContent(layer)) continue;
-                if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
+                if (scene.ObjectHidden[index] || scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
                 var objectBounds = CachedWorldBounds(index);
                 if (objectBounds.Right < left
                     || objectBounds.Left > right
@@ -392,7 +392,7 @@ internal sealed class SceneRenderOrderBuffer
             if ((uint)index >= scene.ObjectCount) continue;
             var layer = scene.ObjectLayer[index];
             if (!scene.ShouldRenderLayerContent(layer)) continue;
-            if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
+            if (scene.ObjectHidden[index] || scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
             var objectBounds = scene.GetObjectWorldBounds(index);
             if (objectBounds.Right < left
                 || objectBounds.Left > right
@@ -410,7 +410,7 @@ internal sealed class SceneRenderOrderBuffer
             if ((uint)index >= scene.ObjectCount) continue;
             var layer = scene.ObjectLayer[index];
             if (!scene.ShouldRenderLayerContent(layer)) continue;
-            if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
+            if (scene.ObjectHidden[index] || scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
             var objectBounds = scene.GetObjectWorldBounds(index);
             if (objectBounds.Right < left
                 || objectBounds.Left > right
@@ -477,6 +477,7 @@ internal sealed class SceneRenderOrderBuffer
             var layer = scene.ObjectLayer[objectIndex];
             if (!scene.ShouldRenderLayerContent(layer)) continue;
             if ((uint)layer >= _activeKeyframes.Length
+                || scene.ObjectHidden[objectIndex]
                 || scene.ObjectKeyframeFrame[objectIndex] != _activeKeyframes[layer])
             {
                 return false;

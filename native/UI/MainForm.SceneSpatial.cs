@@ -33,6 +33,9 @@ internal sealed partial class MainForm : Form
         public required Dictionary<string, int> EditFrames { get; init; }
         public required Dictionary<string, InstanceFrameState> StartStates { get; init; }
         public bool Changed { get; set; }
+        public string[] CreatedDrawingObjectIds { get; init; } = [];
+        public string[]? OriginalSelectedInstanceIds { get; init; }
+        public string? OriginalPrimaryInstanceId { get; init; }
     }
 
     private sealed class SpatialTransformPointerSession
@@ -483,6 +486,14 @@ internal sealed partial class MainForm : Form
             instanceSnapshot: session.InstanceSnapshot,
             playheadFrame: _frame,
             timelineSelection: session.TimelineSelection);
+        if (session.CreatedDrawingObjectIds.Length > 0)
+        {
+            var entry = _sceneTimelineUndoStack.Pop();
+            _undoSequenceByEntry.Remove(entry);
+            var replacement = entry with { CreatedDrawingObjectIds = session.CreatedDrawingObjectIds };
+            _sceneTimelineUndoStack.Push(replacement);
+            RecordUndoSequence(replacement);
+        }
         _timeline.RefreshTimeline();
         InvalidateSceneCompositionCache();
         RebuildSceneComposition();
@@ -500,11 +511,21 @@ internal sealed partial class MainForm : Form
         ClearSceneSnapQueryCache();
         if (session is null) return;
 
+        if (!session.Changed && !_sceneInstanceTimelineDirty
+            && session.CreatedDrawingObjectIds.Length == 0 && session.OriginalSelectedInstanceIds is null)
+        {
+            // Display-only movement has not changed the document. Replacing
+            // every instance from a snapshot here needlessly rebuilds the scene.
+            ClearInstanceTimelineEditTracking();
+            UpdateSpatialTransformPanelState();
+            return;
+        }
         RestoreSpatialTransformEditSession(session);
     }
 
     private static bool SpatialTransformEditHasNetStateChange(SpatialTransformEditSession session)
     {
+        if (session.OriginalSelectedInstanceIds is not null) return true;
         foreach (var instanceId in session.SelectedInstanceIds)
         {
             var instance = session.Scene.Instances.FirstOrDefault(candidate =>
@@ -525,13 +546,15 @@ internal sealed partial class MainForm : Form
         session.Scene.RestoreInstanceSnapshot(session.InstanceSnapshot);
         session.Scene.Timeline.RestoreSnapshot(session.TimelineSnapshot);
         session.Scene.SynchronizeTimelineTracks();
+        foreach (var id in session.CreatedDrawingObjectIds) _project.TryRemoveDrawingObject(id, out _);
         _sceneInstanceTimelineDirty = false;
         ClearInstanceTimelineEditTracking();
         _timeline.RefreshTimeline();
         _timeline.RestoreSelectionSnapshot(session.TimelineSelection);
         InvalidateSceneCompositionCache();
         RebuildSceneComposition();
-        RestoreTimelineInstanceSelection(session.SelectedInstanceIds, session.PrimaryInstanceId);
+        RestoreTimelineInstanceSelection(session.OriginalSelectedInstanceIds ?? session.SelectedInstanceIds,
+            session.OriginalPrimaryInstanceId ?? session.PrimaryInstanceId);
         UpdateInspector();
     }
 
@@ -567,7 +590,8 @@ internal sealed partial class MainForm : Form
         if (TryResolveProjectedSceneInstance(e.Location, out var instance))
         {
             hitInstance = instance;
-            SetSceneInstanceSelection(instance, additive: IsShiftPressed());
+            if (!(IsAltPressed() && !IsShiftPressed() && _selectedSceneInstanceIds.Contains(instance.Id)))
+                SetSceneInstanceSelection(instance, additive: IsShiftPressed());
             if (IsScene3DView() && IsSelectionArrow(_tool))
             {
                 ActivateTool(ToolMode.Transform3D);
@@ -585,7 +609,8 @@ internal sealed partial class MainForm : Form
         {
             UpdateInspector();
             UpdateSpatialTransformPresentation();
-            _stage.Invalidate();
+            if (_projectedMoveCached) _stage.InvalidateOverlay();
+            else _stage.Invalidate();
             return true;
         }
 
@@ -612,6 +637,7 @@ internal sealed partial class MainForm : Form
 
         BeginSpatialTransformEdit(allowScene2D: true);
         if (_spatialTransformEditSession is null) return false;
+        _duplicateProjectedDragArmed = IsAltPressed() && !IsShiftPressed();
 
         _projectedSceneMoveStartRayOrigin = ray.Origin;
         _sceneInstanceMoveActive = true;
@@ -620,6 +646,10 @@ internal sealed partial class MainForm : Form
         _startScreen = screen;
         _startWorld = null;
         _activeTransformHandle = TransformHandleKind.None;
+        if (_selectedSceneInstanceObjectIndices.Length == 0) RefreshSelectedSceneInstanceObjectIndices();
+        _projectedMoveCached = !_duplicateProjectedDragArmed
+            && _stage.BeginInstanceMovePreview(_selectedSceneInstanceObjectIndices);
+        _projectedMoveDelta = Vector3.Zero;
         _stage.Cursor = Cursors.SizeAll;
         return true;
     }
@@ -628,6 +658,7 @@ internal sealed partial class MainForm : Form
     {
         if (_projectedSceneMoveStartRayOrigin is not { } startOrigin) return false;
         if (e.Button != MouseButtons.Left || !PointerDragExceeded(e.Location)) return true;
+        if (_duplicateProjectedDragArmed && !DuplicateProjectedSceneDrag()) return true;
         if (!_stage.TryGetReferenceRay(e.Location, out var ray)) return true;
 
         var delta = ConstrainProjectedSceneMoveDelta(
@@ -638,8 +669,33 @@ internal sealed partial class MainForm : Form
             correction => ConstrainProjectedSceneMoveDelta(
                 _stage.Reference2DViewDirection,
                 correction));
-        var identity = delta.LengthSquared() <= 0.000001f;
+        if (IsShiftPressed()) delta = ConstrainProjectedSceneMoveAxis(delta);
 
+        if (_projectedMoveCached)
+        {
+            if (!_stage.LastFrameUsedDirect2D && !_stage.InstanceMovePreviewAwaitingPresent)
+            {
+                _projectedMoveCached = false;
+                _stage.EndInstanceMovePreview();
+                ApplyProjectedMoveDelta(delta);
+                return true;
+            }
+            _projectedMoveDelta = delta;
+            _stage.UpdateInstanceMovePreview(delta);
+            return true;
+        }
+        ApplyProjectedMoveDelta(delta);
+        _stage.Cursor = Cursors.SizeAll;
+        return true;
+    }
+
+    private bool _projectedMoveCached;
+    private bool _committingCachedProjectedMove;
+    private Vector3 _projectedMoveDelta;
+
+    private void ApplyProjectedMoveDelta(Vector3 delta)
+    {
+        var identity = delta.LengthSquared() <= 0.000001f;
         ApplySpatialPointerStates((start, _) => start with
         {
             X = identity || !HasSpatialComponentDelta(delta.X)
@@ -652,8 +708,6 @@ internal sealed partial class MainForm : Form
                 ? start.Z
                 : VectorUnits.Quantize(start.Z + delta.Z)
         });
-        _stage.Cursor = Cursors.SizeAll;
-        return true;
     }
 
     internal static Vector3 ConstrainProjectedSceneMoveDelta(
@@ -669,8 +723,24 @@ internal sealed partial class MainForm : Form
         };
     }
 
+    internal static Vector3 ConstrainProjectedSceneMoveAxis(Vector3 delta)
+    {
+        var absolute = Vector3.Abs(delta);
+        if (absolute.X >= absolute.Y && absolute.X >= absolute.Z) return new Vector3(delta.X, 0, 0);
+        return absolute.Y >= absolute.Z ? new Vector3(0, delta.Y, 0) : new Vector3(0, 0, delta.Z);
+    }
+
     private void CompleteProjectedSceneMovePointer()
     {
+        if (_projectedMoveCached)
+        {
+            _projectedMoveCached = false;
+            _stage.EndInstanceMovePreview();
+            _committingCachedProjectedMove = true;
+            try { ApplyProjectedMoveDelta(_projectedMoveDelta); }
+            finally { _committingCachedProjectedMove = false; }
+        }
+        _duplicateProjectedDragArmed = false;
         if (_projectedSceneMoveStartRayOrigin is null) return;
         _projectedSceneMoveStartRayOrigin = null;
         _sceneInstanceMoveActive = false;
@@ -684,6 +754,9 @@ internal sealed partial class MainForm : Form
 
     private void CancelProjectedSceneMovePointer()
     {
+        _projectedMoveCached = false;
+        _stage.EndInstanceMovePreview();
+        _duplicateProjectedDragArmed = false;
         if (_projectedSceneMoveStartRayOrigin is null) return;
         _projectedSceneMoveStartRayOrigin = null;
         _sceneInstanceMoveActive = false;
@@ -698,7 +771,12 @@ internal sealed partial class MainForm : Form
     private bool TryResolveProjectedSceneInstance(Point screen, out DrawingObjectInstanceDefinition instance)
     {
         instance = null!;
-        if (!_stage.TryHitTestProjectedObject(screen, 7f, out var objectIndex)
+        var editable = ActiveEditableInstances().ToDictionary(candidate => candidate.Id, StringComparer.Ordinal);
+        if (editable.Count == 0) return false;
+        if (!_stage.TryHitTestProjectedObjectFiltered(screen, 7f, out var objectIndex,
+                index => _sceneCompositionResult.TryGetOwner(index, out var candidateOwner)
+                    && editable.ContainsKey(string.IsNullOrWhiteSpace(candidateOwner.RootInstanceId)
+                        ? candidateOwner.InstanceId : candidateOwner.RootInstanceId))
             || !_sceneCompositionResult.TryGetOwner(objectIndex, out var owner)
             || ActiveScene() is not { } scene)
         {
@@ -708,9 +786,8 @@ internal sealed partial class MainForm : Form
         var rootInstanceId = string.IsNullOrWhiteSpace(owner.RootInstanceId)
             ? owner.InstanceId
             : owner.RootInstanceId;
-        instance = scene.Instances.FirstOrDefault(candidate =>
-            string.Equals(candidate.Id, rootInstanceId, StringComparison.Ordinal))!;
-        return instance is not null;
+        instance = editable.GetValueOrDefault(rootInstanceId)!;
+        return instance is not null && !instance.EditorHidden && !instance.EditorLocked;
     }
 
     private bool TryGetProjectedSceneTransformOverlay(out Matrix4x4 transform)
@@ -1111,7 +1188,7 @@ internal sealed partial class MainForm : Form
 
         session.Changed = true;
         _sceneInstanceTimelineDirty = true;
-        RefreshSpatialTransformPreview();
+        if (!_committingCachedProjectedMove) RefreshSpatialTransformPreview();
     }
 
     private static InstanceFrameState ScaleSpatialState(

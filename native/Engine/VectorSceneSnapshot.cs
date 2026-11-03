@@ -2,6 +2,7 @@ namespace VectorAnimationEngine;
 
 internal sealed class VectorSceneSnapshot
 {
+    public RulerGuide[] RulerGuides { get; init; } = [];
     public int LayerCount { get; init; }
     public int ObjectCount { get; init; }
     public long VirtualAtomCount { get; init; }
@@ -47,6 +48,8 @@ internal sealed class VectorSceneSnapshot
     public uint[] AtomCount { get; init; } = [];
     public int[] Argb { get; init; } = [];
     public int[] StrokeArgb { get; init; } = [];
+    public bool[] ObjectHidden { get; init; } = [];
+    public bool[] ObjectLocked { get; init; } = [];
     public bool[] FillAutoMergeProtected { get; init; } = [];
     public bool[] FillBoundaryLinkDetached { get; init; } = [];
     public bool[] QuadraticLineEditing { get; init; } = [];
@@ -217,6 +220,7 @@ internal sealed class VectorSceneSnapshot
         bytes += ArrayBytes(AtomCount.Length, 4);
         bytes += ArrayBytes(Argb.Length, 4);
         bytes += ArrayBytes(StrokeArgb.Length, 4);
+        bytes += ArrayBytes(ObjectHidden.Length + ObjectLocked.Length, 1);
         bytes += ArrayBytes(FillAutoMergeProtected.Length, 1);
         bytes += ArrayBytes(FillBoundaryLinkDetached.Length, 1);
         bytes += ArrayBytes(QuadraticLineEditing.Length, 1);

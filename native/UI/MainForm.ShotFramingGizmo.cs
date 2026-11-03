@@ -675,6 +675,12 @@ internal sealed partial class MainForm
 
     private void ShowShotFramingFeedback(Point screen, ShotFramingHandleKind handle, SceneShotSettings settings)
     {
+        if (_shotFramingPointerSession is not null)
+        {
+            if (_shotFramingHintVisible) _toolTip.HideTip();
+            _shotFramingHintVisible = false;
+            return;
+        }
         if (_playing || !_stage.ClientRectangle.Contains(screen))
         {
             ClearShotFramingFeedback();

@@ -70,7 +70,7 @@ internal sealed class ImportedSvgBitmapLease : IDisposable
     }
 }
 
-internal static class ImportedSvgRasterizer
+internal static partial class ImportedSvgRasterizer
 {
     internal const long MaxImportSourceBytes = 8L * 1024 * 1024;
     private const long MaxRasterSourceBytes = 16L * 1024 * 1024;
@@ -378,8 +378,11 @@ internal static class ImportedSvgRasterizer
         try
         {
             using var stream = new MemoryStream(sourceBytes, writable: false);
-            return SvgDocument.Open<SvgDocument>(stream, new SvgOptions())
+            var document = SvgDocument.Open<SvgDocument>(stream, new SvgOptions())
                 ?? throw new InvalidDataException("The imported SVG document is empty.");
+            PrepareBitmapPaintServers(document, sourceBytes);
+            PrepareGeometryMasks(document);
+            return document;
         }
         catch (Exception exception) when (exception is not InvalidDataException)
         {
