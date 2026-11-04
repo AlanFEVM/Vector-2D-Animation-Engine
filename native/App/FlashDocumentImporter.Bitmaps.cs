@@ -1,4 +1,4 @@
-﻿using System.Drawing;
+using System.Drawing;
 using System.Drawing.Imaging;
 using System.Buffers.Binary;
 using System.IO.Compression;
@@ -14,7 +14,7 @@ internal static partial class FlashDocumentImporter
 
     private static Dictionary<string, DrawingObjectDefinition> ImportBitmaps(
         VectorProject project, XElement document, XflSource source, Dictionary<string, string> folders, List<string> temporaryFiles,
-        List<FlashImportDiagnostic> diagnostics, IProgress<FlashParseProgress>? progress = null)
+        List<FlashImportDiagnostic> diagnostics, IProgress<FlashParseProgress>? progress = null, bool editableGeometry = false)
     {
         var result = new Dictionary<string, DrawingObjectDefinition>(StringComparer.Ordinal);
         long totalBytes = 0;
@@ -53,10 +53,10 @@ internal static partial class FlashDocumentImporter
             if (!project.TryAddImageAssetFromSource(name.Split('/')[^1], file, BitmapImageRasterizer.ComputeSha256(file),
                     width, height, density, settings, out var asset) || asset is null)
                 throw Failure(name, "Could not add the native bitmap asset.");
-            var symbol = project.AddDrawingObject(name.Split('/')[^1]);
+            var symbol = editableGeometry ? new DrawingObjectDefinition { Name = name.Split('/')[^1] } : project.AddDrawingObject(name.Split('/')[^1]);
             symbol.Detail = "Imported XFL bitmap library item: " + name;
             var separator = name.LastIndexOf('/');
-            if (separator >= 0 && !project.TryMoveDrawingObjectToAssetFolder(symbol.Id, folders[name[..separator]]))
+            if (!editableGeometry && separator >= 0 && !project.TryMoveDrawingObjectToAssetFolder(symbol.Id, folders[name[..separator]]))
                 throw Failure(name, "Could not assign the native bitmap library folder.");
             symbol.Scene.CreateEmpty(frameCount: 1);
             symbol.Scene.AddBitmapObject(0, new PointF(VectorUnits.FromPixels(width / 2f), VectorUnits.FromPixels(height / 2f)),

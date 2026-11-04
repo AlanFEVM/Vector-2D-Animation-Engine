@@ -1030,6 +1030,8 @@ internal static partial class Benchmark
         scene.CreateEmpty();
         var horizontal = AddTopologyLine(scene, 0, new PointF(-320, 0), new PointF(320, 0));
         var vertical = AddTopologyLine(scene, 0, new PointF(0, -240), new PointF(0, 240));
+        scene.Stroke[horizontal] = 12;
+        scene.Stroke[vertical] = 48;
 
         AssertTopologyHit(scene, new PointF(-160, 0), horizontal, DrawingElementKind.Stroke, 0, 0, 0.5f, "crossing lines horizontal left");
         var horizontalRight = AssertTopologyHit(scene, new PointF(160, 0), horizontal, DrawingElementKind.Stroke, 1, 0.5f, 1, "crossing lines horizontal right");
@@ -1039,6 +1041,9 @@ internal static partial class Benchmark
         var detachedRight = scene.DetachElementForMove(horizontalRight, 0);
         AssertShapeCounts(scene, 3, lines: 3, paths: 0, rectangles: 0, "crossing lines detach");
         AssertDetachedLine(scene, detachedRight, PointF.Empty, new PointF(320, 0), "crossing lines horizontal right detach");
+        AssertTimeline(scene.Stroke[detachedRight.Key.ObjectIndex] == 12
+            && Enumerable.Range(0, scene.ObjectCount).Count(index => scene.Stroke[index] == 48) == 1,
+            "Crossing strokes with different widths lost their materials during splitting.");
         AssertLineSet(
             scene,
             new[]

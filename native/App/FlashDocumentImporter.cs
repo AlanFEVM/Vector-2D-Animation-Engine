@@ -1,4 +1,4 @@
-﻿using System.Drawing;
+using System.Drawing;
 using System.Globalization;
 using System.Numerics;
 using System.Xml.Linq;
@@ -132,7 +132,7 @@ internal static partial class FlashDocumentImporter
             symbol.Scene.CreateEmpty(frameCount: spec.Duration); // All durations exist before any forward reference is sampled.
             symbols.Add(name, symbol);
         }
-        var bitmaps = ImportBitmaps(project, document, source, folders, temporaryFiles, diagnostics, progress);
+        var bitmaps = ImportBitmaps(project, document, source, folders, temporaryFiles, diagnostics, progress, editableGeometry);
         var builder = new ImportBuilder(project, symbols, bitmaps, fps, diagnostics, editableGeometry);
         var buildTimer = System.Diagnostics.Stopwatch.StartNew();
         var converted = 0;
@@ -146,14 +146,18 @@ internal static partial class FlashDocumentImporter
         {
             var spec = timelines[index];
             progress?.Report(new("Converting Flash scenes", index, timelines.Length, spec.Name));
-            var wrapper = library.Count == 0 && index == 0 ? project.DrawingObjects[0] : project.AddDrawingObject(spec.Name);
+            var wrapper = editableGeometry ? new DrawingObjectDefinition()
+                : library.Count == 0 && index == 0 ? project.DrawingObjects[0] : project.AddDrawingObject(spec.Name);
             wrapper.Name = spec.Name + " Timeline";
             builder.Build(wrapper, spec);
             var scene = index == 0 ? project.Scenes[0] : project.AddScene(spec.Name);
             scene.Name = spec.Name;
-            RestoreNativeScene(project, scene, wrapper, fps, diagnostics);
+            if (editableGeometry) RestoreEditableNativeScene(project, scene, wrapper, diagnostics);
+            else RestoreNativeScene(project, scene, wrapper, fps, diagnostics);
             progress?.Report(new("Converting Flash scenes", index + 1, timelines.Length, spec.Name));
         }
+        if (editableGeometry && project.DrawingObjects.Count != Math.Max(1, library.Count))
+            throw Failure(project.Name, "Native import created an unexpected library symbol count.");
         AppLog.Info($"Flash import build: total={buildTimer.Elapsed.TotalMilliseconds:F1} ms, shape={builder.ShapeMilliseconds:F1} ms, native={builder.NativeMilliseconds:F1} ms");
         var frameCount = timelines.Max(item => item.Duration);
         project.TrySetPlaybackSettings(fps, true, 0, frameCount - 1);
@@ -215,7 +219,7 @@ internal static partial class FlashDocumentImporter
         }
     }
 
-    private sealed class ImportBuilder(VectorProject project,
+    private sealed partial class ImportBuilder(VectorProject project,
         Dictionary<string, DrawingObjectDefinition> symbols, Dictionary<string, DrawingObjectDefinition> bitmaps,
         decimal fps, List<FlashImportDiagnostic> diagnostics, bool editableGeometry)
     {
@@ -326,6 +330,14 @@ internal static partial class FlashDocumentImporter
                 native.LayerOutline[layerIndex] = Boolean(layer, "outline", false);
                 if (layer.Attribute("color") is not null)
                     native.LayerColorArgb[layerIndex] = ReadLayerColor(layer, location).ToArgb();
+                if (editableGeometry)
+                {
+                    var visuals = layer.Descendants().Where(node => node.Name.LocalName is "DOMShape" or "DOMStaticText" or "DOMBitmapInstance" or "DOMSymbolInstance").ToArray();
+                    if (visuals.Any(node => node.Name.LocalName == "DOMSymbolInstance")
+                        && visuals.Any(node => node.Name.LocalName != "DOMSymbolInstance")
+                        || visuals.Any(node => Child(node, "filters") is not null || Child(node, "color") is not null))
+                        _editableSplitHosts.Add((target.Id, native.LayerIds[layerIndex]));
+                }
                 var kind = Text(layer, "layerType", "normal");
                 if (kind == "folder") native.LayerKinds[layerIndex] = DrawingLayerKind.Folder;
                 else if (kind == "mask") { native.LayerKinds[layerIndex] = DrawingLayerKind.Mask; native.LayerLocked[layerIndex] = true; }
@@ -429,7 +441,11 @@ internal static partial class FlashDocumentImporter
                     if (end < spec.Duration) native.Timeline.InsertBlankKeyframe(track.Id, end);
                 }
             }
+            if (_editableStagingInstances.Remove(target.Id, out var pendingInstances))
+                target.RestoreInstanceSnapshot(pendingInstances);
+            if (editableGeometry) FinishEditableLayers(target);
             native.EditFrame = 0;
+            native.CompleteDeferredBuild();
             target.SynchronizeTimelineTracks();
         }
 
@@ -447,6 +463,7 @@ internal static partial class FlashDocumentImporter
                     AddElement(target, layer, child, matrix, start, end, location, null, 0);
                 return;
             }
+            if (editableGeometry) layer = ResolveEditableLayer(target, layer, start, end, endpoint is not null);
             DrawingObjectDefinition childSymbol;
             if (element.Name.LocalName == "DOMSymbolInstance")
             {
@@ -496,7 +513,7 @@ internal static partial class FlashDocumentImporter
                 var paint = Text(attrs, "fillColor", "#000000");
                 if (paint.Length != 7 || paint[0] != '#' || !uint.TryParse(paint[1..], NumberStyles.HexNumber, Invariant, out var rgb))
                     throw Failure(location, "Invalid static text fill color.");
-                childSymbol = project.AddDrawingObject("XFL Text");
+                childSymbol = editableGeometry ? new DrawingObjectDefinition { Name = "Text" } : project.AddDrawingObject("XFL Text");
                 childSymbol.Scene.CreateEmpty(frameCount: 1);
                 childSymbol.Scene.AppendTextObject(0, new PointF(VectorUnits.FromPixels(width / 2), VectorUnits.FromPixels(height / 2)),
                     data.LayoutSize, 0, TextGeometry.NormalizeStoredData(data),
@@ -519,51 +536,26 @@ internal static partial class FlashDocumentImporter
                 if (shape.RepairedGaps != 0)
                     diagnostics.Add(new("fill-subpixel-gaps-repaired", location,
                         $"Connected {shape.RepairedGaps} fill gaps using nearest endpoints (maximum {shape.MaximumGap.ToString("0.###", Invariant)} source pixels; limit 4) with straight segments. Original curves remain unchanged; review the imported artwork."));
-                childSymbol = project.AddDrawingObject("XFL Shape");
+                childSymbol = editableGeometry ? new DrawingObjectDefinition { Name = "Shape" } : project.AddDrawingObject("XFL Shape");
                 childSymbol.Scene.CreateEmpty(frameCount: 1);
-                foreach (var source in shape.Sources.Reverse())
+                foreach (var source in editableGeometry ? shape.Sources : shape.Sources.Reverse())
                 {
-                    var part = shape.Sources.Count == 1 ? childSymbol : project.AddDrawingObject("XFL Shape Part");
+                    if (editableGeometry)
+                    {
+                        var nativeTimer = System.Diagnostics.Stopwatch.StartNew();
+                        try { AppendNativeShapeSource(childSymbol.Scene, source, shape.Bounds, location, diagnostics); }
+                        catch (InvalidDataException exception) { throw Failure(location, exception.Message); }
+                        finally { NativeMilliseconds += nativeTimer.Elapsed.TotalMilliseconds; }
+                        continue;
+                    }
+                    var part = editableGeometry || shape.Sources.Count == 1 ? childSymbol : project.AddDrawingObject("XFL Shape Part");
                     if (part != childSymbol) part.Scene.CreateEmpty(frameCount: 1);
                     var svgObject = part.Scene.AddImportedSvgObject(0,
                         new PointF(VectorUnits.FromPixels(shape.Bounds.Left + shape.Bounds.Width / 2), VectorUnits.FromPixels(shape.Bounds.Top + shape.Bounds.Height / 2)),
                         new SizeF(VectorUnits.FromPixels(shape.Bounds.Width), VectorUnits.FromPixels(shape.Bounds.Height)), source, "XFL Shape");
-                    // Gradient paints retain their original vector source until native
-                    // gradient extraction can preserve every stop and affine mapping.
-                    var bitmapPaint = element.Descendants().Any(node => node.Name.LocalName == "BitmapFill");
-                    bool vectorPaint = bitmapPaint || element.Descendants().Any(node => node.Name.LocalName is "LinearGradient" or "RadialGradient");
-                    if (bitmapPaint)
+                    if (element.Descendants().Any(node => node.Name.LocalName == "BitmapFill"))
                         diagnostics.Add(new("bitmap-fill-svg-retained", location,
-                            "Bitmap paint retained with its vector paths, embedded PNG, affine mapping, tile/clamp boundaries and point/bilinear sampling. Native paint-node editing is unavailable; whole-stage Adobe pixel parity is not yet verified."));
-                    else if (editableGeometry && vectorPaint)
-                        diagnostics.Add(new("gradient-vector-retained", location,
-                            "Gradient shape retained as a whole SVG vector object; its original paths, paint stops and transforms remain in the project. Native node editing requires Break Apart, which may change the gradient representation."));
-                    if (editableGeometry && !vectorPaint)
-                    {
-                        try
-                        {
-                            var nativeTimer = System.Diagnostics.Stopwatch.StartNew();
-                            try { part.Scene.BreakApartImportedSvgObjects([svgObject], requireExactGeometry: true); }
-                            finally { NativeMilliseconds += nativeTimer.Elapsed.TotalMilliseconds; }
-                        }
-                        catch (InvalidDataException exception) when (exception.Message == "The SVG requires flattened, omitted, or approximated geometry; exact editable conversion stopped."
-                            || exception.Message == "Non-uniform SVG placement requires a flattened stroke outline; exact editable conversion stopped."
-                            || exception.Message == "An SVG fill contour cannot be preserved as an editable native curve."
-                            || exception.Message == "An SVG fill collapses at native coordinate precision."
-                            || exception.Message == "The SVG contains no editable vector geometry."
-                            || exception.Message == "An SVG part cannot be preserved as editable native geometry."
-                            || exception.Message == "SVG break-apart output must not exceed 500000 points.")
-                        {
-                            // Break Apart restores its snapshot on failure. Keep the complete
-                            // generated vector object rather than flattening or omitting paths.
-                            diagnostics.Add(new("shape-vector-retained", location,
-                                "Shape retained as a whole SVG vector object because exact native node conversion is unavailable or exceeds the Break Apart point budget. Original vector paths remain in the project."));
-                        }
-                        catch (Exception exception) when (exception is not OutOfMemoryException)
-                        {
-                            throw Failure(location, "Could not preserve this shape as editable native geometry: " + exception.Message);
-                        }
-                    }
+                            "Compatibility import retains bitmap paint as SVG; native pattern editing is unavailable."));
                     if (part != childSymbol && !project.TryAddDrawingObjectInstance(childSymbol.Id, part.Id, PointF.Empty,
                             childSymbol.Scene.LayerIds[0], out _))
                         throw Failure(location, "Could not attach the bounded shape part.");
@@ -574,6 +566,11 @@ internal static partial class FlashDocumentImporter
             // unsupported element never leaves a partially initialized visible placement.
             var basis = StateFromMatrix(new DrawingObjectInstanceDefinition().EvaluateState(0), matrix, location);
             basis = ApplyAppearance(basis, element, location) with { PlaybackFps = fps, PlaybackMode = DrawingObjectPlaybackMode.HoldFrame, Visible = false };
+            if (editableGeometry && element.Name.LocalName != "DOMSymbolInstance")
+            {
+                AppendEditableLeaf(target, layer, childSymbol, basis with { Visible = Boolean(element, "visible", true) }, location);
+                return;
+            }
             var firstFrame = Integer(element, "firstFrame", 0, 0, MaximumFrameCount - 1);
             var loop = Text(element, "loop", "loop");
             var symbolType = Text(element, "symbolType", "movie clip");
@@ -601,8 +598,23 @@ internal static partial class FlashDocumentImporter
                 diagnostics.Add(new("filter-tween-baked", location,
                     "Blur widths and RGB color transforms are baked per frame. Discrete blur quality remains at the start value until the endpoint; Adobe pixel parity has not been verified."));
             }
-            if (!project.TryAddDrawingObjectInstance(target.Id, childSymbol.Id, PointF.Empty, target.Scene.LayerIds[layer], out var instance)
-                || instance is null) throw Failure(location, "Could not add symbol instance.");
+            DrawingObjectInstanceDefinition? instance;
+            if (editableGeometry && !project.OwnsDrawingObject(target))
+            {
+                instance = new() { DrawingObjectId = childSymbol.Id, SceneLayerId = target.Scene.LayerIds[layer] };
+                if (!_editableStagingInstances.TryGetValue(target.Id, out var pending))
+                {
+                    _editableStagingInstances.Add(target.Id, pending = []);
+                    var placements = pending;
+                    target.Scene.ConfigureExternalLayerKeyframeContent((layerId, _) => placements.Any(item => item.SceneLayerId == layerId));
+                }
+                pending.Add(instance);
+                var placementTrack = target.Timeline.FindTrackByTargetId(instance.SceneLayerId)!;
+                target.Timeline.InsertKeyframe(placementTrack.Id, start);
+            }
+            else if (!project.TryAddDrawingObjectInstance(target.Id, childSymbol.Id, PointF.Empty,
+                target.Scene.LayerIds[layer], out instance) || instance is null)
+                throw Failure(location, "Could not add symbol instance.");
             instance.Name = Text(element, "name", childSymbol.Name);
             instance.SetStateAtFrame(0, basis);
             var constant = endpoint is null && (loop == "single frame" || childSymbol.FrameCount == 1);

@@ -1339,15 +1339,15 @@ Converting content to a symbol preserves asset references, as does duplicating a
 
 - 基础路径、形状和文字优先转换为普通矢量。
 - 拆散后的 SVG 矢量与同类型原生矢量使用相同的选择 UI：整对象 Path 使用原生选择框，填色区域使用原生填色高亮，线条和边界段使用原生描边高亮、端点与曲线控制柄。框选多个对象沿用原生多选规则，SVG 的线宽、端帽和转角不会改变选择 UI；高亮只用于编辑提示，不修改实际描边宽度。
-- Adobe Animate 等软件使用 `<defs>` 与 `<use>` 引用的基础图形也可拆散为可编辑路径与纯色填充，保留重复放置、嵌套引用、位置变换和绘制顺序；未引用的定义不会生成对象。基础曲线保留 Bézier 控制点，纯色填色与描边分别转换；渐变与复杂效果继续采用外观轮廓化回退，不恢复原始渐变参数。
+- Adobe Animate 等软件使用 `<defs>` 与 `<use>` 引用的基础图形也可拆散为可编辑路径与纯色填充，保留重复放置、嵌套引用、位置变换和绘制顺序；未引用的定义不会生成对象。基础曲线保留 Bézier 控制点，纯色填色与描边分别转换；不支持的渐变与复杂效果会明确报错并保留原 SVG，不进行位图描摹回退。
 - 普通实色 SVG 描边保留中心路径、曲线控制点、原始宽度、`butt/round/square` 端帽、`miter/round/bevel` 转角和 miter limit；小于 `1` 的细描边不会被放大。这些属性随保存、撤销、复制和场景组合保留。为保持逐元素的 `fill -> stroke` 顺序，必要时拆分绘制层；非等比缩放或特殊描边仍转换为等价填色轮廓。SVG 本身写成填色的黑色轮廓仍属于填色，不能从文件中恢复不存在的中心线参数。
 - 工程保存重开保留 SVG 描边样式、开放 Bézier 路径、隐藏边界段和边界脱离状态；导出的 SVG 画布计入方形端帽与尖角。GDI 软件渲染和扭曲后的矢量描边也保留这些端帽与转角属性，细线按实际宽度交给渲染器栅格化。
 - 普通命中和悬停轮廓按遮挡处理，完全被衣服覆盖的下层素体不会参与选择。明确选中仍有可见区域的填色后，边界编辑显示该填色的完整闭合轮廓，覆盖在边缘的描边不会截断控制点。填色工具优先命中可见填色区域；与填色边界重合的 Bézier 描边仍可双向同步控制点——拖动描边的曲率方向柄会带动填色对应边，移动整条描边则不会移动填色。不能确认重合关系的导入轮廓保持独立，不按近似端点强行联动。原始几何保留，移开遮挡后可再次编辑。填色孔洞和半透明覆盖下的路径仍可使用。遮罩、滤镜、非 Normal 混合等复杂合成暂不作为完全遮挡依据。
 - `nonzero` 填充和 `<text><tspan>` 字形会转换为等价轮廓，复合孔洞与嵌套文字不会因引擎的偶奇填充规则或空父文本节点而丢失。
-- 图片、滤镜、复杂裁切或混合效果会按最终外观有限精度轮廓化。
+- 图片、滤镜、复杂裁切或无法表达的混合效果不进行位图描摹；无法转为原生可编辑几何时，整个拆离操作回滚并保留原对象。
 - 每个 SVG 的拆分图层会放入一个独立 Folder，文件夹使用导入时保存的 SVG 文件名；旧工程中没有文件名元数据的 SVG 使用 `SVG`。
 - 拆分器会按实际填色区域和描边宽度判断源层是否重叠。互不重叠的显式图层、普通分组或连续绘制区段会合并到同一个 Drawing Layer；存在重叠时只保留维持原绘制前后关系所需的最少层数。
-- 新图层统一继承源图层的图层颜色和显示属性；对象原有填色、描边和透明度不会被图层颜色重写。栅格轮廓化回退只创建一个图层。
+- 新图层统一继承源图层的图层颜色和显示属性；对象原有填色、描边和透明度不会被图层颜色重写。
 - 单个零面积或量化后退化的 SVG 部件会被忽略，不会阻止其余有效内容完成拆散。
 - 拆散作为一次撤销事务。
 
@@ -1526,25 +1526,25 @@ Repeated Includes resolving to the same exact path and identical complete symbol
 | Flash 8、CS3、CS4 的二进制 `.fla` | 自动识别后选择空目录，生成源副本、`convert.jsfl` 与状态文件。在已安装的 Flash CS5+ / Animate 中通过 `Commands > Run Command` 运行脚本，成功后回到 V2D 导入 `converted.fla`。本软件不直接解码旧二进制格式，也不自动启动或安装 Adobe。 |
 | 直接映射不能表达的视觉内容 | 选择 `Create Flash Visual Bridge...`，在空目录生成脚本，在 Animate 2020+ 中运行，再通过 `Import Flash Project...` 选择生成的 `manifest.json`。视觉桥按场景顺序将逐帧 SVG 合成一条动画，原始库结构、可编辑补间、声音和脚本不保留。 |
 
-直接导入保留多场景、库元件和嵌套引用、普通图层及文件夹、显示/锁定状态、图层颜色/轮廓显示、填色/实线描边、二维仿射变换、空白帧与曝光时长。每个源库元件对应一个可复用的 V2D 元件，同一元件的多个实例共享定义；库目录映射到 Vault 目录，也保留空目录。目录名遵循现有 V2D 命名规则；首尾空白被规范化时会在报告中说明，源元件引用仍按原始完整路径区分。图形元件的首帧和循环通过实例状态重采样，普通曝光保留原始关键帧与延续帧；支持的经典实例补间会烘焙为逐帧关键帧，并在转换报告中说明。支持作用于全部属性的 CustomEase 分段三次 Bézier 曲线，以及 quadIn、quadOut、quadInOut、cubicIn、cubicOut、cubicInOut；实际采样帧存在歧义或超调时仍拒绝。末尾关键帧上的 motion 标记按普通曝光处理；支持范围内的运动引导路径会烘焙为普通逐帧关键帧，不增加 V2D 引导层功能；自定义旋转仍不支持。导入成功后，可精确表示的矢量叶节点自动拆离为 V2D 原生路径、贝塞尔控制点和原生描边。渐变、无法精确拆离的轮廓/描边及超过拆离点预算的形状保留完整 SVG 矢量，并在报告中说明，仍可移动、变换和随工程保存；逐节点编辑需要手动 Break Apart，其转换限制仍适用。导入不会因此静默栅格化、简化或跳过部件。
+直接导入保留多场景、库元件和嵌套引用、普通图层及文件夹、显示/锁定状态、图层颜色/轮廓显示、填色/实线描边、二维仿射变换、空白帧与曝光时长。每个源库元件对应一个可复用的 V2D 元件，同一元件的多个实例共享定义；库目录映射到 Vault 目录，也保留空目录。目录名遵循现有 V2D 命名规则；首尾空白被规范化时会在报告中说明，源元件引用仍按原始完整路径区分。图形元件的首帧和循环通过实例状态重采样，普通曝光保留原始关键帧与延续帧；支持的经典实例补间会烘焙为逐帧关键帧，并在转换报告中说明。支持作用于全部属性的 CustomEase 分段三次 Bézier 曲线，以及 quadIn、quadOut、quadInOut、cubicIn、cubicOut、cubicInOut；实际采样帧存在歧义或超调时仍拒绝。末尾关键帧上的 motion 标记按普通曝光处理；支持范围内的运动引导路径会烘焙为普通逐帧关键帧，不增加 V2D 引导层功能；自定义旋转仍不支持。导入成功后，可精确表示的矢量叶节点自动拆离为 V2D 原生路径、贝塞尔控制点和原生描边。渐变会生成原生材质；径向映射和微小轮廓允许有诊断的近似。默认原生导入遇到尚不支持的位图填充或超过拆离点预算的形状会停止，并报告具体位置，不保留需要用户二次拆离的 SVG。导入不会因此静默栅格化、简化或跳过部件。
 
 Flash guide 层的参考图不参与导出，会从 V2D 图层中省略，并报告 guide-layer-omitted。绑定该层的经典实例补间可沿单条开放、无分叉的直线／二次 Bézier 描边路径烘焙，按弧长和已有缓动计算每帧位置，支持反向路径、形状／组的二维变换和元件 transformationPoint；Orient to Path 会生成每帧朝向。结果是可编辑、可保存重开的普通关键帧，报告 guide-motion-baked。路径在整个补间区间必须保持静态，实例绑定点须与路径两端在 0.25 舞台像素内匹配；数值弧长采样容差为 0.01 舞台像素。闭合、分叉、分离的多路径、路径中段绑定、变化的变换中心或与端点旋转不一致的朝向暂不支持，直接导入仍会指出位置并停止；可使用 Adobe 视觉桥获得逐帧导出。尚未完成 Adobe 画面逐帧对比，导入通过不代表视觉完全一致。
 
-主场景的普通、未锁定顶层图层直接映射到 V2D 场景图层，实例保留二维位置、变换、外观、播放状态与原来的元件引用，按源图层和叠放顺序还原画面。V2D 场景图层没有文件夹/锁定字段，因此源顶层文件夹或锁定图层映射为场景中的分组元件：双击进入该元件，可编辑其原始子图层、锁定状态和各自时间轴；场景时间轴显示该组的合成曝光。组的顶层显示开关由场景图层控制；文件夹的轮廓开关留在组内，以保留子图层各自的轮廓颜色，其他顶层图层的轮廓开关由场景控制。导入报告会说明这些映射，不额外保留一份脱离场景的完整时间轴副本。库元件内部仍保留原有的完整图层结构。对支持的内容，画面位置和动画从源舞台坐标还原；这不表示不支持的效果也已还原。
+主场景直接映射到 V2D 场景图层，实例保留二维位置、变换、外观、播放状态与真实库元件引用。场景文件夹内容展开为普通场景图层，继承有效隐藏、锁定与轮廓状态，不额外建立场景分组素材；共享遮罩按场景独占绑定规则复制原生遮罩表面。库元件内部仍保留源文件夹结构。形状与实例混排时可增加内部子图层，以保持前后绘制顺序。
 
 只有一帧的 Graphic 元件设置为 `loop` 时，允许源文件保留超出时长的 `firstFrame`：导入采样其唯一的第 0 帧，报告 `single-frame-loop-normalized`，保留外层变换。该规则已与 Adobe 对真实嵌套元件的逐帧 SVG 输出核对；其他越界播放设置仍拒绝。
 
 For a one-frame Graphic in `loop` mode, a stale `firstFrame` beyond its duration samples its sole frame 0 and reports `single-frame-loop-normalized`. Outer transforms are retained. This case was checked against Adobe's per-frame SVG output for a real nested symbol; other out-of-range playback settings remain rejected.
 
-完全透明或低于原生节点精度的形状，在无法精确拆分时保留完整 SVG，报告 `shape-vector-retained`；保留路径和原始透明度，可随工程保存重开。该保留方式不表示形状已转为可编辑的原生节点。
+在内部兼容视觉路径中，完全透明或低于原生节点精度的形状可保留完整 SVG，报告 `shape-vector-retained`；保留路径和原始透明度，可随工程保存重开。该保留方式不表示形状已转为可编辑的原生节点。
 
-Fully transparent shapes, or shapes below native node precision, retain their complete SVG when exact Break Apart is unavailable. `shape-vector-retained` identifies this representation; paths and original opacity survive Save/Open. This does not imply native node editability.
+In the internal compatibility visual path, fully transparent shapes or shapes below native node precision retain their complete SVG when exact Break Apart is unavailable. `shape-vector-retained` identifies this representation; paths and original opacity survive Save/Open. This does not imply native node editability.
 
-`BitmapFill` 的平铺及边缘延展模式可保留为带内嵌 PNG 的完整 SVG 矢量形状，报告 `bitmap-fill-svg-retained`。保留路径、位图映射矩阵、透明度及库位图的 `allowSmoothing`：关闭时逐点采样，开启时在预乘颜色中双线性采样。矩阵四个线性分量从 twips 换算为像素，平移保持舞台像素单位；镜像和倾斜映射保留。源图像和生成 SVG 仍受既有大小/像素预算限制。该表示可保存重开，但不提供原生位图填充节点编辑；`bitmapIsClipped=true` 使用边缘像素延展（clamp），边界外不重复纹理；已用 Adobe 生成的合成样本核对。尚未完成整份工程与 Adobe 的画面一致性验收。
+内部兼容视觉路径中的 `BitmapFill` 平铺及边缘延展模式可保留为带内嵌 PNG 的完整 SVG 矢量形状，报告 `bitmap-fill-svg-retained`。保留路径、位图映射矩阵、透明度及库位图的 `allowSmoothing`：关闭时逐点采样，开启时在预乘颜色中双线性采样。矩阵四个线性分量从 twips 换算为像素，平移保持舞台像素单位；镜像和倾斜映射保留。源图像和生成 SVG 仍受既有大小/像素预算限制。该表示可保存重开，但不提供原生位图填充节点编辑；`bitmapIsClipped=true` 使用边缘像素延展（clamp），边界外不重复纹理；已用 Adobe 生成的合成样本核对。尚未完成整份工程与 Adobe 的画面一致性验收。
 
-Tiled and edge-clamped `BitmapFill` is retained as a whole SVG vector shape with embedded PNG pixels and a `bitmap-fill-svg-retained` diagnostic. Paths, affine mapping, opacity and the library bitmap's `allowSmoothing` are retained. Sampling is point or bilinear in premultiplied colour. The four linear matrix components convert twips to pixels; translation stays in stage pixels. Reflection and skew are retained. Existing image and SVG budgets still apply. This representation survives Save/Open but does not provide native bitmap-paint node editing. `bitmapIsClipped=true` extends edge texels without repeating the texture, as checked against an Adobe-generated synthetic fixture. Whole-document Adobe visual parity has not been established.
+In the internal compatibility visual path, tiled and edge-clamped `BitmapFill` is retained as a whole SVG vector shape with embedded PNG pixels and a `bitmap-fill-svg-retained` diagnostic. Paths, affine mapping, opacity and the library bitmap's `allowSmoothing` are retained. Sampling is point or bilinear in premultiplied colour. The four linear matrix components convert twips to pixels; translation stays in stage pixels. Reflection and skew are retained. Existing image and SVG budgets still apply. This representation survives Save/Open but does not provide native bitmap-paint node editing. `bitmapIsClipped=true` extends edge texels without repeating the texture, as checked against an Adobe-generated synthetic fixture. Whole-document Adobe visual parity has not been established.
 
-位图实例 `DOMBitmapInstance` 会映射为可复用的图片元件，像素资源保存到工程的 `.Vault/Images`，保留图层、曝光、位置及可表示的缩放/旋转。支持内嵌 JPEG，以及已验证的 `03 05` ARGB 和 `03 03` 索引色分块 zlib 无损位图。索引色使用1–256项 ARGB 调色板、每像素一个索引，行长按4字节对齐；只读取可见像素，行尾填充不作为索引校验。调色板、索引和透明度已用 Adobe 导出位图核对。无损数据解码为 PNG；透明数据的预乘解码规则和诊断见上文。原始 PNG 仅在 Alpha 和重新预乘后的颜色与内嵌像素一致时原样保留；像素不一致时使用内嵌数据并报告 `bitmap-original-mismatch`。未知编码/压缩方式、越界索引、非法预乘数据、截断或超量像素会停止转换，仍使用现有图片尺寸与像素预算。成功保存后重载托管资源，后续保存不依赖临时图片。
+位图实例 `DOMBitmapInstance` 会映射为直接引用图片资产的原生位图对象，像素资源保存到工程的 `.Vault/Images`，保留图层、曝光、位置及可表示的缩放/旋转。支持内嵌 JPEG，以及已验证的 `03 05` ARGB 和 `03 03` 索引色分块 zlib 无损位图。索引色使用1–256项 ARGB 调色板、每像素一个索引，行长按4字节对齐；只读取可见像素，行尾填充不作为索引校验。调色板、索引和透明度已用 Adobe 导出位图核对。无损数据解码为 PNG；透明数据的预乘解码规则和诊断见上文。原始 PNG 仅在 Alpha 和重新预乘后的颜色与内嵌像素一致时原样保留；像素不一致时使用内嵌数据并报告 `bitmap-original-mismatch`。未知编码/压缩方式、越界索引、非法预乘数据、截断或超量像素会停止转换，仍使用现有图片尺寸与像素预算。成功保存后重载托管资源，后续保存不依赖临时图片。
 
 Lossless bitmap import supports verified chunked-zlib `03 05` ARGB and `03 03` indexed images. Indexed images use an ARGB palette of 1–256 entries and one index per pixel, with rows padded to four bytes. Padding bytes are not visible pixel indices. Stored alpha and premultiplied colours are retained; unknown formats/compression, invalid palettes/indices, truncation and oversized decoded data reject import under the existing image budgets. Adobe bitmap export comparisons cover opaque and partial-alpha samples; whole-document visual parity remains a separate check.
 
@@ -2188,3 +2188,19 @@ During continuous wheel zoom, zoom readout updates are coalesced; the final scal
 
 可编辑文字也支持场景导航和元件移动缓存。导入的短文本框在本机替代字体的行高不同时，若原布局无法生成任何字形，会恢复完整字形轮廓供显示和组合使用；原文字内容、字体设置和文本框数据保留。
 Editable text also supports cached scene navigation and instance movement. If an imported short text box produces no glyphs because a substituted font has different line metrics, glyph outlines are recovered for rendering and composition. Text content, font settings and stored layout data are preserved.
+
+缩放和平移预览超出缓存范围时，使用完整重绘的独立位图替换预览，避免连续搬移与分条补画残留；覆盖范围内仍复用预览，停止操作后恢复原始矢量画面。跨越缓存边界时需要重新绘制，耗时可能高于普通缓存复用。
+
+When zooming or panning exceeds the cached preview area, a fully redrawn separate bitmap replaces the preview to avoid scroll-copy and strip-repaint remnants. Covered views still reuse the preview; settled views return to native vectors. Crossing a cache boundary requires a redraw and may cost more than ordinary reuse.
+
+SVG 拆离直接生成可编辑的原生路径、贝塞尔曲线和描边，不再通过位图描摹生成色块。暂不支持的渐变、滤镜、裁剪或嵌入图像等内容会提示转换失败，并保留整个拆离操作前的对象。非均匀缩放的描边可能转为可编辑矢量轮廓。不同粗细的线段可以按中心线交点拆分，保留各段线宽、颜色和描边样式；图层、帧及最小片段长度等原有拓扑规则仍适用。
+
+SVG Break Apart creates editable native paths, Bezier curves and strokes without bitmap tracing. Unsupported gradients, filters, clipping or embedded images report a conversion failure and preserve all objects from before the operation. Non-uniformly scaled strokes may become editable vector outlines. Strokes of different widths can split at centerline intersections while retaining their widths, colors and styles; existing layer, frame and minimum-fragment topology rules still apply.
+
+FLA 原生可编辑导入按实际库元件建立素材，不再为形状、文字、位图放置或场景时间轴生成 `XFL Shape`、`XFL Shape Part`、`XFL Text` 等辅助元件。形状直接写入所属元件的原生路径和描边，文字保持原生文字，位图引用图片资产；嵌套库元件继续共享定义。形状与实例混排时，可在原图层内增加绘制子层以保持遮挡顺序。场景文件夹内容展开为原生场景图层，并保留有效显示、锁定、轮廓和遮罩。没有任何库元件的文档仍受工程模型“至少一个元件”的限制，保留一个空的默认元件。
+
+Native editable FLA import creates assets for actual library symbols, without extra shape, text, bitmap-placement or scene-timeline helper symbols. Shapes become native paths and strokes, text remains native text, bitmap placements reference image assets, and nested symbols continue sharing their definitions. Mixed drawing/instance order may require drawing sublayers inside the source layer. Scene folder contents become native scene layers with effective visibility, locks, outlines and masks retained. Documents with no library symbols keep one empty default symbol because the project model requires at least one.
+
+默认原生导入不再以完整 SVG 叶节点作为无法编辑的回退。非均匀缩放的描边允许转换为可编辑矢量轮廓。渐变色标会转为原生渐变；径向渐变的椭圆映射、焦点偏移，以及非标准延展或插值方式会报告近似。微小形状使用最小 2 vu 范围，仍塌缩且不足 1 像素的轮廓允许两倍放大重试并记录诊断；零面积填色不生成绘制元素。尚不支持的位图填充或超出节点预算的形状仍会停止导入并报告位置；源 FLA 不会改变。内部兼容视觉路径仍保留原有 SVG 表示，不属于原生可编辑导入的完成保证。
+
+Default native import no longer falls back to opaque SVG leaves. Non-uniformly scaled strokes may become editable vector outlines. Gradient stops become native paint; elliptical radial mapping, focal offsets and nonstandard spread/interpolation report approximations. Tiny shapes use a minimum 2 vu extent; collapsed sub-pixel contours may retry at twice their extent with a diagnostic. Zero-area fills create no drawing element. Unsupported bitmap fills and node-budget overruns still stop import with a source location; the original FLA remains unchanged. The internal compatibility visual path retains its older SVG representation and is not the native-editability contract.

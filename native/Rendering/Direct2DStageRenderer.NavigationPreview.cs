@@ -73,28 +73,13 @@ internal sealed partial class Direct2DStageRenderer
             NavigationPreviewReuses++;
             return true;
         }
-        var delta = new Vector2(origin.X - _navigationPreviewOrigin.X, origin.Y - _navigationPreviewOrigin.Y);
-        // Copy only whole pixels; keep the fractional camera displacement in
-        // the final image transform instead of resampling the overlap repeatedly.
-        var shift = new Vector2(MathF.Round(delta.X), MathF.Round(delta.Y));
-        var scroll = _navigationPreviewBitmap is not null && stage.ReferenceZoomScale == _navigationPreviewZoom
-            && Math.Abs(shift.X) < size.Width * 2 && Math.Abs(shift.Y) < size.Height * 2;
-        var rasterOrigin = scroll
-            ? new PointF(_navigationPreviewOrigin.X + shift.X, _navigationPreviewOrigin.Y + shift.Y) : origin;
-        var rasterOffset = margin + new Vector2(rasterOrigin.X - origin.X, rasterOrigin.Y - origin.Y);
-
+        // Rebuild into a separate surface. Repeated scroll-copy and clipped
+        // strip replay made preview correctness depend on the previous raster
+        // contents and clip/effect bounds. Keep overscan reuse, but never feed
+        // the old raster into the next one.
+        var rasterOrigin = origin;
+        var rasterOffset = margin;
         var extent = new RectangleF(0, 0, size.Width * 2, size.Height * 2);
-        var strips = new List<RectangleF>(4);
-        if (scroll)
-        {
-            var overlap = RectangleF.Intersect(extent,
-                new RectangleF(shift.X, shift.Y, extent.Width, extent.Height));
-            AddStrip(new RectangleF(0, 0, extent.Width, overlap.Top));
-            AddStrip(new RectangleF(0, overlap.Bottom, extent.Width, extent.Bottom - overlap.Bottom));
-            AddStrip(new RectangleF(0, overlap.Top, overlap.Left, overlap.Height));
-            AddStrip(new RectangleF(overlap.Right, overlap.Top, extent.Right - overlap.Right, overlap.Height));
-        }
-        else strips.Add(extent);
 
         // Seed an expanded image through a command list so SVGs and vector
         // geometry receive the same translation, independent of their local transforms.
@@ -110,16 +95,11 @@ internal sealed partial class Direct2DStageRenderer
             context.BeginDraw();
             try
             {
-                foreach (var strip in strips)
-                {
-                    var viewport = new RectangleF(strip.X - rasterOffset.X, strip.Y - rasterOffset.Y,
-                        strip.Width, strip.Height);
-                    context.Transform = Matrix3x2.Identity;
-                    context.PushAxisAlignedClip(Rect(viewport.X, viewport.Y, viewport.Width, viewport.Height),
-                        AntialiasMode.Aliased);
-                    try { draw(viewport); }
-                    finally { context.Transform = Matrix3x2.Identity; context.PopAxisAlignedClip(); }
-                }
+                var viewport = new RectangleF(-rasterOffset.X, -rasterOffset.Y,
+                    extent.Width, extent.Height);
+                // Draw the complete stream; the destination bitmap provides
+                // the final clip, including effects and transparent regions.
+                draw(viewport);
             }
             finally { context.EndDraw().CheckError(); }
             commands.Close().CheckError();
@@ -134,17 +114,9 @@ internal sealed partial class Direct2DStageRenderer
             try
             {
                 context.Clear(new Color4(0, 0, 0, 0));
-                if (scroll)
-                {
-                    context.Transform = Matrix3x2.Identity;
-                    context.DrawImage(_navigationPreviewBitmap, shift, null,
-                        InterpolationMode.NearestNeighbor, CompositeMode.SourceOver);
-                    NavigationPreviewScrolls++;
-                }
                 context.Transform = Matrix3x2.CreateTranslation(rasterOffset);
                 context.DrawImage(commands);
-                foreach (var strip in strips)
-                    NavigationPreviewPaintedPixels += (long)strip.Width * (long)strip.Height;
+                NavigationPreviewPaintedPixels += (long)size.Width * size.Height * 4;
             }
             finally { context.EndDraw().CheckError(); }
             _navigationPreviewSpare = _navigationPreviewBitmap;
@@ -180,11 +152,6 @@ internal sealed partial class Direct2DStageRenderer
             context.Transform = Matrix3x2.CreateScale(scale) * Matrix3x2.CreateTranslation(offset);
             try { context.DrawBitmap(_navigationPreviewBitmap!, 1, BitmapInterpolationMode.Linear); }
             finally { context.Transform = transform; }
-        }
-
-        void AddStrip(RectangleF strip)
-        {
-            if (strip.Width > 0 && strip.Height > 0) strips.Add(strip);
         }
     }
 }

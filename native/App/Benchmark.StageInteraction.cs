@@ -7125,8 +7125,35 @@ internal static partial class Benchmark
         Console.WriteLine("outside_stage_bitmap_selection=ok,incremental=ok,rebuild=ok,snapshot=ok,pointer=ok,marquee=ok");
     }
 
+    private static void RunSvgVariableWidthTopologyRegression()
+    {
+        const string svg = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+              <path d="M10 50 L90 50" fill="none" stroke="#123456" stroke-width="0.1"/>
+              <path d="M50 10 L50 90" fill="none" stroke="#654321" stroke-width="2"/>
+            </svg>
+            """;
+        var scene = new VectorScene(); scene.CreateEmpty();
+        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(2500, 2500), svg);
+        var converted = scene.BreakApartImportedSvgObjects([0], createDrawingLayers: false);
+        AssertTimeline(converted.Approximations == ImportedSvgBreakApproximation.None
+            && converted.ProducedObjects.Length == 2
+            && converted.ProducedObjects.All(index => !scene.HasFill(index)
+                && scene.TryGetFreehandBezierWorldNodes(index, out var nodes) && nodes.Length == 2),
+            "SVG strokes were raster traced or lost editable centerlines.");
+        var parts = scene.MaterializeLineIntersections(converted.ProducedObjects, 0);
+        AssertTimeline(parts.Success && scene.ObjectCount == 4
+            && Enumerable.Range(0, scene.ObjectCount).Count(index => Math.Abs(scene.Stroke[index] - 2.5f) < 0.001f) == 2
+            && Enumerable.Range(0, scene.ObjectCount).Count(index => Math.Abs(scene.Stroke[index] - 50f) < 0.001f) == 2
+            && Enumerable.Range(0, scene.ObjectCount).All(index => !scene.HasFill(index)
+                && scene.GetSvgStrokeStyle(index) is not null),
+            "Different-width SVG strokes did not split at their centerline intersection while retaining width and style.");
+        Console.WriteLine("svg_variable_width_topology=passed");
+    }
+
     private static void RunImportedSvgBreakApartRegression()
     {
+        RunSvgVariableWidthTopologyRegression();
         RunImportedSvgLocalReferenceRegression();
         RunSvgVisibleSelectionRegression();
         RunSvgFillBoundaryEditingRegression();
@@ -7413,23 +7440,7 @@ internal static partial class Benchmark
             """;
         scene.CreateEmpty();
         scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(100, 100), rootGradientSource);
-        var gradientResult = scene.BreakApartImportedSvgObjects([0]);
-        var gradientColors = gradientResult.ProducedObjects
-            .Select(index => Color.FromArgb(scene.Argb[index]))
-            .Where(color => color.A > 0)
-            .Distinct()
-            .ToArray();
-        AssertTimeline(
-            gradientResult.ProducedObjects.Length >= 8
-            && gradientResult.Approximations.HasFlag(ImportedSvgBreakApproximation.RasterizedContent)
-            && gradientResult.ProducedObjects.Select(index => scene.ObjectLayer[index]).Distinct().Count() == 1
-            && scene.LayerNames[scene.ObjectLayer[gradientResult.ProducedObjects[0]]] == "SVG Rasterized"
-            && gradientResult.ProducedObjects.All(index => scene.ShapeKind[index] == ShapeKind.Path)
-            && gradientResult.ProducedObjects.All(index => scene.FillAutoMergeProtected[index])
-            && gradientColors.Length >= 8
-            && gradientColors.Any(color => color.R >= 204 && color.B <= 68)
-            && gradientColors.Any(color => color.B >= 204 && color.R <= 68),
-            "SVG Break Apart collapsed a gradient stroke to a representative solid color.");
+        AssertVectorOnlyRejection(rootGradientSource);
 
         const string adjacentFillSource = """
             <svg xmlns="http://www.w3.org/2000/svg" width="100" height="40" viewBox="0 0 100 40">
@@ -7527,15 +7538,7 @@ internal static partial class Benchmark
             """;
         scene.CreateEmpty();
         scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(240, 160), complexSource);
-        var fallbackResult = scene.BreakApartImportedSvgObjects([0]);
-        AssertTimeline(
-            fallbackResult.ProducedObjects.Length > 0
-            && fallbackResult.Approximations.HasFlag(ImportedSvgBreakApproximation.RasterizedContent)
-            && !Enumerable.Range(0, scene.ObjectCount).Any(index => scene.ShapeKind[index] == ShapeKind.ImportedSvg)
-            && fallbackResult.ProducedObjects.All(index => scene.ShapeKind[index] == ShapeKind.Path)
-            && fallbackResult.ProducedObjects.Any(index => Color.FromArgb(scene.Argb[index]).A > 0)
-            && fallbackResult.ProducedObjects.All(index => scene.TryGetPathWorldContours(index, out var regions) && regions.Length > 0),
-            "Complex SVG content did not fall back to editable raster-traced compound paths.");
+        AssertVectorOnlyRejection(complexSource);
 
         const string transparentSource = """
             <svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">
@@ -7544,13 +7547,23 @@ internal static partial class Benchmark
             """;
         scene.CreateEmpty();
         scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(40, 20), transparentSource);
-        var transparentResult = scene.BreakApartImportedSvgObjects([0]);
-        AssertTimeline(
-            transparentResult.ProducedObjects.Length == 1
-            && transparentResult.Approximations.HasFlag(ImportedSvgBreakApproximation.RasterizedContent)
-            && scene.ShapeKind[transparentResult.ProducedObjects[0]] == ShapeKind.Path
-            && Color.FromArgb(scene.Argb[transparentResult.ProducedObjects[0]]).A == 0,
-            "A valid transparent SVG could not complete Break Apart.");
+        AssertVectorOnlyRejection(transparentSource);
+
+        void AssertVectorOnlyRejection(string original)
+        {
+            scene.CreateEmpty();
+            // A valid earlier target must also survive rollback if a later
+            // SVG cannot be converted. No layers or partial geometry may leak.
+            scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(100, 40), adjacentFillSource);
+            scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(120, 80), original);
+            var rejected = false;
+            try { scene.BreakApartImportedSvgObjects([0, 1]); }
+            catch (InvalidDataException) { rejected = true; }
+            AssertTimeline(rejected && scene.ObjectCount == 2 && scene.LayerCount == 1
+                && scene.TryGetImportedSvgSource(0, out var first) && first == adjacentFillSource
+                && scene.TryGetImportedSvgSource(1, out var second) && second == original,
+                "Unsupported SVG was raster traced or failed to roll back the complete Break Apart transaction.");
+        }
 
         var project = VectorProject.CreateEmpty();
         var svgAsset = project.DrawingObjects[0];

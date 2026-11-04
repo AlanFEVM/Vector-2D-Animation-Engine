@@ -124,22 +124,21 @@ internal static partial class Benchmark
                 }
             AssertTimeline(maximumDifference <= 2,
                 $"Opt-in preview changed settled vector pixels: {maximumDifference}.");
-            // Cross the overscan boundary with opaque artwork spanning both
-            // reused pixels and the newly exposed strip.
+            // Cross the overscan boundary with opaque artwork covering
+            // both the previous view and the replacement snapshot.
             scene.AddPathObjectContours(0,
                 [[new PointF(-200000, -10000), new PointF(200000, -10000),
                     new PointF(200000, 10000), new PointF(-200000, 10000)]],
                 0, Color.Purple, Color.Transparent, 4);
             stage.Invalidate(); stage.Refresh();
-            var scrolls = renderer.NavigationPreviewScrolls;
+            var rebuilds = renderer.NavigationPreviewBuilds;
             var painted = renderer.NavigationPreviewPaintedPixels;
             stage.PanReferenceCamera(stage.Width * 0.6f, 0);
             stage.Refresh();
-            AssertTimeline(renderer.NavigationPreviewScrolls == scrolls + 1,
-                "Navigation cache did not scroll its overlapping pixels.");
-            AssertTimeline(renderer.NavigationPreviewPaintedPixels > painted
-                && renderer.NavigationPreviewPaintedPixels - painted < (long)stage.Width * stage.Height * 4,
-                "Scrolling repainted the full expanded image instead of exposed strips.");
+            AssertTimeline(renderer.NavigationPreviewBuilds == rebuilds + 1,
+                "Navigation cache did not replace the uncovered snapshot.");
+            AssertTimeline(renderer.NavigationPreviewPaintedPixels - painted == (long)stage.Width * stage.Height * 4,
+                "Preview replacement did not repaint the complete surface.");
             using (var preview = CaptureNavigation())
             {
                 foreach (var x in new[] { stage.Width / 4, stage.Width * 3 / 4 })
@@ -152,8 +151,8 @@ internal static partial class Benchmark
             }
             stage.PanReferenceCamera(-stage.Width * 1.2f - 0.375f, 0);
             stage.Refresh();
-            AssertTimeline(renderer.NavigationPreviewScrolls == scrolls + 2,
-                "Reverse fractional navigation failed to preserve its integer pixel overlap.");
+            AssertTimeline(renderer.NavigationPreviewBuilds == rebuilds + 2,
+                "Reverse fractional navigation did not rebuild its uncovered snapshot.");
             using (var preview = CaptureNavigation())
             {
                 var pixel = preview.GetPixel(stage.Width / 2, stage.Height / 2);
@@ -185,6 +184,7 @@ internal static partial class Benchmark
             "Angled projection lost visible extrusion walls.");
         renderer.ReleaseTarget();
         RunNavigationCompleteContentRegression();
+        RunNavigationSnapshotStabilityRegression();
         Console.WriteLine("reference_navigation_collapsed_walls=passed");
         Bitmap CaptureNavigation()
         {
@@ -442,6 +442,69 @@ internal static partial class Benchmark
         AssertTimeline(!renderer.NavigationPreviewContainsContent,
             "Editing distant content retained a stale complete-content claim.");
         renderer.ReleaseTarget();
+    }
+
+    private static void RunNavigationSnapshotStabilityRegression()
+    {
+        var scene = new VectorScene(); scene.CreateEmpty();
+        var random = new Random(7351);
+        for (var i = 0; i < 100; i++)
+        {
+            var x = random.Next(-30000, 30000); var y = random.Next(-20000, 20000);
+            scene.AddPathObjectContours(0,
+                [[new PointF(x, y), new PointF(x + 1600, y),
+                    new PointF(x + 1600, y + 1200), new PointF(x, y + 1200)]],
+                0, Color.FromArgb(128, random.Next(256), random.Next(256), random.Next(256)),
+                Color.Transparent, 4);
+        }
+        using var stage = new StageControl(scene) { Dock = DockStyle.Fill, WorldGridOpacity = 0,
+            NavigationPreviewEnabled = true, ExperimentalSceneLightingEnabled = false };
+        stage.ConfigureReferenceView(null, SceneDimension.TwoD);
+        using var form = new Form { ClientSize = new Size(640, 440), FormBorderStyle = FormBorderStyle.None };
+        form.Controls.Add(stage); form.Show(); Application.DoEvents(); stage.Refresh();
+        var renderer = (Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!;
+        var original = stage.CaptureViewState();
+        for (var step = 0; step < 12; step++)
+        {
+            // Alternate directions, force overscan replacement, reuse the spare
+            // surface, and include fractional translation and zoom rebuilds.
+            stage.PanReferenceCamera((step % 2 == 0 ? 1 : -1) * (500 + step * 17.375f),
+                (step % 3 - 1) * 310.25f);
+            stage.ZoomReferenceCamera(step % 3 == 0 ? 2.2f : 0.85f);
+            using var preview = Capture();
+            RequireMethod(typeof(StageControl), "EndZoomLodPreview").Invoke(stage, [true]);
+            using var native = Capture();
+            var checkedPixels = 0;
+            for (var y = 4; y < native.Height - 4; y += 3)
+                for (var x = 4; x < native.Width - 4; x += 3)
+                {
+                    var expected = native.GetPixel(x, y);
+                    // Ignore raster-resampling edges; compare flat opaque and
+                    // translucent interiors and empty space across the viewport.
+                    if (!Near(expected, native.GetPixel(x - 3, y), 1)
+                        || !Near(expected, native.GetPixel(x + 3, y), 1)
+                        || !Near(expected, native.GetPixel(x, y - 3), 1)
+                        || !Near(expected, native.GetPixel(x, y + 3), 1)) continue;
+                    checkedPixels++;
+                    AssertTimeline(Near(expected, preview.GetPixel(x, y), 4),
+                        $"Navigation snapshot contains stale/missing pixels: step={step}, point={x},{y}.");
+                }
+            AssertTimeline(checkedPixels > 1000 && stage.LastFrameUsedDirect2D,
+                "Snapshot stability comparison did not capture sufficient Direct2D pixels.");
+            if (step == 5) { renderer.ReleaseTarget(); stage.Refresh(); }
+        }
+        stage.RestoreViewState(original);
+        Console.WriteLine("reference_navigation_snapshot_stability=passed");
+
+        static bool Near(Color a, Color b, int tolerance) =>
+            Math.Abs(a.R - b.R) <= tolerance && Math.Abs(a.G - b.G) <= tolerance
+                && Math.Abs(a.B - b.B) <= tolerance;
+
+        Bitmap Capture()
+        {
+            stage.Refresh(); FlushWorkspaceCapture();
+            return CaptureBenchmarkWindow(form);
+        }
     }
 
     private static void RunWorkspaceSchedulingRegression()

@@ -36,7 +36,8 @@ internal static partial class Benchmark
             </elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>
             """;
         File.WriteAllText(Path.Combine(folder, "DOMDocument.xml"), xml);
-        var imported = FlashDocumentImporter.Load(folder);
+        ExpectInvalidData(() => FlashDocumentImporter.Load(folder), "Native import must report unsupported bitmap paint editing.");
+        var imported = FlashDocumentImporter.Load(folder, editableGeometry: false);
         try
         {
             AssertTimeline(imported.Diagnostics.Any(item => item.Code == "bitmap-fill-svg-retained"), "Bitmap paint representation was not reported.");
@@ -56,7 +57,7 @@ internal static partial class Benchmark
         File.WriteAllText(Path.Combine(folder, "DOMDocument.xml"), xml.Replace("bitmapPath=\"Tile\"", "bitmapPath=\"Missing\"", StringComparison.Ordinal));
         ExpectInvalidData(() => FlashDocumentImporter.Load(folder), "A missing bitmap paint reference was silently accepted.");
         File.WriteAllText(Path.Combine(folder, "DOMDocument.xml"), xml.Replace("bitmapPath=\"Tile\"", "bitmapPath=\"Tile\" bitmapIsClipped=\"true\"", StringComparison.Ordinal));
-        var clampedImport = FlashDocumentImporter.Load(folder);
+        var clampedImport = FlashDocumentImporter.Load(folder, editableGeometry: false);
         try
         {
             AssertTimeline(clampedImport.Project.DrawingObjects.Any(item => Enumerable.Range(0, item.Scene.ObjectCount)

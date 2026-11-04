@@ -122,27 +122,27 @@ internal static partial class Benchmark
             .Replace("<DOMSymbolInstance libraryItemName='Empty'/>", tinyShape, StringComparison.Ordinal);
         WriteFlashZipFixture(tinyPath, ("DOMDocument.xml", tinyDocument));
         var tiny = FlashDocumentImporter.Load(tinyPath);
-        AssertTimeline(tiny.Diagnostics.Any(item => item.Code == "shape-vector-retained"),
-            "A fill below native precision was not retained as complete SVG artwork.");
+        AssertTimeline(tiny.Diagnostics.Any(item => item.Code == "tiny-shape-native-precision"),
+            "A sub-unit fill did not disclose its native coordinate approximation.");
         var tinySaved = ProjectVaultStore.Save(tiny.Project, Path.Combine(root, "TinySaved", "Tiny.v2dProject"));
         var tinyReopened = ProjectVaultStore.Load(tinySaved);
         var composed = new VectorScene();
         SceneCompositionBuilder.Build(composed, tinyReopened.Scenes[0], tinyReopened.DrawingObjects, 0, tiny.Fps);
         AssertTimeline(composed.ObjectCount == 1, "A retained tiny fill disappeared after Save/Open/composition.");
-        Console.WriteLine("flash_tiny_fill_vector_retained=ok");
+        AssertTimeline(composed.ShapeKind[0] != ShapeKind.ImportedSvg, "Tiny artwork retained an SVG wrapper.");
+        Console.WriteLine("flash_tiny_fill_native_precision=ok");
 
         var transparentPath = Path.Combine(root, "TransparentFill.fla");
         var transparentShape = FlashSquareFixture("#FF0000").Replace("<SolidColor ", "<SolidColor alpha='0' ", StringComparison.Ordinal);
         WriteFlashZipFixture(transparentPath, ("DOMDocument.xml", tinyDocument.Replace(tinyShape, transparentShape, StringComparison.Ordinal)));
         var transparent = FlashDocumentImporter.Load(transparentPath);
-        AssertTimeline(transparent.Diagnostics.Any(item => item.Code == "shape-vector-retained"),
-            "A fully transparent shape blocked import instead of retaining its SVG source.");
         var transparentSaved = ProjectVaultStore.Save(transparent.Project, Path.Combine(root, "TransparentSaved", "Transparent.v2dProject"));
         var transparentReopened = ProjectVaultStore.Load(transparentSaved);
         SceneCompositionBuilder.Build(composed, transparentReopened.Scenes[0], transparentReopened.DrawingObjects, 0, transparent.Fps);
-        AssertTimeline(composed.ObjectCount == 1 && composed.TryGetImportedSvgSource(0, out var transparentSvg)
-            && transparentSvg.Contains("fill-opacity=\"0\"", StringComparison.Ordinal),
-            "A fully transparent SVG lost its geometry or alpha after Save/Open/composition.");
-        Console.WriteLine("flash_transparent_shape_vector_retained=ok");
+        AssertTimeline(transparentReopened.Scenes[0].DrawingScene.ObjectCount == 1
+            && Color.FromArgb(transparentReopened.Scenes[0].DrawingScene.Argb[0]).A == 0
+            && transparentReopened.Scenes[0].DrawingScene.ShapeKind[0] != ShapeKind.ImportedSvg,
+            "A fully transparent native fill lost its editable geometry or alpha after Save/Open.");
+        Console.WriteLine("flash_transparent_shape_native=ok");
     }
 }

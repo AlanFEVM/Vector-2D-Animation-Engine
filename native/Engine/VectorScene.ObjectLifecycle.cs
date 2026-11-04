@@ -848,8 +848,9 @@ internal sealed partial class VectorScene
                             if (created >= 0)
                             {
                                 // Freehand append applies the drawing tool's minimum width.
-                                // Imported exact strokes retain their source width instead.
-                                if (requireExactGeometry) Stroke[created] = stroke.Width * strokeScale;
+                                // Imported strokes retain their source width, including
+                                // thin strokes below the drawing tool minimum.
+                                Stroke[created] = stroke.Width * strokeScale;
                                 SetSvgStrokeStyle(created, stroke.Style);
                             }
                             break;

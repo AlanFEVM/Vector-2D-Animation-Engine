@@ -1,6 +1,4 @@
 using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Xml;
 using Clipper2Lib;
@@ -72,18 +70,15 @@ internal static class ImportedSvgBreakApart
     private const int MaxExpandedReferenceElements = 65_536;
     private const int MaxOutputParts = 16_384;
     private const int MaxOutputPoints = 500_000;
-    private const int MaxRasterColorParts = 4_096;
     private const float FlatteningTolerance = 0.05f;
     private const double DominantGroupGeometryRatio = 0.9;
     private const int LayerOverlapPrecision = 6;
     private const int LayerBoundsLeafSize = 8;
     private const int MaxOutputLayerNameLength = 80;
     private const float MinimumReliableWidenWidth = 8f;
-    private const int RasterLongEdge = 256;
     private const string InkscapeNamespace = "http://www.inkscape.org/namespaces/inkscape";
     private const string InkscapeGroupModeAttribute = InkscapeNamespace + ":groupmode";
     private const string InkscapeLabelAttribute = InkscapeNamespace + ":label";
-    private static readonly int[] RasterChannelLevelCandidates = [16, 12, 8];
 
     private static readonly UTF8Encoding StrictUtf8 = new(
         encoderShouldEmitUTF8Identifier: false,
@@ -120,7 +115,7 @@ internal static class ImportedSvgBreakApart
             throw new InvalidDataException($"Imported SVG source must not exceed {MaxSourceBytes} bytes.");
         }
 
-        var requiresRasterFallback = ValidateXml(source);
+        var unsupportedPresentation = ValidateXml(source);
         SvgDocument document;
         try
         {
@@ -137,10 +132,10 @@ internal static class ImportedSvgBreakApart
         ValidateSize(intrinsicSize);
 
         using var outerTransformClone = outerTransform is null ? null : outerTransform.Clone();
-        if (requiresRasterFallback)
+        if (unsupportedPresentation)
         {
             if (requireExactGeometry) throw new InvalidDataException("The SVG uses XML or presentation content that cannot be converted to editable geometry exactly.");
-            return RasterizeDocument(document, intrinsicSize, outerTransformClone);
+            throw new InvalidDataException("This SVG contains unsupported presentation data. Break Apart requires editable vector geometry; the original SVG was retained.");
         }
 
         // Work on a separate tree: a failed vector conversion must still render the original SVG.
@@ -148,7 +143,7 @@ internal static class ImportedSvgBreakApart
         if (!ExpandLocalReferences(vectorDocument, document))
         {
             if (requireExactGeometry) throw new InvalidDataException("The SVG contains a reference that cannot be expanded into editable geometry.");
-            return RasterizeDocument(document, intrinsicSize, outerTransformClone);
+            throw new InvalidDataException("SVG references cannot be expanded into editable vector geometry; the original SVG was retained.");
         }
 
         try
@@ -173,7 +168,7 @@ internal static class ImportedSvgBreakApart
             if (state.Parts.Count == 0)
             {
                 if (requireExactGeometry) throw new InvalidDataException("The SVG contains no editable vector geometry.");
-                return RasterizeDocument(document, intrinsicSize, outerTransformClone);
+                throw new InvalidDataException("The SVG contains no editable vector geometry; the original SVG was retained.");
             }
             state.PreserveStrokePaintOrder();
             state.CoalesceNonOverlappingLayers();
@@ -190,7 +185,7 @@ internal static class ImportedSvgBreakApart
         }
         catch (Exception exception) when (exception is not OutOfMemoryException && !requireExactGeometry)
         {
-            return RasterizeDocument(document, intrinsicSize, outerTransformClone);
+            throw new InvalidDataException("SVG content cannot be converted to editable vector geometry. The original SVG was retained. " + exception.Message, exception);
         }
     }
 
@@ -682,226 +677,6 @@ internal static class ImportedSvgBreakApart
         return defaultValue;
     }
 
-    private static ImportedSvgBreakResult RasterizeDocument(
-        SvgDocument document,
-        SizeF intrinsicSize,
-        Matrix? outerTransform)
-    {
-        var rasterSize = GetRasterSize(intrinsicSize);
-        using var rendered = document.Draw(rasterSize.Width, rasterSize.Height);
-        Bitmap? normalized = null;
-        try
-        {
-            var raster = rendered;
-            var pixelFormat = raster.PixelFormat;
-            if (pixelFormat is not PixelFormat.Format32bppArgb and not PixelFormat.Format32bppPArgb)
-            {
-                normalized = new Bitmap(rasterSize.Width, rasterSize.Height, PixelFormat.Format32bppPArgb);
-                using var graphics = Graphics.FromImage(normalized);
-                graphics.CompositingMode = CompositingMode.SourceCopy;
-                graphics.Clear(Color.Transparent);
-                graphics.DrawImageUnscaled(rendered, 0, 0);
-                raster = normalized;
-                pixelFormat = PixelFormat.Format32bppPArgb;
-            }
-
-            Dictionary<int, Paths64>? runsByColor = null;
-            foreach (var channelLevels in RasterChannelLevelCandidates)
-            {
-                runsByColor = ReadRasterRuns(raster, pixelFormat, channelLevels);
-                if (runsByColor.Count <= MaxRasterColorParts) break;
-            }
-            if (runsByColor is null || runsByColor.Count > MaxRasterColorParts)
-            {
-                throw new InvalidDataException("The rasterized SVG exceeds the supported color complexity.");
-            }
-            var state = new ExtractionState
-            {
-                Approximations = ImportedSvgBreakApproximation.RasterizedContent
-            };
-            var rasterLayerKey = state.CreateLayer("SVG Rasterized");
-            var scaleX = intrinsicSize.Width / rasterSize.Width;
-            var scaleY = intrinsicSize.Height / rasterSize.Height;
-            foreach (var entry in runsByColor.OrderBy(item => unchecked((uint)item.Key)))
-            {
-                Paths64 union;
-                try
-                {
-                    union = Clipper.Union(entry.Value, FillRule.NonZero);
-                }
-                catch (Exception exception) when (exception is ClipperLibException or OverflowException)
-                {
-                    throw new InvalidDataException("The rasterized SVG could not be converted to bounded vector geometry.", exception);
-                }
-
-                var contours = union
-                    .Where(path => path.Count >= 3)
-                    .OrderByDescending(path => Math.Abs(Clipper.Area(path)))
-                    .ThenBy(path => path.Min(point => point.Y))
-                    .ThenBy(path => path.Min(point => point.X))
-                    .Select(path => TransformRasterContour(path, scaleX, scaleY, outerTransform, state))
-                    .ToArray();
-                if (contours.Length == 0) continue;
-                state.AddPart(new ImportedSvgBreakFill(
-                    state.NextOrder(),
-                    rasterLayerKey,
-                    "svg",
-                    new ImportedSvgBreakPaint(Color.FromArgb(entry.Key)),
-                    contours,
-                    UsesEvenOddFillRule: true));
-            }
-
-            if (state.Parts.Count == 0)
-            {
-                var bounds = new[]
-                {
-                    PointF.Empty,
-                    new PointF(intrinsicSize.Width, 0),
-                    new PointF(intrinsicSize.Width, intrinsicSize.Height),
-                    new PointF(0, intrinsicSize.Height)
-                };
-                TransformPoints(bounds, outerTransform);
-                state.AddPoints(bounds.Length);
-                state.AddPart(new ImportedSvgBreakFill(
-                    state.NextOrder(),
-                    rasterLayerKey,
-                    "svg",
-                    new ImportedSvgBreakPaint(Color.Transparent),
-                    new[] { bounds },
-                    UsesEvenOddFillRule: true));
-            }
-
-            return new ImportedSvgBreakResult(
-                intrinsicSize,
-                state.ResultLayers(),
-                state.Parts.ToArray(),
-                state.Approximations);
-        }
-        finally
-        {
-            normalized?.Dispose();
-        }
-    }
-
-    private static Size GetRasterSize(SizeF intrinsicSize)
-    {
-        var scale = RasterLongEdge / (double)Math.Max(intrinsicSize.Width, intrinsicSize.Height);
-        return new Size(
-            Math.Max(1, (int)Math.Round(intrinsicSize.Width * scale)),
-            Math.Max(1, (int)Math.Round(intrinsicSize.Height * scale)));
-    }
-
-    private static Dictionary<int, Paths64> ReadRasterRuns(
-        Bitmap bitmap,
-        PixelFormat pixelFormat,
-        int channelLevels)
-    {
-        var result = new Dictionary<int, Paths64>();
-        var bounds = new Rectangle(0, 0, bitmap.Width, bitmap.Height);
-        BitmapData? bitmapData = null;
-        try
-        {
-            bitmapData = bitmap.LockBits(bounds, ImageLockMode.ReadOnly, pixelFormat);
-            var row = new byte[checked(bitmap.Width * 4)];
-            var premultiplied = pixelFormat == PixelFormat.Format32bppPArgb;
-            for (var y = 0; y < bitmap.Height; y++)
-            {
-                Marshal.Copy(IntPtr.Add(bitmapData.Scan0, checked(y * bitmapData.Stride)), row, 0, row.Length);
-                var x = 0;
-                while (x < bitmap.Width)
-                {
-                    var color = QuantizeArgb(row, x * 4, premultiplied, channelLevels);
-                    var runStart = x++;
-                    while (x < bitmap.Width
-                        && QuantizeArgb(row, x * 4, premultiplied, channelLevels) == color)
-                    {
-                        x++;
-                    }
-                    if ((color >>> 24) == 0) continue;
-
-                    if (!result.TryGetValue(color, out var paths))
-                    {
-                        paths = new Paths64();
-                        result.Add(color, paths);
-                    }
-                    paths.Add(new Path64
-                    {
-                        new(runStart, y),
-                        new(x, y),
-                        new(x, y + 1),
-                        new(runStart, y + 1)
-                    });
-                }
-            }
-        }
-        finally
-        {
-            if (bitmapData is not null) bitmap.UnlockBits(bitmapData);
-        }
-        return result;
-    }
-
-    private static int QuantizeArgb(byte[] row, int offset, bool premultiplied, int channelLevels)
-    {
-        var blue = row[offset];
-        var green = row[offset + 1];
-        var red = row[offset + 2];
-        var alpha = row[offset + 3];
-        if (alpha == 0) return 0;
-        if (premultiplied)
-        {
-            blue = Unpremultiply(blue, alpha);
-            green = Unpremultiply(green, alpha);
-            red = Unpremultiply(red, alpha);
-        }
-
-        var quantizedAlpha = Math.Max(1, QuantizeChannel(alpha, channelLevels));
-        return Color.FromArgb(
-            ExpandChannel(quantizedAlpha, channelLevels),
-            ExpandChannel(QuantizeChannel(red, channelLevels), channelLevels),
-            ExpandChannel(QuantizeChannel(green, channelLevels), channelLevels),
-            ExpandChannel(QuantizeChannel(blue, channelLevels), channelLevels)).ToArgb();
-    }
-
-    private static byte Unpremultiply(byte channel, byte alpha)
-    {
-        return (byte)Math.Min(255, (channel * 255 + alpha / 2) / alpha);
-    }
-
-    private static int QuantizeChannel(byte channel, int channelLevels)
-    {
-        return (channel * (channelLevels - 1) + 127) / 255;
-    }
-
-    private static int ExpandChannel(int channel, int channelLevels)
-    {
-        return (channel * 255 + (channelLevels - 1) / 2) / (channelLevels - 1);
-    }
-
-    private static PointF[] TransformRasterContour(
-        Path64 path,
-        float scaleX,
-        float scaleY,
-        Matrix? outerTransform,
-        ExtractionState state)
-    {
-        var contour = path
-            .Select(point => new PointF(point.X * scaleX, point.Y * scaleY))
-            .ToArray();
-        TransformPoints(contour, outerTransform);
-        state.AddPoints(contour.Length);
-        return contour;
-    }
-
-    private static void TransformPoints(PointF[] points, Matrix? transform)
-    {
-        transform?.TransformPoints(points);
-        if (points.Any(point => !float.IsFinite(point.X) || !float.IsFinite(point.Y)))
-        {
-            throw new InvalidDataException("The SVG produced non-finite rasterized geometry.");
-        }
-    }
-
     private static List<FlattenedFigure> ReadFigures(GraphicsPath path, ExtractionState state)
     {
         var points = path.PathPoints;
@@ -1109,7 +884,7 @@ internal static class ImportedSvgBreakApart
 
     private static bool ValidateXml(string source)
     {
-        var requiresRasterFallback = false;
+        var unsupportedPresentation = false;
         var settings = new XmlReaderSettings
         {
             DtdProcessing = DtdProcessing.Prohibit,
@@ -1129,7 +904,7 @@ internal static class ImportedSvgBreakApart
             if (reader.NodeType is XmlNodeType.Text or XmlNodeType.CDATA
                 && ContainsRasterOnlyCss(reader.Value))
             {
-                requiresRasterFallback = true;
+                unsupportedPresentation = true;
             }
             if (reader.NodeType != XmlNodeType.Element || !reader.HasAttributes) continue;
             for (var index = 0; index < reader.AttributeCount; index++)
@@ -1139,16 +914,16 @@ internal static class ImportedSvgBreakApart
                     or "marker-start" or "marker-mid" or "marker-end" or "vector-effect" or "mix-blend-mode"
                     or "stroke-dasharray" or "stroke-dashoffset" or "paint-order" or "overflow")
                 {
-                    requiresRasterFallback = true;
+                    unsupportedPresentation = true;
                 }
                 if (reader.LocalName == "style" && ContainsRasterOnlyCss(reader.Value))
                 {
-                    requiresRasterFallback = true;
+                    unsupportedPresentation = true;
                 }
             }
             reader.MoveToElement();
         }
-        return requiresRasterFallback;
+        return unsupportedPresentation;
     }
 
     private static bool ContainsRasterOnlyCss(string value)

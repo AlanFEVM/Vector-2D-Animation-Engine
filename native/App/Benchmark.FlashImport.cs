@@ -1,4 +1,4 @@
-﻿using System.IO.Compression;
+using System.IO.Compression;
 using System.Buffers.Binary;
 using System.Drawing.Imaging;
 using System.Text;
@@ -12,6 +12,7 @@ internal static partial class Benchmark
 
     private static void RunFlashImportRegression()
     {
+        RunFlashNativeLibraryRegression();
         var root = CreateTemporaryDirectory("flash-import");
         try
         {
@@ -203,9 +204,9 @@ internal static partial class Benchmark
         CheckFolder(ProjectVaultStore.Load(ProjectVaultStore.Save(folderProject, Path.Combine(root, "GuideFolderSaved", "Guide.v2dProject"))));
         void CheckFolder(VectorProject project)
         {
-            var group = project.DrawingObjects.Single(symbol => symbol.Name == "Guide / Folder");
-            AssertTimeline(group.Scene.LayerNames.SequenceEqual(new[] { "Folder", "Moving" })
-                && group.Scene.LayerParentIds[1] == group.Scene.LayerIds[0], "Omitting a guide broke its exported folder hierarchy.");
+            AssertTimeline(project.DrawingObjects.Count == 1
+                && project.Scenes[0].Layers.Select(layer => layer.Name).SequenceEqual(new[] { "Moving" }),
+                "Guide omission created a helper symbol or lost the native scene content layer.");
         }
         Console.WriteLine("flash_guide_bake_arc_length_ease_orientation_pivot_save_composition=ok");
     }
@@ -302,7 +303,9 @@ internal static partial class Benchmark
         var glowProject = FlashDocumentImporter.Load(glowing).Project;
         var glowSaved = ProjectVaultStore.Save(glowProject, Path.Combine(root, "StaticTextGlowSaved", "Text.v2dProject"));
         var glowReopened = ProjectVaultStore.Load(glowSaved);
-        var glowFilters = glowReopened.Scenes[0].Instances.Single().EvaluateState(0).Filters.FlashFilters;
+        var glowScene = glowReopened.Scenes[0].DrawingScene;
+        var glowFilters = Enumerable.Range(0, glowScene.LayerCount)
+            .Select(layer => glowScene.GetLayerSymbolFilters(layer).FlashFilters).Single(filters => filters is { Count: > 0 });
         AssertTimeline(glowFilters is { Count: 1 } && glowFilters[0].Kind == SymbolFlashFilterKind.Glow
             && glowFilters[0].Quality == 3 && glowFilters[0].BlurX == 6 && glowFilters[0].BlurY == 8,
             "Static-text glow parameters were lost after import and Save/Open.");
@@ -566,7 +569,7 @@ internal static partial class Benchmark
     {
         AssertTimeline(project.Scenes.Count == 1 && project.Scenes[0].FrameCount == 4
             && project.DrawingObjects.Any(item => item.Name == "Leaf")
-            && project.DrawingObjects.Sum(item => item.Instances.Count) > 0,
+            && project.Scenes.Sum(item => item.Instances.Count) > 0,
             "Flash import did not preserve its scene, reusable library symbol, or nested references.");
         var scene = project.Scenes[0];
         AssertTimeline(scene.Layers.Select(layer => layer.Name).SequenceEqual(new[] { "Animated", "Hidden" }),
@@ -767,7 +770,7 @@ internal static partial class Benchmark
             "Flash library symbol lost native layer hierarchy, visibility, lock, color or outline metadata.");
 
         var first = project.Scenes[0];
-        AssertTimeline(first.Layers.Select(layer => layer.Name).SequenceEqual(new[] { "Foreground", "Hidden", "Group", "Locked Root" }),
+        AssertTimeline(first.Layers.Select(layer => layer.Name).SequenceEqual(new[] { "Foreground", "Hidden", "Locked Child", "Nested Hidden", "Second Child", "Locked Root" }),
             "Flash root layers were not reconstructed as native scene layers.");
         var foreground = first.Layers[0];
         var hidden = first.Layers[1];
@@ -781,28 +784,15 @@ internal static partial class Benchmark
                 .SequenceEqual(new[] { "Left", "Right" })
             && first.InstancesInLayer(hidden.Id).Single().DrawingObjectId == blue.Id,
             "Flash scene placements cloned reusable library definitions or lost their names/identities.");
-        var group = project.DrawingObjects.Single(symbol => symbol.Id == first.InstancesInLayer(first.Layers[2].Id).Single().DrawingObjectId);
-        var nativeGroup = group.Scene;
-        AssertTimeline(nativeGroup.LayerNames.SequenceEqual(new[] { "Group", "Locked Child", "Nested Folder", "Nested Hidden", "Second Child" })
-            && nativeGroup.LayerKinds[0] == DrawingLayerKind.Folder
-            && nativeGroup.LayerKinds[2] == DrawingLayerKind.Folder
-            && nativeGroup.LayerParentIds[1] == nativeGroup.LayerIds[0]
-            && nativeGroup.LayerParentIds[2] == nativeGroup.LayerIds[0]
-            && nativeGroup.LayerParentIds[3] == nativeGroup.LayerIds[2]
-            && nativeGroup.LayerParentIds[4] == nativeGroup.LayerIds[0]
-            && nativeGroup.LayerLocked[0] && nativeGroup.LayerLocked[1]
-            && !nativeGroup.LayerVisible[2] && nativeGroup.LayerOutline[3] && nativeGroup.LayerOutline[0]
-            && !first.Layers[2].Outline
-            && nativeGroup.LayerColorArgb.SequenceEqual(new[] { Color.FromArgb(0x66, 0x77, 0x88).ToArgb(),
-                Color.FromArgb(0x77, 0x88, 0x99).ToArgb(), Color.FromArgb(0x88, 0x99, 0xAA).ToArgb(),
-                Color.FromArgb(0x99, 0xAA, 0xBB).ToArgb(), Color.FromArgb(0x22, 0xAA, 0x44).ToArgb() }),
-            "Flash scene-folder projection lost its editable source hierarchy or layer metadata.");
-        var locked = project.DrawingObjects.Single(symbol => symbol.Id == first.InstancesInLayer(first.Layers[3].Id).Single().DrawingObjectId);
-        AssertTimeline(locked.Scene.LayerCount == 1 && locked.Scene.LayerNames[0] == "Locked Root"
-            && locked.Scene.LayerLocked[0]
-            && locked.Scene.LayerColorArgb[0] == Color.FromArgb(0xAB, 0xCD, 0xEF).ToArgb()
-            && !first.Layers[3].Visible && first.Layers[3].Outline,
-            "Flash locked root layer did not retain its lock/visibility/outline in an editable native group.");
+        AssertTimeline(project.DrawingObjects.Count == 2
+            && first.DrawingScene.LayerLocked[2] && first.DrawingScene.LayerLocked[3]
+            && first.DrawingScene.LayerLocked[4] && first.DrawingScene.LayerLocked[5]
+            && !first.Layers[3].Visible && !first.Layers[5].Visible
+            && first.Layers[2].Outline && first.Layers[3].Outline && first.Layers[4].Outline && first.Layers[5].Outline
+            && first.Layers[2].ColorArgb == Color.FromArgb(0x77, 0x88, 0x99).ToArgb()
+            && first.Layers[4].ColorArgb == Color.FromArgb(0x22, 0xAA, 0x44).ToArgb()
+            && first.Layers[5].ColorArgb == Color.FromArgb(0xAB, 0xCD, 0xEF).ToArgb(),
+            "Native scene layers lost effective source folder visibility, lock, colour or outline state.");
         AssertTimeline(!project.DrawingObjects.Any(symbol => symbol.Name is "First Timeline" or "Second Timeline")
             && !project.DrawingObjects.Any(symbol => symbol.Scene.LayerNames.Contains("Foreground")),
             "Flash scene projection retained a duplicate entire-timeline staging symbol.");
@@ -915,16 +905,11 @@ internal static partial class Benchmark
     private static void AssertFlashFolderExposures(VectorProject project)
     {
         var scene = project.Scenes.Single();
-        AssertTimeline(scene.Layers.Count == 1 && scene.FrameCount == 5,
-            "Flash folder exposures were split into unrelated scene layers or truncated.");
-        var track = scene.Timeline.FindTrackByTargetId(scene.Layers[0].Id)!;
-        AssertTimeline(track.Keyframes.Select(key => key.Frame).SequenceEqual(new[] { 0, 1, 2, 3, 4 })
-            && Enumerable.Range(0, 5).Select(frame => track.EvaluateExposure(frame).HasContent)
-                .SequenceEqual(new[] { true, true, true, false, true }),
-            "Flash folder scene exposure does not equal the union of its staggered child exposures.");
-        var group = project.DrawingObjects.Single(symbol => symbol.Id == scene.Instances.Single().DrawingObjectId);
-        var a = group.Timeline.FindTrackByTargetId(group.Scene.LayerIds[1])!;
-        var b = group.Timeline.FindTrackByTargetId(group.Scene.LayerIds[2])!;
+        AssertTimeline(scene.Layers.Select(layer => layer.Name).SequenceEqual(new[] { "A", "B" })
+            && scene.FrameCount == 5 && project.DrawingObjects.Count == 1,
+            "Flash folder children must retain native layers without a helper library symbol.");
+        var a = scene.Timeline.FindTrackByTargetId(scene.Layers[0].Id)!;
+        var b = scene.Timeline.FindTrackByTargetId(scene.Layers[1].Id)!;
         AssertTimeline(a.Keyframes.Select(key => key.Frame).SequenceEqual(new[] { 0, 2, 4 })
             && b.Keyframes.Select(key => key.Frame).SequenceEqual(new[] { 0, 1, 3 }),
             "Flash folder projection expanded child holds or lost the leading blank exposure.");
@@ -998,8 +983,15 @@ internal static partial class Benchmark
         }
         var vectorPath = Path.Combine(root, "GradientVector.fla");
         WriteFlashZipFixture(vectorPath, ("DOMDocument.xml", FlashShapeDocument(gradientStroke)));
-        var vector = FlashDocumentImporter.Load(vectorPath);
-        AssertTimeline(vector.Diagnostics.Any(item => item.Code == "gradient-vector-retained"), "Gradient vector retention was not disclosed.");
+        var native = FlashDocumentImporter.Load(vectorPath);
+        var nativeSaved = ProjectVaultStore.Save(native.Project, Path.Combine(root, "GradientNativeSaved", "Gradient.v2dProject"));
+        var nativeProject = ProjectVaultStore.Load(nativeSaved);
+        var nativeScene = nativeProject.Scenes[0].DrawingScene;
+        AssertTimeline(nativeScene.ObjectCount > 0 && Enumerable.Range(0, nativeScene.ObjectCount)
+            .All(index => nativeScene.ShapeKind[index] != ShapeKind.ImportedSvg)
+            && Enumerable.Range(0, nativeScene.ObjectCount).Any(nativeScene.HasGradient),
+            "Native gradient import lost editable geometry or paint after Save/Open.");
+        var vector = FlashDocumentImporter.Load(vectorPath, editableGeometry: false);
         var vectorSaved = ProjectVaultStore.Save(vector.Project, Path.Combine(root, "GradientVectorSaved", "Gradient.v2dProject"));
         var vectorScene = new VectorScene();
         var vectorProject = ProjectVaultStore.Load(vectorSaved);
@@ -1435,8 +1427,8 @@ internal static partial class Benchmark
             ("DOMDocument.xml", document.Replace("name=\"Animated\"", "name=\"Animated\" layerType=\"mask\"", StringComparison.Ordinal)),
             ("LIBRARY/Leaf.xml", symbol));
         var maskProject = FlashDocumentImporter.Load(unsupported).Project;
-        AssertTimeline(maskProject.DrawingObjects.Any(item => Enumerable.Range(0, item.Scene.LayerCount)
-            .Any(layer => item.Scene.GetLayerKind(layer) == DrawingLayerKind.Mask && item.Scene.LayerLocked[layer])),
+        AssertTimeline(maskProject.Scenes[0].Layers.Select((layer, index) => (layer, index))
+            .Any(item => item.layer.Kind == SceneLayerKind.Mask && maskProject.Scenes[0].DrawingScene.LayerLocked[item.index]),
             "Flash mask layer was not retained as a locked native mask.");
     }
 
