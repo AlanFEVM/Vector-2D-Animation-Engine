@@ -530,6 +530,9 @@ internal static partial class FlashDocumentImporter
                 var shape = ConvertShape(element, location, name => ResolveBitmapFill(name, location));
                 ShapeMilliseconds += shapeTimer.Elapsed.TotalMilliseconds;
                 if (shape.Sources.Count == 0) return;
+                if (shape.ApproximatePixelHinting)
+                    diagnostics.Add(new("pixel-hinted-stroke-approximated", location,
+                        "Pixel-hinted strokes imported as ordinary vector strokes with authored geometry and width preserved. Flash screen-pixel alignment is not retained; thin-line sharpness may differ with zoom and transforms. / 像素对齐描边按普通矢量描边导入，保留原始几何和宽度；不保留 Flash 屏幕像素对齐，细线清晰度可能随缩放和变换变化。"));
                 if (shape.ApproximateHairline)
                     diagnostics.Add(new("hairline-stroke-approximated", location,
                         "Screen-space hairline strokes approximated as one source-pixel vector strokes; zoom and transforms may change their apparent width."));

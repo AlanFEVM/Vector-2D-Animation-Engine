@@ -2064,7 +2064,7 @@ FLA 填充轮廓按有向线段连接，支持连接点位于同一 Edge 内部�
 
 FLA fill contours join directed segments, including junctions inside an Edge, preserving original curves and direction.
 
-FLA 填充间隙允许最多 4 个源像素的近似：优先连接最近的方向不平衡端点，以坐标顺序确定等距情况，保留原曲线，添加直线连接。导入报告记录修补次数及最大距离；细节和孔洞可能变化，应复核外观。hairline 描边近似为 1 个源像素宽，缩放行为可能不同。形状变形动画等不支持内容仍可能阻止整份工程导入。
+FLA 填充间隙允许最多 4 个源像素的近似：优先连接最近的方向不平衡端点，以坐标顺序确定等距情况，保留原曲线，添加直线连接。导入报告记录修补次数及最大距离；细节和孔洞可能变化，应复核外观。hairline 描边近似为 1 个源像素宽，缩放行为可能不同。启用 pixelHinting 的 Flash 描边现在按普通矢量描边直接导入，保留原始几何与宽度，并报告 `pixel-hinted-stroke-approximated`；不保留 Flash 屏幕像素对齐，细线清晰度可能随缩放或变换变化。Pixel-hinted Flash strokes import as ordinary vector strokes with authored geometry and width preserved; screen-pixel alignment is approximated and reported.形状变形动画等不支持内容仍可能阻止整份工程导入。
 
 FLA fill gaps allow an approximation of up to four source pixels: nearest degree-deficit endpoints are connected first, with coordinate ordering for ties. Original curves remain unchanged; straight connectors are added. Diagnostics report count and maximum distance; details and holes may change, so review the artwork. Hairline strokes use a one-source-pixel approximation and may scale differently. Unsupported content such as morph animation can still prevent full-project import.
 

@@ -8,7 +8,7 @@ namespace VectorAnimationEngine;
 
 internal static partial class FlashDocumentImporter
 {
-    private sealed record ConvertedShape(IReadOnlyList<string> Sources, RectangleF Bounds, int RepairedGaps = 0, float MaximumGap = 0, bool ApproximateHairline = false);
+    private sealed record ConvertedShape(IReadOnlyList<string> Sources, RectangleF Bounds, int RepairedGaps = 0, float MaximumGap = 0, bool ApproximateHairline = false, bool ApproximatePixelHinting = false);
     // Even the shortest SVG line command occupies six bytes ("L 0 0 ").
     // Use the existing SVG payload budget as a bounded parsing allowance;
     // generated SVG is separately limited per path, per chunk and in total.
@@ -51,14 +51,15 @@ internal static partial class FlashDocumentImporter
             if (!fills.TryAdd(id, Paint(value, defs, "fill" + id, location, bitmapResolver))) throw Failure(location, "Duplicate fill style index.");
         }
         var maximumStroke = 0f;
+        var approximatePixelHinting = false;
         foreach (var style in Children(Child(shape, "strokes"), "StrokeStyle"))
         {
             var id = Integer(style, "index", 0, 1, 65535);
             var stroke = Child(style, "SolidStroke") ?? throw Failure(location, "Only solid vector stroke styles are supported.");
             if (Text(stroke, "scaleMode", "normal") != "normal" || Child(stroke, "widths") is not null)
                 throw Failure(location, "Non-scaling or variable-width strokes require Adobe visual conversion.");
-            if (Boolean(stroke, "pixelHinting", false))
-                throw Failure(location, "Pixel-hinted strokes require Adobe visual conversion to preserve screen alignment.");
+            // Preserve authored geometry; Flash screen alignment has no native equivalent.
+            approximatePixelHinting |= Boolean(stroke, "pixelHinting", false);
             var solidStyle = Text(stroke, "solidStyle", "solid");
             if (solidStyle is not ("solid" or "hairline")) throw Failure(location, "Unsupported stroke pattern.");
             var weight = solidStyle == "hairline" ? 1f : Number(stroke, "weight", 1, 0.001f, 10000);
@@ -142,7 +143,7 @@ internal static partial class FlashDocumentImporter
             AppendPath(node);
         }
         FinishChunk();
-        return new(sources.AsReadOnly(), bounds, repairedGaps, maximumGap, shape.Descendants().Any(node => node.Name.LocalName == "SolidStroke" && Text(node, "solidStyle", "solid") == "hairline"));
+        return new(sources.AsReadOnly(), bounds, repairedGaps, maximumGap, shape.Descendants().Any(node => node.Name.LocalName == "SolidStroke" && Text(node, "solidStyle", "solid") == "hairline"), approximatePixelHinting);
 
         void AppendPath(XElement node)
         {
