@@ -74,6 +74,13 @@ internal sealed class SceneLightingPanel : UserControl
     private readonly Dictionary<SceneLightKind, Bitmap> _addMenuLightIcons = [];
     private readonly ModernTextInput _name = new();
     private readonly ComboBox _kind = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    private readonly Label _kindDisplay = InspectorModuleStyle.CreateTextLabel();
+    private readonly Label _typeHint = InspectorModuleStyle.CreateTextLabel();
+    private TableLayoutPanel? _root;
+    private int _preferredLogicalHeight = PanelHeight;
+    private static readonly int[] LogicalRows = [30, 82, 36, 40, 80, 40, 36, 40, 40, 40, 36, 120, 120, 40, 40, 36, 40, 40, 40];
+    private readonly ShotDirectorPanel.CameraSectionToggle[] _sections =
+        [new("Basic"), new("Lighting"), new("Transform"), new("Shadows")];
     private readonly ModernToggleSwitch _enabled = new();
     private readonly ColorTargetButton _color = new("Color");
     private readonly ModernNumericUpDown _intensity = PercentInput("Light intensity", 100_000m);
@@ -109,7 +116,7 @@ internal sealed class SceneLightingPanel : UserControl
         BackColor = Theme.Panel;
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
-        Padding = new Padding(8, 6, 8, 8);
+        Padding = new Padding(16, 6, 16, 8);
         Height = PanelHeight;
         MinimumSize = new Size(224, PanelHeight);
         AccessibleName = "Scene lighting";
@@ -124,7 +131,7 @@ internal sealed class SceneLightingPanel : UserControl
         SetLights([], null);
     }
 
-    public int PreferredPanelHeight => PanelHeight;
+    public int PreferredPanelHeight => (int)Math.Round(_preferredLogicalHeight * DeviceDpi / 96f);
     public string SelectedLightId => _selectedLightId;
 
     public event EventHandler<SceneLightAddRequestedEventArgs>? AddRequested;
@@ -165,8 +172,8 @@ internal sealed class SceneLightingPanel : UserControl
 
     public void RefreshText()
     {
-        _enabled.Text = UiLocalization.T("Enabled");
-        _castShadows.Text = UiLocalization.T("Cast shadows");
+        _enabled.Text = string.Empty;
+        _castShadows.Text = string.Empty;
         _color.Text = UiLocalization.T("Color");
         _toolTip.SetToolTip(_add, UiLocalization.T("Add light"));
         _toolTip.SetToolTip(_duplicate, UiLocalization.T("Duplicate light"));
@@ -198,25 +205,12 @@ internal sealed class SceneLightingPanel : UserControl
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 1,
-            RowCount = 15,
+            RowCount = LogicalRows.Length,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        foreach (var height in LogicalRows) root.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+        _root = root;
         Controls.Add(root);
 
         root.Controls.Add(BuildHeader(), 0, 0);
@@ -229,25 +223,39 @@ internal sealed class SceneLightingPanel : UserControl
         _lights.MouseMove += (_, e) => SetHoveredLightIndex(_lights.IndexFromPoint(e.Location));
         _lights.MouseLeave += (_, _) => SetHoveredLightIndex(-1);
         root.Controls.Add(_lights, 0, 1);
-        root.Controls.Add(BuildNameRow(), 0, 2);
-        root.Controls.Add(BuildTypeRow(), 0, 3);
-        root.Controls.Add(_enabled, 0, 4);
+        root.Controls.Add(BuildSection("Basic", _sections[0]), 0, 2);
+        root.Controls.Add(BuildNameRow(), 0, 3);
+        root.Controls.Add(BuildTypeRow(), 0, 4);
+        root.Controls.Add(FieldRow("Enabled", _enabled), 0, 5);
+        root.Controls.Add(BuildSection("Lighting", _sections[1]), 0, 6);
 
         _color.Dock = DockStyle.Fill;
         _color.AccessibleName = "Light color";
-        root.Controls.Add(FieldRow("Color", _color), 0, 5);
-        root.Controls.Add(FieldRow("Intensity", _intensity), 0, 6);
-        root.Controls.Add(FieldRow("Range", _range), 0, 7);
-        root.Controls.Add(BuildAxisRow("Position", _position), 0, 8);
-        root.Controls.Add(BuildAxisRow("Direction", _rotation), 0, 9);
-        root.Controls.Add(FieldRow("Area width", _areaWidth), 0, 10);
-        root.Controls.Add(FieldRow("Height", _areaHeight), 0, 11);
+        root.Controls.Add(FieldRow("Color", _color), 0, 7);
+        root.Controls.Add(FieldRow("Intensity", _intensity), 0, 8);
+        root.Controls.Add(FieldRow("Range", _range), 0, 9);
+        root.Controls.Add(BuildSection("Transform", _sections[2]), 0, 10);
+        root.Controls.Add(BuildAxisRow("Position", _position), 0, 11);
+        root.Controls.Add(BuildAxisRow("Direction", _rotation), 0, 12);
+        root.Controls.Add(FieldRow("Area width", _areaWidth), 0, 13);
+        root.Controls.Add(FieldRow("Height", _areaHeight), 0, 14);
+        root.Controls.Add(BuildSection("Shadows", _sections[3]), 0, 15);
         _castShadows.Dock = DockStyle.Fill;
         _castShadows.Margin = new Padding(0, 2, 4, 2);
         _castShadows.AccessibleName = "Cast shadows";
-        root.Controls.Add(_castShadows, 0, 12);
-        root.Controls.Add(FieldRow("Strength", _shadowStrength), 0, 13);
-        root.Controls.Add(FieldRow("Softness", _shadowSoftness), 0, 14);
+        root.Controls.Add(FieldRow("Cast shadows", _castShadows), 0, 16);
+        root.Controls.Add(FieldRow("Strength", _shadowStrength), 0, 17);
+        root.Controls.Add(FieldRow("Softness", _shadowSoftness), 0, 18);
+    }
+
+    private Control BuildSection(string text, ShotDirectorPanel.CameraSectionToggle toggle) =>
+        InspectorModuleStyle.CreateSectionHeader(text, toggle,
+            () => UpdateApplicableControls(SelectedState()?.Kind ?? SceneLightKind.Ambient));
+
+    protected override void OnDpiChangedAfterParent(EventArgs e)
+    {
+        base.OnDpiChangedAfterParent(e);
+        UpdateApplicableControls(SelectedState()?.Kind ?? SceneLightKind.Ambient);
     }
 
     private Control BuildHeader()
@@ -285,12 +293,21 @@ internal sealed class SceneLightingPanel : UserControl
 
     private Control BuildTypeRow()
     {
-        _kind.Dock = DockStyle.Fill;
-        _kind.AccessibleName = "Light type";
+        var row = new TableLayoutPanel { Dock = DockStyle.Fill, Margin = Padding.Empty, ColumnCount = 1, RowCount = 2 };
+        row.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        row.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        _kindDisplay.Dock = DockStyle.Fill;
+        _kindDisplay.AccessibleName = "Light type";
+        _typeHint.Text = UiLocalization.T("Light type is fixed. Use Add light to create a different type.");
+        _typeHint.Dock = DockStyle.Fill;
+        _typeHint.ForeColor = Theme.PanelSecondaryText;
+        _toolTip.SetToolTip(_kindDisplay, _typeHint.Text);
+        row.Controls.Add(FieldRow("Type", _kindDisplay), 0, 0);
+        row.Controls.Add(_typeHint, 0, 1);
         _enabled.Dock = DockStyle.Fill;
         _enabled.Margin = new Padding(4, 1, 0, 1);
         _enabled.AccessibleName = "Light enabled";
-        return FieldRow("Type", _kind);
+        return row;
     }
 
     private Control BuildAxisRow(string label, IReadOnlyList<ModernNumericUpDown> inputs)
@@ -299,20 +316,27 @@ internal sealed class SceneLightingPanel : UserControl
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
-            ColumnCount = 4,
+            ColumnCount = 2,
+            RowCount = 3,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
-        for (var index = 0; index < 3; index++) row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3f));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
+        for (var index = 0; index < 3; index++) row.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         row.Controls.Add(FieldLabel(label), 0, 0);
         for (var index = 0; index < 3; index++)
         {
             var input = inputs[index];
             input.Dock = DockStyle.Fill;
-            input.Margin = new Padding(index == 0 ? 2 : 3, 3, 0, 3);
-            Theme.StyleNumeric(input);
-            row.Controls.Add(input, index + 1, 0);
+            input.Margin = Padding.Empty;
+            InspectorModuleStyle.StyleField(input);
+            var axis = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Margin = Padding.Empty };
+            axis.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 18));
+            axis.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            axis.Controls.Add(FieldLabel(new[] { "X", "Y", "Z" }[index]), 0, 0);
+            axis.Controls.Add(input, 1, 0);
+            row.Controls.Add(axis, 1, index);
         }
         return row;
     }
@@ -406,8 +430,9 @@ internal sealed class SceneLightingPanel : UserControl
             _color.DetailText = Hex(_color.SwatchColor);
             RaiseChanged(SceneLightChangedFields.Color);
         };
-        try { picker.ShowDialog(FindForm()); }
-        finally { CompleteInteraction(); }
+        var accepted = false;
+        try { accepted = picker.ShowDialog(FindForm()) == DialogResult.OK; }
+        finally { if (accepted) CompleteInteraction(); else CancelInteraction(); }
     }
 
     private void HandleNameKeyDown(object? sender, KeyEventArgs e)
@@ -486,6 +511,7 @@ internal sealed class SceneLightingPanel : UserControl
             _name.Text = value.Name;
             _nameEditStart = value.Name;
             SelectKind(value.Kind);
+            _kindDisplay.Text = new LightKindItem(value.Kind).ToString();
             _enabled.Checked = value.Enabled;
             _color.SwatchColor = Opaque(value.Color);
             _color.DetailText = Hex(value.Color);
@@ -505,6 +531,7 @@ internal sealed class SceneLightingPanel : UserControl
             _name.Text = string.Empty;
             _nameEditStart = string.Empty;
             _kind.SelectedIndex = -1;
+            _kindDisplay.Text = UiLocalization.T("No light selected");
             _enabled.Checked = false;
             _color.SwatchColor = Color.White;
             _color.DetailText = "#FFFFFF";
@@ -539,6 +566,34 @@ internal sealed class SceneLightingPanel : UserControl
         _castShadows.Enabled = editable && kind != SceneLightKind.Ambient;
         _shadowStrength.Enabled = editable && shadows;
         _shadowSoftness.Enabled = editable && shadows;
+        if (_root is null) return;
+        var visibleRows = new Dictionary<int, bool>
+        {
+            [3] = _sections[0].Expanded, [4] = _sections[0].Expanded, [5] = _sections[0].Expanded,
+            [7] = _sections[1].Expanded, [8] = _sections[1].Expanded, [9] = _sections[1].Expanded && ranged,
+            [10] = positioned, [11] = _sections[2].Expanded && positioned,
+            [12] = _sections[2].Expanded && directed, [13] = _sections[2].Expanded && area,
+            [14] = _sections[2].Expanded && area, [15] = kind != SceneLightKind.Ambient,
+            [16] = _sections[3].Expanded && kind != SceneLightKind.Ambient,
+            [17] = _sections[3].Expanded && shadows, [18] = _sections[3].Expanded && shadows
+        };
+        _root.SuspendLayout();
+        try
+        {
+            for (var index = 0; index < LogicalRows.Length; index++)
+            {
+                var visible = !visibleRows.TryGetValue(index, out var applicable) || applicable;
+                _root.RowStyles[index].Height = visible ? LogicalRows[index] * DeviceDpi / 96f : 0;
+                foreach (Control child in _root.Controls)
+                    if (_root.GetRow(child) == index) child.Visible = visible;
+            }
+            _preferredLogicalHeight = 14 + Enumerable.Range(0, LogicalRows.Length)
+                .Where(index => !visibleRows.TryGetValue(index, out var applicable) || applicable)
+                .Sum(index => LogicalRows[index]);
+            MinimumSize = new Size((int)Math.Round(224 * DeviceDpi / 96f), PreferredPanelHeight);
+            Height = PreferredPanelHeight;
+        }
+        finally { _root.ResumeLayout(true); }
     }
 
     private void RefreshListItems(bool refreshText = false)
@@ -779,6 +834,7 @@ internal sealed class SceneLightingPanel : UserControl
         DecimalPlaces = 1,
         WheelAdjustsHoveredDigit = true,
         Suffix = "%",
+        ShowSuffix = true,
         AccessibleName = accessibleName,
         AccessibleDescription = accessibleName
     };
@@ -791,6 +847,7 @@ internal sealed class SceneLightingPanel : UserControl
         DecimalPlaces = 2,
         WheelAdjustsHoveredDigit = true,
         Suffix = "vu",
+        ShowSuffix = true,
         AccessibleName = accessibleName,
         AccessibleDescription = accessibleName
     };
@@ -803,6 +860,7 @@ internal sealed class SceneLightingPanel : UserControl
         DecimalPlaces = 2,
         WheelAdjustsHoveredDigit = true,
         Suffix = "deg",
+        ShowSuffix = true,
         AccessibleName = accessibleName,
         AccessibleDescription = accessibleName
     };

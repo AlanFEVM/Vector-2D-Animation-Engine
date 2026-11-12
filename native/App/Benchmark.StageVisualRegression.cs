@@ -15,6 +15,18 @@ internal static partial class Benchmark
 
     private static void RunReferenceNavigationGeometryRegression()
     {
+        var previous = Environment.GetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU");
+        try
+        {
+            // Retained group commands require the swap-chain device context.
+            Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", null);
+            RunReferenceNavigationGeometryRegressionCore();
+        }
+        finally { Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", previous); }
+    }
+
+    private static void RunReferenceNavigationGeometryRegressionCore()
+    {
         RunReferenceColorGroupRegression();
         RunReferenceTextNavigationRegression();
         var scene = new VectorScene();
@@ -533,6 +545,17 @@ internal static partial class Benchmark
     }
 
     private static void RunWorkspacePreRenderTargetRegression()
+    {
+        var previous = Environment.GetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU");
+        try
+        {
+            Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", null);
+            RunWorkspacePreRenderTargetRegressionCore();
+        }
+        finally { Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", previous); }
+    }
+
+    private static void RunWorkspacePreRenderTargetRegressionCore()
     {
         const int initialWidth = 640;
         const int initialHeight = 420;

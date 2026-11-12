@@ -46,6 +46,10 @@ internal sealed partial class MainForm
         _objectGeometryPanel.AppearanceRequested += (_, _) =>
             RevealInspectorCategory(InspectorCategory.Color, "explicit geometry panel navigation");
         _objectGeometryPanel.ValueCommitted += ApplyInspectorObjectTransform;
+        _objectGeometryPanel.ValuePreviewed += ApplyInspectorObjectTransform;
+        _objectGeometryPanel.InteractionStarted += (_, _) => BeginInspectorGeometryEdit();
+        _objectGeometryPanel.InteractionCompleted += (_, _) => CompleteInspectorGeometryEdit();
+        _objectGeometryPanel.InteractionCanceled += (_, _) => CancelInspectorGeometryEdit();
     }
 
     private void UpdateObjectGeometryPanel(int[] selection)
@@ -68,6 +72,8 @@ internal sealed partial class MainForm
             group: instances.Count > 0 ? instances.Count > 1 : selection.Length > 1, bindingToken: token,
             relativeRotation: instances.Count == 0 && selection.Length == 1 && InspectorUsesBakedGeometry(selection[0]),
             heightEditable: instances.Count > 0 || selection.Length != 1 || _scene.ShapeKind[selection[0]] != ShapeKind.Line,
-            mixedSelection: instances.Count > 0 && selection.Length > 0);
+            mixedSelection: instances.Count > 0 && selection.Length > 0,
+            lightweightInputs: instances.Count == 0 && selection.Length == 1
+                && _scene.TryGetBitmapObjectData(selection[0], out _));
     }
 }

@@ -15,11 +15,13 @@ internal sealed class LayerBlendCompositor : IDisposable
     private readonly SymbolFilterGpuRasterizer _filterAccelerator = new();
     private readonly Dictionary<Bitmap, Rectangle> _filterBounds = new();
 
-    public LayerBlendCompositor(Size size, SymbolFilterPadding padding = default, float filterPixelScale = 1f)
+    public LayerBlendCompositor(Size size, SymbolFilterPadding padding = default, float filterPixelScale = 1f,
+        bool filtersEnabled = true)
     {
         Size = new Size(Math.Max(1, size.Width), Math.Max(1, size.Height));
         Padding = padding;
         FilterPixelScale = filterPixelScale;
+        FiltersEnabled = filtersEnabled;
         _width = checked(Size.Width + padding.Left + padding.Right);
         _height = checked(Size.Height + padding.Top + padding.Bottom);
         _destinationPixels = new int[checked(_width * _height)];
@@ -29,8 +31,19 @@ internal sealed class LayerBlendCompositor : IDisposable
     public Size Size { get; }
     public Size SurfaceSize => new(_width, _height);
     public SymbolFilterPadding Padding { get; }
-    public float FilterPixelScale { get; }
+    // Updated in place while the surface geometry stays identical. Recreating every
+    // bitmap and the two full-surface int buffers for each wheel-zoom step cost more
+    // than the filter itself, and the filter scale is re-read on every apply anyway.
+    public float FilterPixelScale { get; private set; }
+    // False only for the degraded extreme-zoom case in LayerFilterBounds: the
+    // layer is still drawn and blended, but its filters are skipped.
+    public bool FiltersEnabled { get; }
     internal Bitmap? CurrentLayerSurface { get; private set; }
+
+    internal void UpdateFilterPixelScale(float value)
+    {
+        if (float.IsFinite(value) && value > 0f) FilterPixelScale = value;
+    }
 
     internal void CompositeRangeOnto(Bitmap destination, VectorScene scene, int firstLayer, int layerCount,
         Region clip, Action<Graphics, int> drawLayer, Func<int, Region?>? createLayerClip = null)
@@ -448,6 +461,7 @@ internal sealed class LayerBlendCompositor : IDisposable
 
     private void ApplyFilters(Bitmap surface, SymbolFilters filters)
     {
+        if (!FiltersEnabled) return;
         var bounds = SymbolFilterRasterizer.Apply(surface, filters, FilterPixelScale, _filterAccelerator);
         if (bounds.HasValue) _filterBounds[surface] = bounds.Value;
     }

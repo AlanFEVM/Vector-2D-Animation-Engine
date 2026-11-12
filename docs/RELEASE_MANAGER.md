@@ -41,7 +41,7 @@ scripts\publish-release-manager.ps1
 
 ## 管理鸣谢
 
-`Acknowledgements` 页编辑程序菜单 `Acknowledgements` 打开的鸣谢内容，与版本无关，因此更换或删除版本时不受影响。公告编辑、鸣谢编辑和预览的初始语言跟随软件的界面语言设置；可分别切换 `English / 简体中文` 查看对应语言内容。可用控件：
+`Acknowledgements` 页编辑程序菜单 `Help → Acknowledgements` 打开的鸣谢内容，与版本无关，因此更换或删除版本时不受影响。公告编辑、鸣谢编辑和预览的初始语言跟随软件的界面语言设置；可分别切换 `English / 简体中文` 查看对应语言内容。可用控件：
 
 - `Include acknowledgements`：关闭时保存的清单不再包含 `acknowledgements` 节点，程序回退到内置默认鸣谢；重新开启会以默认鸣谢内容重建。
 - `English / 简体中文`：分别编辑标题、摘要和分组标题；鸣谢名单中英文共用，每行一个人名，在任一语言下修改名单都会同步到另一语言。

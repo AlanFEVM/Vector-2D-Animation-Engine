@@ -24,10 +24,6 @@ internal static partial class Benchmark
 
             var drawingId = project.DrawingObjects[0].Id;
             var sceneId = project.Scenes[0].Id;
-            var svgPath = Path.Combine(
-                temporaryRoot,
-                ".Vault",
-                $"{drawingId}.svg");
             var drawingTimelinePath = Path.Combine(
                 temporaryRoot,
                 ".TimeLine",
@@ -41,6 +37,9 @@ internal static partial class Benchmark
             var manifest = ReadProjectCompressionManifest(manifestPath);
             var drawingManifest = FindManifestEntry(manifest, "drawingObjects", drawingId);
             var sceneManifest = FindManifestEntry(manifest, "scenes", sceneId);
+            var svgPath = ResolveProjectCompressionPath(temporaryRoot,
+                drawingManifest["svgPath"]?.GetValue<string>()
+                    ?? throw new InvalidOperationException("The saved drawing manifest has no SVG path."));
             var svgDocument = XDocument.Load(svgPath, LoadOptions.None);
             var svgMetadata = svgDocument.Root?
                 .Elements(XNamespace.Get("http://www.w3.org/2000/svg") + "metadata")

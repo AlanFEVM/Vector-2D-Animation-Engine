@@ -11,13 +11,14 @@ Follow the programmatic WinForms design system; the repository does not use the 
 
 - Read [module-map.md](references/module-map.md) to find the owning panel/control and related partial.
 - Read [control-patterns.md](references/control-patterns.md) for layout, binding, owner draw, interaction, accessibility, and disposal.
+- For panel composition, read the [column and disclosure contract](../../../docs/UI_COMPOSITION.md#面板分栏与独立折叠契约): one content column may contain multiple independent collapsible sections; fields inside share column alignment, numeric styling and spacing.
 - After layout/visual changes, read [visual-verification.md](references/visual-verification.md) and capture the required states.
 - Use `$vector2d-stage-workflow` for canvas input/overlays and `$vector2d-scene-spatial` for spatial/camera semantics.
 - Combine with the feature skill for timeline, assets, brush, release, or project behavior; UI owns presentation and event contracts, not domain mutation rules.
 
 ## Workflow
 
-1. Reuse the closest established control or panel pattern.
+1. For property panels, organize content columns containing independent collapsible sections; use the current camera inspector as a reference and the architecture contract for shared metrics. For other UI, reuse the closest established control or panel pattern.
 2. Keep reusable UI state inside the control and expose intent through typed events.
 3. Guard refreshes with `_updating`, unsubscribe before rebinding, and preserve selected stable IDs.
 4. Give continuous editors start/completed/canceled events so one gesture creates one undo entry.
@@ -29,6 +30,7 @@ Follow the programmatic WinForms design system; the repository does not use the 
 ## Invariants
 
 - Keep dense workbench layouts stable; hover, selection, text, and value changes do not resize surrounding UI.
+- Collapse changes presentation only. Preserve values, effect enablement, independent section states, and one predictable scroll path per content column.
 - Icon-only controls have accessible names and keyboard focus cues.
 - Owner-drawn controls handle hover, focus, disabled, capture loss, cancellation, DPI, and disposal.
 - Marshal background callbacks to the UI thread and dispose owned timers, menus, bitmaps, and GDI/native resources.

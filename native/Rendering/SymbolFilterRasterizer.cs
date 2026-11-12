@@ -148,7 +148,17 @@ internal static class SymbolFilterRasterizer
             }
         }
 
-        if (blur)
+        void ApplyBlur(SymbolBlurFilter item)
+        {
+            if (!item.Enabled) return;
+            if (item.FlashCompatible) FlashBlur(ref plane, ref scratch, width, height, item, pixelScale);
+            else Blur(ref plane, ref scratch, width, height, item.BlurX, item.BlurY, pixelScale, item.Quality);
+        }
+        var order = filters.Order ?? SymbolFilterOrder.Default;
+        for (var orderIndex = 0; orderIndex < 6; orderIndex++)
+        {
+        var kind = order[orderIndex];
+        if (kind == SymbolFilterKind.Blur && blur)
         {
             for (int channel = 0; channel < 4; channel++)
             {
@@ -159,14 +169,7 @@ internal static class SymbolFilterRasterizer
                 for (int i = 0; i < count; i++) pixels[i * 4 + channel] = plane[i];
             }
         }
-        void ApplyBlur(SymbolBlurFilter item)
-        {
-            if (!item.Enabled) return;
-            if (item.FlashCompatible) FlashBlur(ref plane, ref scratch, width, height, item, pixelScale);
-            else Blur(ref plane, ref scratch, width, height, item.BlurX, item.BlurY, pixelScale, item.Quality);
-        }
-
-        if (glow)
+        if (kind == SymbolFilterKind.Glow && glow)
         {
             ExtractAlpha(pixels, plane, count);
             Blur(ref plane, ref scratch, width, height,
@@ -175,9 +178,9 @@ internal static class SymbolFilterRasterizer
                 filters.Glow.Strength, filters.Glow.Opacity, 0, 0);
         }
 
-        if (shadow)
+        if (kind == SymbolFilterKind.Shadow && shadow)
         {
-            // The shadow belongs to the preceding blur-plus-glow result.
+            // Each effect reads the complete result of the preceding effects.
             ExtractAlpha(pixels, plane, count);
             Blur(ref plane, ref scratch, width, height,
                 filters.Shadow.BlurX, filters.Shadow.BlurY, pixelScale, filters.Shadow.Quality);
@@ -186,9 +189,10 @@ internal static class SymbolFilterRasterizer
                 filters.Shadow.Strength, filters.Shadow.Opacity, dx, dy);
         }
 
-        ApplyEdge(filters.Bevel, false, false);
-        ApplyEdge(filters.GradientBevel, true, false);
-        ApplyEdge(filters.GradientGlow, true, true);
+        if (kind == SymbolFilterKind.Bevel) ApplyEdge(filters.Bevel, false, false);
+        if (kind == SymbolFilterKind.GradientBevel) ApplyEdge(filters.GradientBevel, true, false);
+        if (kind == SymbolFilterKind.GradientGlow) ApplyEdge(filters.GradientGlow, true, true);
+        }
         if (filters.FlashFilters is { } flash)
             for (int i = 0; i < flash.Count; i++)
             {
@@ -244,13 +248,17 @@ internal static class SymbolFilterRasterizer
                     Sample(plane, width, height, x + dx, y + dy) - Sample(plane, width, height, x - dx, y - dy);
                 float coverage = Math.Clamp(Math.Abs(signal) * effect.Strength, 0, 1);
                 float t = glowEffect ? Math.Clamp(signal, 0, 1) : gradient ? (signal + 1) * 0.5f : signal >= 0 ? 1 : 0;
-                float alpha = coverage * effect.Opacity * (start.A + (end.A - start.A) * t) / 255f;
+                var color = gradient && effect.GradientStops is { } stops ? stops.Sample(t)
+                    : new System.Numerics.Vector4((start.B + (end.B - start.B) * t) / 255f,
+                        (start.G + (end.G - start.G) * t) / 255f, (start.R + (end.R - start.R) * t) / 255f,
+                        (start.A + (end.A - start.A) * t) / 255f);
+                float alpha = coverage * effect.Opacity * color.W;
                 // Glow is behind the silhouette; bevel shades its interior without changing alpha.
                 alpha *= glowEffect ? 1 - pixels[p + 3] : pixels[p + 3];
                 float keep = glowEffect ? 1 : 1 - alpha / Math.Max(pixels[p + 3], 1e-10f);
-                pixels[p] = pixels[p] * keep + (start.B + (end.B - start.B) * t) / 255f * alpha;
-                pixels[p + 1] = pixels[p + 1] * keep + (start.G + (end.G - start.G) * t) / 255f * alpha;
-                pixels[p + 2] = pixels[p + 2] * keep + (start.R + (end.R - start.R) * t) / 255f * alpha;
+                pixels[p] = pixels[p] * keep + color.X * alpha;
+                pixels[p + 1] = pixels[p + 1] * keep + color.Y * alpha;
+                pixels[p + 2] = pixels[p + 2] * keep + color.Z * alpha;
                 if (glowEffect) pixels[p + 3] += alpha;
             }
         }

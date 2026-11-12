@@ -1,5 +1,7 @@
 using System.Text;
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Drawing.Imaging;
 
 namespace VectorAnimationEngine;
 
@@ -20,7 +22,7 @@ namespace VectorAnimationEngine;
 internal sealed class DrawingObjectSymbolPackage
 {
     internal const string FileExtension = ".V2DSymbol";
-    internal const int CurrentFormatVersion = 2;
+    internal const int CurrentFormatVersion = 3;
     internal const int MinimumReadableFormatVersion = 1;
 
     internal const int MaxSymbolCount = 10_000;
@@ -65,8 +67,28 @@ internal sealed class DrawingObjectSymbolPackage
     /// <summary>Shared SVG resources referenced by the enclosed geometry.</summary>
     public ExternalSvgPackageEntry[] ExternalSvgAssets { get; init; } = [];
 
+    /// <summary>Managed image bytes and settings; no source-machine paths travel with the package.</summary>
+    public ImagePackageEntry[] ImageAssets { get; init; } = [];
+
+    internal sealed class ImagePackageEntry
+    {
+        public string FolderPath { get; init; } = "";
+        public string[] TagNames { get; init; } = [];
+        public string Id { get; init; } = "";
+        public string Name { get; init; } = "Image";
+        public string Extension { get; init; } = ".png";
+        public string Sha256 { get; init; } = "";
+        public byte[] Data { get; init; } = [];
+        public int PixelWidth { get; init; }
+        public int PixelHeight { get; init; }
+        public float NaturalPixelsPerUnit { get; init; } = 96f;
+        public BitmapImageImportSettings ImportSettings { get; init; } = BitmapImageImportSettings.Default;
+    }
+
     internal sealed class ExternalSvgPackageEntry
     {
+        public string FolderPath { get; init; } = "";
+        public string[] TagNames { get; init; } = [];
         public string Id { get; init; } = "";
         public string Name { get; init; } = "SVG";
         public string Source { get; init; } = "";
@@ -177,6 +199,7 @@ internal sealed class DrawingObjectSymbolPackage
     internal void Write(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        Validate();
         var json = JsonSerializer.SerializeToUtf8Bytes(this, JsonOptions);
         if (json.LongLength > MaxDecodedBytes)
         {
@@ -184,6 +207,8 @@ internal sealed class DrawingObjectSymbolPackage
         }
 
         var compressed = ProjectPayloadCompression.Compress(json);
+        if (compressed.LongLength > MaxPackageBytes)
+            throw new InvalidDataException("The symbol package exceeds the supported file size limit.");
         var directory = Path.GetDirectoryName(Path.GetFullPath(path));
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
         File.WriteAllBytes(path, compressed);
@@ -236,7 +261,7 @@ internal sealed class DrawingObjectSymbolPackage
         {
             throw new InvalidDataException("The symbol package contains no symbols.");
         }
-        if (Folders is null || Tags is null || ExternalSvgAssets is null)
+        if (Folders is null || Tags is null || ExternalSvgAssets is null || ImageAssets is null)
         {
             throw new InvalidDataException("The symbol package library metadata is missing.");
         }
@@ -308,7 +333,74 @@ internal sealed class DrawingObjectSymbolPackage
         ValidateFolders();
         ValidateTags();
         ValidateExternalSvgAssets(byId.Keys);
+        ValidateImageAssets(byId.Keys.Concat(ExternalSvgAssets.Select(asset => asset.Id)));
+        foreach (var asset in ImageAssets) ValidateResourceMetadata(asset.FolderPath, asset.TagNames);
+        foreach (var asset in ExternalSvgAssets) ValidateResourceMetadata(asset.FolderPath, asset.TagNames);
     }
+
+    private void ValidateResourceMetadata(string folderPath, string[] tagNames)
+    {
+        if (folderPath is null || folderPath.Length > 0 && (!IsSafeFolderPath(folderPath)
+                || !Folders.Any(folder => folder.Path == folderPath))
+            || tagNames is null || tagNames.Length > MaxTagCount
+            || tagNames.Distinct(StringComparer.OrdinalIgnoreCase).Count() != tagNames.Length
+            || tagNames.Any(name => string.IsNullOrWhiteSpace(name)
+                || !Tags.Any(tag => string.Equals(tag.Name, name, StringComparison.OrdinalIgnoreCase))))
+            throw new InvalidDataException("The symbol package contains invalid image or SVG library metadata.");
+    }
+
+    private void ValidateImageAssets(IEnumerable<string> otherIds)
+    {
+        if (ImageAssets.Length > VectorProject.MaxImageAssetCount
+            || FormatVersion < 3 && ImageAssets.Length > 0)
+            throw new InvalidDataException("The symbol package image resource collection is invalid.");
+        var ids = otherIds.ToHashSet(StringComparer.Ordinal);
+        long totalBytes = 0;
+        foreach (var asset in ImageAssets)
+        {
+            if (asset is null || !IsSafeId(asset.Id) || !ids.Add(asset.Id)
+                || string.IsNullOrWhiteSpace(asset.Name) || asset.Name.Length > VectorProject.MaxImageAssetNameLength
+                || !BitmapImageFormats.IsSupportedExtension(asset.Extension)
+                || asset.Data is not { Length: > 0 } || asset.Data.LongLength > BitmapImageFormats.MaximumSourceBytes
+                || !asset.ImportSettings.IsValid
+                || !float.IsFinite(asset.NaturalPixelsPerUnit)
+                || asset.NaturalPixelsPerUnit is < 1f or > 4096f
+                || !BitmapImageFormats.TryValidateDecodedBudget(asset.PixelWidth, asset.PixelHeight, out _)
+                || asset.Sha256 is not { Length: 64 }
+                || !string.Equals(Convert.ToHexString(SHA256.HashData(asset.Data)), asset.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The symbol package contains an invalid image resource.");
+            totalBytes += asset.Data.LongLength;
+            // JSON transports bytes as base64, so reserve its encoded size within the package budget.
+            if (totalBytes > MaxDecodedBytes / 4 * 3)
+                throw new InvalidDataException("The symbol package image resources exceed the supported size limit.");
+            try
+            {
+                using var stream = new MemoryStream(asset.Data, writable: false);
+                using var image = Image.FromStream(stream, useEmbeddedColorManagement: true, validateImageData: true);
+                if (!MatchesImageFormat(image, asset)
+                    || !BitmapImageFormats.TryValidateDecodedBudget(image.Width, image.Height, out _)
+                    || image.Width != asset.PixelWidth || image.Height != asset.PixelHeight)
+                    throw new InvalidDataException("The symbol package image format or dimensions do not match its payload.");
+            }
+            catch (Exception exception) when (exception is ArgumentException or OutOfMemoryException
+                or System.Runtime.InteropServices.ExternalException)
+            {
+                throw new InvalidDataException("The symbol package image could not be decoded.", exception);
+            }
+        }
+    }
+
+    private static bool MatchesImageFormat(Image image, ImagePackageEntry asset) => asset.Extension.ToLowerInvariant() switch
+    {
+        ".png" => image.RawFormat.Guid == ImageFormat.Png.Guid,
+        ".jpg" or ".jpeg" => image.RawFormat.Guid == ImageFormat.Jpeg.Guid,
+        ".bmp" => image.RawFormat.Guid == ImageFormat.Bmp.Guid,
+        ".gif" => image.RawFormat.Guid == ImageFormat.Gif.Guid,
+        ".tif" or ".tiff" => image.RawFormat.Guid == ImageFormat.Tiff.Guid,
+        ".webp" => asset.Data.Length >= 12 && asset.Data.AsSpan(0, 4).SequenceEqual("RIFF"u8)
+            && asset.Data.AsSpan(8, 4).SequenceEqual("WEBP"u8),
+        _ => false
+    };
 
     private void ValidateExternalSvgAssets(IEnumerable<string> symbolIds)
     {

@@ -131,6 +131,9 @@ internal sealed partial class MainForm
         foreach (var scene in _project.Scenes)
             if (scene.Instances.Any(instance => affected.Contains(instance.DrawingObjectId)))
                 descriptions.Add(string.Format(UiLocalization.T("Scene {0}: affected through symbol references"), scene.Name));
+        if (!svg)
+            foreach (var scene in _project.Scenes.Where(scene => scene.Canvas?.ImageAssetId == assetId))
+                descriptions.Add(string.Format(UiLocalization.T("Scene {0}: image background"), scene.Name));
         return descriptions.ToArray();
     }
 
@@ -156,8 +159,12 @@ internal sealed partial class MainForm
                 if (string.IsNullOrEmpty(replacementId)) return;
             }
         }
-        var before = CaptureSharedAssetUndo(assetId);
-        try
+        else if (ModernMessageDialog.Show(this,
+                     string.Format(UiLocalization.T("Delete asset \"{0}\"?"), name),
+                     UiLocalization.T("Delete Assets"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                     MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+        var beforeScenes = CaptureAssetScenes(assetId);
+        ExecuteLibraryPanelCommand(() =>
         {
             var replacementSource = svg && replacementId is not null
                 ? ImportedSvgRasterizer.Load(ResolveExternalSvgAssetPath(FindExternalSvgAsset(replacementId)!)!).Source
@@ -190,10 +197,16 @@ internal sealed partial class MainForm
                 }
                 if (replacementSource is not null) scene.UpdateImportedSvgAssetSource(replacementId!, replacementSource);
             }
+            if (!svg)
+                foreach (var owner in _project.Scenes)
+                    if (owner.Canvas is { } canvas && canvas.ImageAssetId == assetId)
+                        RequireVaultChange(_project.TrySetSceneCanvas(owner.Id, replacementId is null
+                            ? canvas with { BackgroundKind = SceneBackgroundKind.None, ImageAssetId = "" }
+                            : canvas with { ImageAssetId = replacementId }));
             var removed = svg ? _project.TryRemoveExternalSvgAsset(assetId, out _)
                 : _project.TryRemoveImageAsset(assetId, out _);
             if (!removed) throw new InvalidOperationException("The library asset could not be removed.");
-            foreach (var item in before.Scenes.Where(item => item.SceneId.Length > 0))
+            foreach (var item in beforeScenes.Where(item => item.SceneId.Length > 0))
             {
                 var owner = _project.Scenes.First(scene => scene.Id == item.SceneId);
                 var mask = owner.FindMaskScene(item.LayerId)!;
@@ -202,14 +215,8 @@ internal sealed partial class MainForm
                     .Append(0).Distinct().Order().ToArray();
                 foreach (var frame in frames) owner.SynchronizeMaskTimelineContent(item.LayerId, frame);
             }
-            PushSharedAssetUndo(before);
             RefreshSharedAssets();
-        }
-        catch (Exception exception)
-        {
-            RestoreSharedAssetUndo(before);
-            ShowProjectFileError("The library asset could not be changed.", exception);
-        }
+        }, includeContent: true);
     }
 
     private void UpdateSvgAssetFromSource(string assetId)
@@ -273,35 +280,45 @@ internal sealed partial class MainForm
 
     private void DuplicateSharedAsset(string assetId, bool svg)
     {
-        var before = CaptureSharedAssetUndo();
-        try
+        ExecuteLibraryPanelCommand(() => DuplicateSharedAssetCore(assetId, svg));
+    }
+
+    private string DuplicateSharedAssetCore(string assetId, bool svg)
+    {
+        bool added;
+        string? duplicateId;
+        if (svg)
         {
-            bool added;
-            if (svg)
+            var asset = FindExternalSvgAsset(assetId) ?? throw new InvalidOperationException("Missing SVG asset.");
+            var path = ResolveExternalSvgAssetPath(asset) ?? throw new FileNotFoundException(asset.Name);
+            added = _project.TryAddExternalSvgAsset(IndependentAssetName(asset.Name), path, "",
+                asset.LastKnownSha256, out var copy);
+            duplicateId = copy?.Id;
+            if (copy is not null)
             {
-                var asset = FindExternalSvgAsset(assetId) ?? throw new InvalidOperationException("Missing SVG asset.");
-                var path = ResolveExternalSvgAssetPath(asset) ?? throw new FileNotFoundException(asset.Name);
-                added = _project.TryAddExternalSvgAsset(IndependentAssetName(asset.Name), path, "",
-                    asset.LastKnownSha256, out var copy);
-                if (copy is not null) copy.OriginalSourcePath = asset.OriginalSourcePath;
+                copy.OriginalSourcePath = asset.OriginalSourcePath;
+                if (!_project.TryMoveLibraryAssetToFolder(copy.Id, asset.AssetFolderId)
+                    || !_project.TrySetLibraryAssetTags(copy.Id, asset.AssetTagIds))
+                    throw new InvalidOperationException("The copied asset metadata could not be applied.");
             }
-            else
-            {
-                var asset = FindImageAsset(assetId) ?? throw new InvalidOperationException("Missing image asset.");
-                var path = ResolveImageAssetPath(asset) ?? throw new FileNotFoundException(asset.Name);
-                added = _project.TryAddImageAssetFromSource(IndependentAssetName(asset.Name), path, asset.Sha256,
-                    asset.PixelWidth, asset.PixelHeight, asset.NaturalPixelsPerUnit, asset.ImportSettings, out var copy);
-                if (copy is not null) copy.OriginalSourcePath = asset.OriginalSourcePath;
-            }
-            if (!added) throw new InvalidOperationException("The library is full or the asset is invalid.");
-            PushSharedAssetUndo(before);
-            RefreshSharedAssets();
         }
-        catch (Exception exception)
+        else
         {
-            RestoreSharedAssetUndo(before);
-            ShowProjectFileError("The library asset could not be changed.", exception);
+            var asset = FindImageAsset(assetId) ?? throw new InvalidOperationException("Missing image asset.");
+            var path = ResolveImageAssetPath(asset) ?? throw new FileNotFoundException(asset.Name);
+            added = _project.TryAddImageAssetFromSource(IndependentAssetName(asset.Name), path, asset.Sha256,
+                asset.PixelWidth, asset.PixelHeight, asset.NaturalPixelsPerUnit, asset.ImportSettings, out var copy);
+            duplicateId = copy?.Id;
+            if (copy is not null)
+            {
+                copy.OriginalSourcePath = asset.OriginalSourcePath;
+                if (!_project.TryMoveLibraryAssetToFolder(copy.Id, asset.AssetFolderId)
+                    || !_project.TrySetLibraryAssetTags(copy.Id, asset.AssetTagIds))
+                    throw new InvalidOperationException("The copied asset metadata could not be applied.");
+            }
         }
+        if (!added || duplicateId is null) throw new InvalidOperationException("The library is full or the asset is invalid.");
+        return duplicateId;
     }
 
     private static string IndependentAssetName(string name) =>

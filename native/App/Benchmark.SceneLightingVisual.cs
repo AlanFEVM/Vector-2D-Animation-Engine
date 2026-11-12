@@ -82,6 +82,7 @@ internal static partial class Benchmark
         var composition = new SceneCompositionResult(owners, poses, materials);
         using var stage = new StageControl(scene)
         {
+            ExperimentalSceneLightingEnabled = true,
             ClientSize = new Size(width, height),
             BackColor = background,
             WorldGridOpacity = 0

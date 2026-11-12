@@ -7,6 +7,7 @@ internal static partial class Benchmark
 {
     public static void RunTimelineRegression()
     {
+        RunPanelUsabilityRegression();
         RunSceneCanvasModelRegression();
         RunTimelineParentingRegression();
         RunMotionTrackRegression();
@@ -152,6 +153,8 @@ internal static partial class Benchmark
         RunTimelineTailKeyframeInsertionRegression();
         RunTimelineUndoPlayheadRegression();
         RunSceneShotTimelineUndoRegression();
+        RunSceneShotClipboardRegression();
+        RunSymbolDeletionHistoryRegression();
         RunTimelineFrameSelectionContentRegression();
         RunTimelineFrameSelectionDragFeedbackRegression();
         RunTimelineFrameCommandRegression();
@@ -1791,6 +1794,89 @@ internal static partial class Benchmark
         Console.WriteLine("timeline_tail_keyframe_insertion=ok");
     }
 
+    private static void RunSceneShotClipboardRegression()
+    {
+        using var form = new MainForm();
+        ConfigureExperimental3DForRegression(form);
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var scene = project.Scenes[0];
+        var shot = scene.AddShot("Clipboard camera", 20, "", null);
+        scene.InsertShotTimelineKeyframe(shot.Id, 4);
+        var settings = shot.Settings with { X = 431, Y = -82, FocalLength = 91 };
+        scene.UpdateShotAtFrame(shot.Id, 4, settings);
+        var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        tabs.SelectedView = WorkspaceView.SceneEditor;
+        Application.DoEvents();
+        tabs.SelectedView = WorkspaceView.ShotDirector;
+        Application.DoEvents();
+        var strip = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        var track = scene.Timeline.FindTrackByTargetId(shot.Id)!;
+        var copy = RequireMethod(typeof(MainForm), "CopyTimelineFrames");
+        var paste = RequireMethod(typeof(MainForm), "PasteTimelineFrames");
+        var undo = RequireMethod(typeof(MainForm), "UndoLastEdit");
+        var redo = RequireMethod(typeof(MainForm), "RedoLastEdit");
+        AssertTimeline(copy.Invoke(form, [new[] { new TimelineFrameCell(track.Id, 4) }, false]) is true
+            && paste.Invoke(form, [new[] { new TimelineFrameCell(track.Id, 8) }, TimelineCommand.PasteFrames, null]) is true
+            && scene.TryEvaluateShotSettings(shot.Id, 8, out var pasted) && pasted == settings,
+            "Camera frame paste lost its framing settings.");
+        AssertTimeline(undo.Invoke(form, null) is true && !scene.FindShotTrack(shot.Id)!.EvaluateExposure(8).IsKeyframe
+            && redo.Invoke(form, null) is true
+            && scene.TryEvaluateShotSettings(shot.Id, 8, out var redone) && redone == settings,
+            "Camera frame paste did not undo and redo its framing settings.");
+        var moved = RequireMethod(typeof(MainForm), "TransformTimelineFrames").Invoke(form,
+            [new TimelineFrameTransformRequestedEventArgs(TimelineFrameTransformMode.Move,
+                [new(new(track.Id, 4), new(track.Id, 12))])]) is true;
+        AssertTimeline(moved && !scene.FindShotTrack(shot.Id)!.EvaluateExposure(4).HasContent
+            && scene.TryEvaluateShotSettings(shot.Id, 12, out var destination) && destination == settings,
+            "Moving a camera frame lost its source framing.");
+        AssertTimeline(undo.Invoke(form, null) is true
+            && scene.TryEvaluateShotSettings(shot.Id, 4, out var restored) && restored == settings
+            && !scene.FindShotTrack(shot.Id)!.EvaluateExposure(12).IsKeyframe,
+            "Undoing a camera frame move did not restore its source framing.");
+        AssertTimeline(redo.Invoke(form, null) is true
+            && scene.TryEvaluateShotSettings(shot.Id, 12, out var movedAgain) && movedAgain == settings,
+            "Redoing a camera frame move lost its framing.");
+        Console.WriteLine("camera_frame_clipboard_history=ok");
+    }
+
+    private static void RunSymbolDeletionHistoryRegression()
+    {
+        using var form = new MainForm();
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        tabs.SelectedView = WorkspaceView.BasicDrawing;
+        Application.DoEvents();
+        var symbol = project.DrawingObjects[0];
+        var keeper = project.AddDrawingObject("Deletion keeper");
+        project.TryAddDrawingObjectInstance(keeper.Id, symbol.Id, new PointF(15, 25), out var nested);
+        project.TryAddSceneInstance(project.Scenes[0].Id, symbol.Id, new PointF(30, 40), 0, out var placed);
+        var before = symbol.Scene.CreateSnapshot();
+        RequireMethod(typeof(MainForm), "PushUndoSnapshot").Invoke(form,
+            [before, symbol, null, null, null, null, null, null, null]);
+        symbol.Scene.AddObject(0, PointF.Empty, new SizeF(20, 20), 0, 0, Color.Coral, 0, ShapeKind.Rectangle);
+        var delete = RequireMethod(typeof(MainForm), "CommitDrawingObjectDeletion");
+        var undo = RequireMethod(typeof(MainForm), "UndoLastEdit");
+        var redo = RequireMethod(typeof(MainForm), "RedoLastEdit");
+        AssertTimeline(delete.Invoke(form, [symbol.Id]) is true
+            && !project.DrawingObjects.Contains(symbol) && keeper.Instances.Count == 0,
+            "Deleting a symbol did not remove its placements.");
+        var keeperBefore = keeper.Scene.CreateSnapshot();
+        RequireMethod(typeof(MainForm), "PushUndoSnapshot").Invoke(form,
+            [keeperBefore, keeper, null, null, null, null, null, null, null]);
+        keeper.Scene.AddObject(0, PointF.Empty, new SizeF(25, 25), 0, 0, Color.Teal, 0, ShapeKind.Rectangle);
+        AssertTimeline(undo.Invoke(form, null) is true && keeper.Scene.ObjectCount == keeperBefore.ObjectCount,
+            "Undo after deleting the active symbol targeted the wrong replacement symbol.");
+        AssertTimeline(undo.Invoke(form, null) is true && project.DrawingObjects.Contains(symbol)
+            && keeper.Instances.Any(instance => instance.Id == nested!.Id)
+            && project.Scenes[0].Instances.Any(instance => instance.Id == placed!.Id),
+            "Undoing symbol deletion did not restore the same symbol and reference identities.");
+        AssertTimeline(redo.Invoke(form, null) is true && !project.DrawingObjects.Contains(symbol)
+            && undo.Invoke(form, null) is true && undo.Invoke(form, null) is true
+            && symbol.Scene.ObjectCount == before.ObjectCount,
+            "Symbol deletion lost redo support or discarded earlier drawing undo history.");
+        Console.WriteLine("symbol_deletion_history=ok");
+    }
+
     private static void RunSceneShotTimelineUndoRegression()
     {
         var projectField = RequireField(typeof(MainForm), "_project");
@@ -2627,7 +2713,7 @@ internal static partial class Benchmark
                 "An active light endpoint edit did not remain deferred before Save Project.");
 
             AssertTimeline(
-                SaveWithConfirmation()
+                SaveWithoutPrompt()
                 && opticsSnapshotField.GetValue(form) is not null
                 && opticsSavedSnapshotField.GetValue(form) is not null
                 && projectDirtyField.GetValue(form) is false
@@ -2671,7 +2757,7 @@ internal static partial class Benchmark
                 applyResolvedLightEdit.Invoke(
                     form,
                     [scene, light, light.Name, canceledStart, 0, editedStart]) is true
-                && SaveWithConfirmation()
+                && SaveWithoutPrompt()
                 && projectDirtyField.GetValue(form) is false,
                 "The light cancel-after-save regression could not save its second endpoint state.");
             cancelOpticsEdit.Invoke(form, null);
@@ -2714,22 +2800,24 @@ internal static partial class Benchmark
             }
         }
 
-        bool SaveWithConfirmation()
+        bool SaveWithoutPrompt()
         {
-            var confirmed = false;
+            var prompted = false;
             using var timer = new System.Windows.Forms.Timer { Interval = 20 };
             timer.Tick += (_, _) =>
             {
                 var dialog = Application.OpenForms.Cast<Form>().FirstOrDefault(candidate =>
                     candidate is ModernMessageDialog && candidate.Owner == form);
-                if (dialog?.AcceptButton is not Button accept) return;
+                if (dialog is null) return;
                 timer.Stop();
-                confirmed = true;
-                accept.PerformClick();
+                prompted = true;
+                dialog.DialogResult = DialogResult.Cancel;
+                dialog.Close();
             };
             timer.Start();
             var saved = saveProjectTo.Invoke(form, [manifestPath]) is true;
-            AssertTimeline(confirmed, "Save Project did not show its completion confirmation.");
+            AssertTimeline(!prompted && saved && File.Exists(manifestPath),
+                "Saving an existing project prompted unnecessarily or failed to write its manifest.");
             return saved;
         }
 
@@ -5781,11 +5869,10 @@ internal static partial class Benchmark
         AssertTimeline(motionCommits == 2 && framingCommits == 0 && panel.SelectedShot!.MicroMotion.Speed == 2
             && panel.SelectedShot.MicroMotion.HandheldDefaultsInitialized,
             "Camera motion controls routed edits through framing/keyframe commands.");
-        var handheld = (SvgIconButton)RequireField(typeof(ShotDirectorPanel), "_microMotionHandheldDefaults").GetValue(panel)!;
-        handheld.PerformClick();
-        AssertTimeline(handheldRequests == 1 && motionCommits == 3 && framingCommits == 0,
-            "Handheld preset did not issue one render-only settings request.");
+        AssertTimeline(handheldRequests == 0, "Manual camera motion edits unexpectedly requested a preset reset.");
         panel.SetSelectedShotMicroMotion(motion);
+        var disclosure = (ShotDirectorPanel.CameraSectionToggle)RequireField(typeof(ShotDirectorPanel), "_microMotionDisclosure").GetValue(panel)!;
+        if (!disclosure.Expanded) disclosure.PerformClick();
         foreach (var width in new[] { 320, 272 })
         {
             panel.Width = width;
@@ -5796,7 +5883,7 @@ internal static partial class Benchmark
                 "Camera motion fields clipped in a narrow inspector.");
         }
         panel.Bind(new ShotDirectorState());
-        AssertTimeline(!toggle.Enabled && !handheld.Enabled, "Camera motion remained editable without a selected camera.");
+        AssertTimeline(!toggle.Enabled, "Camera motion remained editable without a selected camera.");
     }
 
     private static void RunShotMicroMotionCaptureRegression(SceneShotSettings settings, SceneShotMicroMotionSettings motion)

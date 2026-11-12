@@ -1,20 +1,26 @@
-namespace VectorAnimationEngine;
+﻿namespace VectorAnimationEngine;
+
+[Flags]
+internal enum DrawingObjectPlaybackChangedFields { Fps = 1, Mode = 2, HoldFrame = 4, All = Fps | Mode | HoldFrame }
 
 internal sealed class DrawingObjectPlaybackSettingsChangedEventArgs : EventArgs
 {
     public DrawingObjectPlaybackSettingsChangedEventArgs(
         decimal playbackFps,
         DrawingObjectPlaybackMode playbackMode,
-        int holdFrame)
+        int holdFrame,
+        DrawingObjectPlaybackChangedFields fields = DrawingObjectPlaybackChangedFields.All)
     {
         PlaybackFps = playbackFps;
         PlaybackMode = playbackMode;
         HoldFrame = holdFrame;
+        Fields = fields;
     }
 
     public decimal PlaybackFps { get; }
     public DrawingObjectPlaybackMode PlaybackMode { get; }
     public int HoldFrame { get; }
+    public DrawingObjectPlaybackChangedFields Fields { get; }
 }
 
 internal sealed class DrawingObjectAnchorChangedEventArgs(PointF anchor) : EventArgs
@@ -48,17 +54,22 @@ internal sealed class DrawingObjectInstancePanel : Panel
     private const int FieldPitch = Theme.InspectorRowHeightComfortable;
     private const int FieldLabelOffset = 0;
     private const int FieldRowTop = PanelTitleTop + Theme.InspectorTitleHeight + Theme.GapXs;
-    private const int FieldRowCount = 7;
+    private const int FieldRowCount = 8;
     private const int TintRowTop = FieldRowTop + FieldPitch * FieldRowCount;
     private const int TintRowHeight = 42;
     private const int RestoreButtonTop = TintRowTop + TintRowHeight + Theme.GapXs;
     private const int FiltersButtonHeight = Theme.ControlHeight;
     private const int PanelHeight = RestoreButtonTop + Theme.ControlHeight + Theme.GapXs;
     private readonly Label _title;
+    private readonly ShotDirectorPanel.CameraSectionToggle[] _sections =
+        [new("Playback settings"), new("Source anchor"), new("Appearance")];
+    private readonly Control[] _sectionHeaders = new Control[3];
+    private int _preferredLogicalHeight = PanelHeight + FiltersButtonHeight + 10;
+    private bool _layingOut;
     private readonly List<(Label Label, int Top)> _fieldLabels = [];
     private readonly SymbolFiltersPanel _filters = new();
     private readonly Button _showFilters = new() { Text = "Symbol Filters", AccessibleName = "Symbol Filters" };
-    private Form? _filtersWindow;
+    private FilterWindow? _filtersWindow;
     public SymbolFiltersPanel FiltersPanel => _filters;
 
     private sealed record PlaybackModeItem(DrawingObjectPlaybackMode Mode, string Label)
@@ -75,6 +86,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
         Increment = 0.001m,
         WheelAdjustsHoveredDigit = true,
         Suffix = "fps",
+        ShowSuffix = true,
         AccessibleName = "Symbol playback FPS"
     };
     private readonly ComboBox _playbackMode = new()
@@ -92,9 +104,9 @@ internal sealed class DrawingObjectInstancePanel : Panel
     };
     private readonly ModernNumericUpDown _holdFrame = new()
     {
-        Minimum = 0,
+        Minimum = 1,
         Maximum = 999999,
-        Value = 0,
+        Value = 1,
         AccessibleName = "Symbol hold frame"
     };
     private readonly ModernNumericUpDown _anchorX = new()
@@ -103,6 +115,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
         Maximum = 5_000_000,
         Increment = 10,
         Suffix = "vu",
+        ShowSuffix = true,
         AccessibleName = "Symbol anchor X"
     };
     private readonly ModernNumericUpDown _anchorY = new()
@@ -111,6 +124,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
         Maximum = 5_000_000,
         Increment = 10,
         Suffix = "vu",
+        ShowSuffix = true,
         AccessibleName = "Symbol anchor Y"
     };
     private readonly ModernSlider _alpha = new()
@@ -123,15 +137,10 @@ internal sealed class DrawingObjectInstancePanel : Panel
         AccessibleName = "Symbol alpha",
         AccessibleDescription = "Symbol alpha percentage"
     };
-    private readonly Label _alphaValue = new()
+    private readonly ModernNumericUpDown _alphaValue = new()
     {
-        Text = "100%",
-        ForeColor = Theme.Text,
-        BackColor = Color.Transparent,
-        TextAlign = ContentAlignment.MiddleRight,
-        AutoEllipsis = true,
-        AccessibleName = "Symbol alpha value",
-        AccessibleRole = AccessibleRole.StaticText
+        Minimum = 0, Maximum = 100, Value = 100, DecimalPlaces = 2, Increment = 0.1m,
+        Suffix = "%", ShowSuffix = true, AccessibleName = "Symbol alpha percentage"
     };
     private readonly ColorTargetButton _tint = new("Tint")
     {
@@ -153,8 +162,8 @@ internal sealed class DrawingObjectInstancePanel : Panel
     private bool _tintMixed;
     private bool _alphaInteractionActive;
     private bool _alphaInteractionStartedMixed;
-    private bool _alphaInteractionChanged;
     private Color _tintColor = Color.White;
+    private bool _updatingAlpha;
 
     public DrawingObjectInstancePanel()
     {
@@ -177,10 +186,10 @@ internal sealed class DrawingObjectInstancePanel : Panel
         AddFieldLabel("Playback FPS", RowLabelTop(0));
         AddFieldLabel("Mode", RowLabelTop(1));
         _holdFrameLabel = AddFieldLabel("Hold Frame", RowLabelTop(2));
-        AddFieldLabel("Anchor X", RowLabelTop(3));
-        AddFieldLabel("Anchor Y", RowLabelTop(4));
+        AddFieldLabel("Source anchor X", RowLabelTop(3));
+        AddFieldLabel("Source anchor Y", RowLabelTop(4));
         AddFieldLabel("Alpha", RowLabelTop(5));
-        AddFieldLabel("Blend Mode", RowLabelTop(6));
+        AddFieldLabel("Blend Mode", RowLabelTop(7));
         AddFieldLabel("Original Size", RestoreButtonTop + FieldLabelOffset);
 
         _playbackMode.Items.AddRange([
@@ -189,7 +198,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
             new PlaybackModeItem(DrawingObjectPlaybackMode.HoldFrame, "Hold Frame")
         ]);
         _playbackMode.SelectedIndex = 0;
-        foreach (var field in new Control[] { _fps, _holdFrame, _anchorX, _anchorY, _playbackMode, _blendMode })
+        foreach (var field in new Control[] { _fps, _holdFrame, _anchorX, _anchorY, _playbackMode, _blendMode, _alphaValue })
             InspectorModuleStyle.StyleField(field);
         foreach (var item in LayerBlendModePanel.BlendModes) _blendMode.Items.Add(new BlendModeItem(item.Mode, item.Label));
         _blendMode.SelectedIndex = 0;
@@ -198,6 +207,12 @@ internal sealed class DrawingObjectInstancePanel : Panel
         _toolTip.SetToolTip(_alpha, UiLocalization.T("Adjust symbol alpha"));
         _toolTip.SetToolTip(_tint, UiLocalization.T("Choose symbol tint"));
         _toolTip.SetToolTip(_restoreSize, UiLocalization.T("Restore original size"));
+        foreach (var anchor in new[] { _anchorX, _anchorY })
+        {
+            var hint = UiLocalization.T("Edits the shared source symbol anchor and compensates every scene and nested placement.");
+            anchor.AccessibleDescription = hint;
+            _toolTip.SetToolTip(anchor, hint);
+        }
 
         Controls.Add(_fps);
         Controls.Add(_playbackMode);
@@ -209,6 +224,13 @@ internal sealed class DrawingObjectInstancePanel : Panel
         Controls.Add(_alphaValue);
         Controls.Add(_tint);
         Controls.Add(_restoreSize);
+        string[] sectionNames = ["Playback settings", "Source anchor", "Appearance"];
+        for (var index = 0; index < _sections.Length; index++)
+        {
+            _sectionHeaders[index] = InspectorModuleStyle.CreateSectionHeader(sectionNames[index], _sections[index], LayoutFields);
+            _sectionHeaders[index].Dock = DockStyle.None;
+            Controls.Add(_sectionHeaders[index]);
+        }
         HookEvents();
         LayoutFields();
         UpdateModeState();
@@ -222,8 +244,14 @@ internal sealed class DrawingObjectInstancePanel : Panel
     public event EventHandler? AppearanceInteractionCompleted;
     public event EventHandler? AppearanceInteractionCanceled;
     public event EventHandler? RestoreOriginalSizeRequested;
+    public event EventHandler? PlaybackInteractionStarted;
+    public event EventHandler? PlaybackInteractionCompleted;
+    public event EventHandler? PlaybackInteractionCanceled;
+    public event EventHandler? AnchorInteractionStarted;
+    public event EventHandler? AnchorInteractionCompleted;
+    public event EventHandler? AnchorInteractionCanceled;
 
-    public int PreferredPanelHeight => ScaleLayout(PanelHeight + FiltersButtonHeight + 10);
+    public int PreferredPanelHeight => ScaleLayout(_preferredLogicalHeight);
 
     public void SetInstance(
         DrawingObjectInstanceDefinition instance,
@@ -255,26 +283,38 @@ internal sealed class DrawingObjectInstancePanel : Panel
         bool alphaMixed = false,
         bool tintMixed = false,
         bool filtersMixed = false,
-        bool blendModeMixed = false)
+        bool blendModeMixed = false,
+        bool fpsMixed = false, bool playbackModeMixed = false, bool holdFrameMixed = false)
     {
         _updating = true;
         try
         {
             _fps.Value = state.PlaybackFps;
-            _playbackMode.SelectedIndex = ModeIndex(state.PlaybackMode);
-            _holdFrame.Maximum = Math.Max(0, sourceFrameCount - 1);
-            _holdFrame.Value = Math.Min(state.HoldFrame, (int)_holdFrame.Maximum);
+            _fps.MixedValue = fpsMixed;
+            for (var index = _playbackMode.Items.Count - 1; index >= 0; index--)
+                if (_playbackMode.Items[index] is not PlaybackModeItem) _playbackMode.Items.RemoveAt(index);
+            _playbackMode.SelectedIndex = playbackModeMixed
+                ? _playbackMode.Items.Add(UiLocalization.T("Mixed")) : ModeIndex(state.PlaybackMode);
+            _playbackMode.AccessibleDescription = UiLocalization.T(playbackModeMixed ? "Mixed" : "Symbol playback mode");
+            _holdFrame.Maximum = Math.Max(1, sourceFrameCount);
+            _holdFrame.Value = Math.Clamp(state.HoldFrame + 1, 1, (int)_holdFrame.Maximum);
+            _holdFrame.MixedValue = holdFrameMixed;
             _anchorX.Value = (decimal)sourceAnchor.X;
             _anchorY.Value = (decimal)sourceAnchor.Y;
             _anchorX.Enabled = canEditAnchor;
             _anchorY.Enabled = canEditAnchor;
             _restoreSize.Enabled = canRestoreOriginalTransform;
             _alpha.Value = (int)Math.Clamp(MathF.Round(state.Alpha * 100f), 0f, 100f);
+            _alphaValue.Value = (decimal)Math.Clamp(state.Alpha * 100f, 0f, 100f);
+            _alphaValue.MixedValue = alphaMixed;
             _tintColor = Opaque(Color.FromArgb(state.TintArgb));
             _alphaMixed = alphaMixed;
             _tintMixed = tintMixed;
             _filters.SetFilters(state.Filters, filtersMixed);
-            _blendMode.SelectedIndex = blendModeMixed ? -1 : Array.FindIndex(LayerBlendModePanel.BlendModes, item => item.Mode == state.BlendMode);
+            for (var index = _blendMode.Items.Count - 1; index >= 0; index--)
+                if (_blendMode.Items[index] is not BlendModeItem) _blendMode.Items.RemoveAt(index);
+            _blendMode.SelectedIndex = blendModeMixed ? _blendMode.Items.Add(UiLocalization.T("Mixed"))
+                : Array.FindIndex(LayerBlendModePanel.BlendModes, item => item.Mode == state.BlendMode);
             _blendMode.AccessibleDescription = UiLocalization.T(blendModeMixed ? "Mixed" : "Symbol blend mode");
             UpdateAlphaPresentation();
             UpdateTintPresentation();
@@ -315,15 +355,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
     {
         if (_filtersWindow is null || _filtersWindow.IsDisposed)
         {
-            _filtersWindow = new Form
-            {
-                Text = UiLocalization.T("Symbol Filters"), FormBorderStyle = FormBorderStyle.SizableToolWindow,
-                ShowInTaskbar = false, StartPosition = FormStartPosition.CenterParent,
-                ClientSize = new Size(330, _filters.PreferredPanelHeight),
-                MinimumSize = new Size(280, 430), BackColor = Theme.Panel
-            };
-            _filters.Dock = DockStyle.Fill;
-            _filtersWindow.Controls.Add(_filters);
+            _filtersWindow = new FilterWindow(_filters);
             _filtersWindow.FormClosing += (_, e) =>
             {
                 if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; _filtersWindow.Hide(); }
@@ -349,12 +381,24 @@ internal sealed class DrawingObjectInstancePanel : Panel
 
     private void HookEvents()
     {
-        _fps.ValueChanged += (_, _) => RaisePlaybackSettingsChanged();
-        _holdFrame.ValueChanged += (_, _) => RaisePlaybackSettingsChanged();
+        foreach (var input in new[] { _fps, _holdFrame })
+        {
+            input.InteractionStarted += (_, _) => { if (!_updating) PlaybackInteractionStarted?.Invoke(this, EventArgs.Empty); };
+            input.InteractionCompleted += (_, _) => { if (!_updating) PlaybackInteractionCompleted?.Invoke(this, EventArgs.Empty); };
+            input.InteractionCanceled += (_, _) => { if (!_updating) PlaybackInteractionCanceled?.Invoke(this, EventArgs.Empty); };
+        }
+        foreach (var input in new[] { _anchorX, _anchorY })
+        {
+            input.InteractionStarted += (_, _) => { if (!_updating) AnchorInteractionStarted?.Invoke(this, EventArgs.Empty); };
+            input.InteractionCompleted += (_, _) => { if (!_updating) AnchorInteractionCompleted?.Invoke(this, EventArgs.Empty); };
+            input.InteractionCanceled += (_, _) => { if (!_updating) AnchorInteractionCanceled?.Invoke(this, EventArgs.Empty); };
+        }
+        _fps.ValueChanged += (_, _) => RaisePlaybackSettingsChanged(DrawingObjectPlaybackChangedFields.Fps);
+        _holdFrame.ValueChanged += (_, _) => RaisePlaybackSettingsChanged(DrawingObjectPlaybackChangedFields.HoldFrame);
         _playbackMode.SelectedIndexChanged += (_, _) =>
         {
             UpdateModeState();
-            RaisePlaybackSettingsChanged();
+            RaisePlaybackSettingsChanged(DrawingObjectPlaybackChangedFields.Mode);
         };
         _anchorX.ValueChanged += (_, _) => RaiseAnchorChanged();
         _anchorY.ValueChanged += (_, _) => RaiseAnchorChanged();
@@ -362,6 +406,18 @@ internal sealed class DrawingObjectInstancePanel : Panel
         _alpha.ValueChanged += (_, _) => ApplyAlphaValue();
         _alpha.InteractionCompleted += (_, _) => CompleteAlphaInteraction();
         _alpha.InteractionCanceled += (_, _) => CancelAlphaInteraction();
+        _alphaValue.InteractionStarted += (_, _) => BeginAlphaInteraction();
+        _alphaValue.InteractionCompleted += (_, _) => CompleteAlphaInteraction();
+        _alphaValue.InteractionCanceled += (_, _) => CancelAlphaInteraction();
+        _alphaValue.ValueChanged += (_, _) =>
+        {
+            if (_updating || _updatingAlpha) return;
+            _alphaMixed = false;
+            _updatingAlpha = true;
+            try { _alpha.Value = (int)Math.Round(_alphaValue.Value); }
+            finally { _updatingAlpha = false; }
+            RaiseAppearanceChanged(alphaChanged: true, tintChanged: false);
+        };
         _tint.Click += (_, _) => ChooseTint();
         _blendMode.SelectedIndexChanged += (_, _) =>
         {
@@ -376,15 +432,16 @@ internal sealed class DrawingObjectInstancePanel : Panel
         if (_updating || _alphaInteractionActive) return;
         _alphaInteractionActive = true;
         _alphaInteractionStartedMixed = _alphaMixed;
-        _alphaInteractionChanged = false;
         AppearanceInteractionStarted?.Invoke(this, EventArgs.Empty);
     }
 
     private void ApplyAlphaValue()
     {
-        if (_updating) return;
+        if (_updating || _updatingAlpha) return;
         _alphaMixed = false;
-        _alphaInteractionChanged = true;
+        _updatingAlpha = true;
+        try { _alphaValue.Value = _alpha.Value; }
+        finally { _updatingAlpha = false; }
         UpdateAlphaPresentation();
         RaiseAppearanceChanged(alphaChanged: true, tintChanged: false);
     }
@@ -392,13 +449,6 @@ internal sealed class DrawingObjectInstancePanel : Panel
     private void CompleteAlphaInteraction()
     {
         if (!_alphaInteractionActive) return;
-        if (_alphaInteractionStartedMixed && !_alphaInteractionChanged)
-        {
-            _alphaMixed = false;
-            UpdateAlphaPresentation();
-            RaiseAppearanceChanged(alphaChanged: true, tintChanged: false);
-        }
-
         ResetAlphaInteraction();
         AppearanceInteractionCompleted?.Invoke(this, EventArgs.Empty);
     }
@@ -416,11 +466,12 @@ internal sealed class DrawingObjectInstancePanel : Panel
     {
         _alphaInteractionActive = false;
         _alphaInteractionStartedMixed = false;
-        _alphaInteractionChanged = false;
     }
 
     private void ChooseTint()
     {
+        var originalColor = _tintColor;
+        var originalMixed = _tintMixed;
         using var picker = new ProfessionalColorPickerDialog(_tintColor, "Symbol tint");
         AppearanceInteractionStarted?.Invoke(this, EventArgs.Empty);
         picker.ColorChanged += (_, _) =>
@@ -431,10 +482,18 @@ internal sealed class DrawingObjectInstancePanel : Panel
             RaiseAppearanceChanged(alphaChanged: false, tintChanged: true);
         };
 
-        try { picker.ShowDialog(FindForm()); }
+        var accepted = false;
+        try { accepted = picker.ShowDialog(FindForm()) == DialogResult.OK; }
         finally
         {
-            AppearanceInteractionCompleted?.Invoke(this, EventArgs.Empty);
+            if (accepted) AppearanceInteractionCompleted?.Invoke(this, EventArgs.Empty);
+            else
+            {
+                _tintColor = originalColor;
+                _tintMixed = originalMixed;
+                UpdateTintPresentation();
+                AppearanceInteractionCanceled?.Invoke(this, EventArgs.Empty);
+            }
         }
     }
 
@@ -444,7 +503,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
         AppearanceChanged?.Invoke(
             this,
             new DrawingObjectAppearanceChangedEventArgs(
-                _alpha.Value / 100f,
+                (float)_alphaValue.Value / 100f,
                 _tintColor.ToArgb(),
                 alphaChanged,
                 tintChanged));
@@ -458,7 +517,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
             new DrawingObjectAnchorChangedEventArgs(new PointF((float)_anchorX.Value, (float)_anchorY.Value)));
     }
 
-    private void RaisePlaybackSettingsChanged()
+    private void RaisePlaybackSettingsChanged(DrawingObjectPlaybackChangedFields fields)
     {
         if (_updating) return;
         PlaybackSettingsChanged?.Invoke(
@@ -466,19 +525,20 @@ internal sealed class DrawingObjectInstancePanel : Panel
             new DrawingObjectPlaybackSettingsChangedEventArgs(
                 _fps.Value,
                 SelectedMode(),
-                (int)_holdFrame.Value));
+                (int)_holdFrame.Value - 1, fields));
     }
 
     private void UpdateModeState()
     {
         var enabled = SelectedMode() == DrawingObjectPlaybackMode.HoldFrame;
-        _holdFrame.Enabled = enabled;
+        _holdFrame.Enabled = enabled && Enabled;
         _holdFrameLabel.ForeColor = enabled ? Theme.Muted : Theme.Mix(Theme.Muted, Theme.Panel, 0.55f);
+        LayoutFields();
     }
 
     private void UpdateAlphaPresentation()
     {
-        _alphaValue.Text = _alphaMixed ? "Mixed" : $"{_alpha.Value}%";
+        _alphaValue.MixedValue = _alphaMixed;
         _alpha.AccessibleDescription = UiLocalization.T(_alphaMixed
             ? "Symbol alpha percentage, mixed values"
             : $"Symbol alpha percentage, {_alpha.Value}%");
@@ -515,52 +575,71 @@ internal sealed class DrawingObjectInstancePanel : Panel
     private void LayoutFields()
     {
         // Resize can run during base construction, before this panel's children exist.
-        if (_title is null) return;
-        var left = ScaleLayout(12);
-        var right = Math.Max(left, ClientSize.Width - ScaleLayout(12));
+        if (_title is null || _sectionHeaders[2] is null || _layingOut) return;
+        _layingOut = true;
+        SuspendLayout();
+        try
+        {
+        var left = ScaleLayout(16);
+        var right = Math.Max(left, ClientSize.Width - ScaleLayout(16));
         var contentWidth = Math.Max(1, right - left);
         var fieldHeight = ScaleLayout(Theme.ControlHeight);
         var valueWidth = Math.Max(1, (int)Math.Round(contentWidth * 0.52f));
         var valueLeft = right - valueWidth;
         _title.SetBounds(left, ScaleLayout(PanelTitleTop), contentWidth, ScaleLayout(Theme.InspectorTitleHeight));
-        foreach (var (label, top) in _fieldLabels)
+        var y = FieldRowTop;
+        var tabIndex = 0;
+        void Heading(int index)
         {
-            label.SetBounds(left, ScaleLayout(top),
-                Math.Max(0, valueLeft - left - ScaleLayout(8)), fieldHeight);
+            _sectionHeaders[index].TabIndex = tabIndex++;
+            _sectionHeaders[index].SetBounds(left, ScaleLayout(y), contentWidth, ScaleLayout(36));
+            y += 36;
         }
-        _showFilters.SetBounds(
-            left,
-            ScaleLayout(PanelHeight),
-            contentWidth,
-            ScaleLayout(FiltersButtonHeight));
-        _fps.SetBounds(valueLeft, ScaleLayout(RowTop(0)), valueWidth, fieldHeight);
-        _playbackMode.SetBounds(valueLeft, ScaleLayout(RowTop(1)), valueWidth, fieldHeight);
-        _holdFrame.SetBounds(valueLeft, ScaleLayout(RowTop(2)), valueWidth, fieldHeight);
-        _anchorX.SetBounds(valueLeft, ScaleLayout(RowTop(3)), valueWidth, fieldHeight);
-        _anchorY.SetBounds(valueLeft, ScaleLayout(RowTop(4)), valueWidth, fieldHeight);
-        _blendMode.SetBounds(valueLeft, ScaleLayout(RowTop(6)), valueWidth, fieldHeight);
-        var alphaValueWidth = Math.Min(ScaleLayout(44), valueWidth / 2);
-        var alphaGap = Math.Min(ScaleLayout(4), Math.Max(0, valueWidth - alphaValueWidth - 1));
-        var alphaTop = ScaleLayout(RowTop(5));
-        // This inspector shares its value column with the percentage label; the slider's
-        // standalone 72px minimum would otherwise push that label out of a narrow column.
-        _alpha.MinimumSize = new Size(0, ScaleLayout(24));
-        _alpha.SetBounds(
-            valueLeft,
-            alphaTop,
-            Math.Max(1, valueWidth - alphaValueWidth - alphaGap),
-            fieldHeight);
-        _alphaValue.SetBounds(
-            _alpha.Right + alphaGap,
-            alphaTop,
-            Math.Max(0, valueLeft + valueWidth - _alpha.Right - alphaGap),
-            fieldHeight);
-        _tint.SetBounds(left, ScaleLayout(TintRowTop), contentWidth, ScaleLayout(TintRowHeight));
-        _restoreSize.SetBounds(
-            Math.Max(left, right - fieldHeight),
-            ScaleLayout(RestoreButtonTop),
-            Math.Min(contentWidth, fieldHeight),
-            fieldHeight);
+        void Field(int labelIndex, Control editor, bool visible)
+        {
+            var label = _fieldLabels[labelIndex].Label;
+            label.Visible = editor.Visible = visible;
+            if (!visible) return;
+            editor.TabIndex = tabIndex++;
+            label.SetBounds(left, ScaleLayout(y), Math.Max(1, valueLeft - left - ScaleLayout(8)), fieldHeight);
+            editor.SetBounds(valueLeft, ScaleLayout(y), valueWidth, fieldHeight);
+            y += FieldPitch;
+        }
+        Heading(0);
+        Field(0, _fps, _sections[0].Expanded);
+        Field(1, _playbackMode, _sections[0].Expanded);
+        Field(2, _holdFrame, _sections[0].Expanded && SelectedMode() == DrawingObjectPlaybackMode.HoldFrame);
+        Heading(1);
+        Field(3, _anchorX, _sections[1].Expanded);
+        Field(4, _anchorY, _sections[1].Expanded);
+        Field(7, _restoreSize, _sections[1].Expanded);
+        if (_sections[1].Expanded)
+            _restoreSize.SetBounds(right - fieldHeight, _restoreSize.Top, fieldHeight, fieldHeight);
+        Heading(2);
+        Field(5, _alphaValue, _sections[2].Expanded);
+        _alpha.Visible = _tint.Visible = _showFilters.Visible = _sections[2].Expanded;
+        if (_sections[2].Expanded)
+        {
+            _alpha.TabIndex = tabIndex++;
+            _alpha.MinimumSize = new Size(0, ScaleLayout(24));
+            _alpha.SetBounds(left, ScaleLayout(y), contentWidth, fieldHeight);
+            y += FieldPitch;
+        }
+        Field(6, _blendMode, _sections[2].Expanded);
+        if (_sections[2].Expanded)
+        {
+            _tint.TabIndex = tabIndex++;
+            _showFilters.TabIndex = tabIndex++;
+            _tint.SetBounds(left, ScaleLayout(y), contentWidth, ScaleLayout(TintRowHeight));
+            y += TintRowHeight + Theme.GapXs;
+            _showFilters.SetBounds(left, ScaleLayout(y), contentWidth, ScaleLayout(FiltersButtonHeight));
+            y += FiltersButtonHeight;
+        }
+        _preferredLogicalHeight = y + 10;
+        MinimumSize = new Size(0, PreferredPanelHeight);
+        Height = PreferredPanelHeight;
+        }
+        finally { ResumeLayout(true); _layingOut = false; }
     }
 
     private int ScaleLayout(int value) => (int)Math.Round(value * DeviceDpi / 96f);
@@ -570,6 +649,22 @@ internal sealed class DrawingObjectInstancePanel : Panel
     private static int RowLabelTop(int row) => RowTop(row) + FieldLabelOffset;
 
     private static Color Opaque(Color color) => Color.FromArgb(255, color.R, color.G, color.B);
+
+    private sealed class FilterWindow : ModernDialogForm
+    {
+        public FilterWindow(SymbolFiltersPanel filters) : base("Symbol Filters", new Size(360, 660))
+        {
+            MinimumSize = new Size(296, 480);
+            DialogContent.Padding = Padding.Empty;
+            var scroll = new ThemedScrollPanel { Dock = DockStyle.Fill };
+            DialogContent.Controls.Add(scroll);
+            filters.Dock = DockStyle.Top;
+            filters.Height = filters.PreferredPanelHeight;
+            scroll.Content.Controls.Add(filters);
+            AddDialogAction("Close", DialogResult.OK);
+            UiLocalization.Watch(this);
+        }
+    }
 
     private Label AddFieldLabel(string text, int top)
     {

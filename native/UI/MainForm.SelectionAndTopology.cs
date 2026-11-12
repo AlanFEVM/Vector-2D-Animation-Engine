@@ -648,6 +648,8 @@ internal sealed partial class MainForm : Form
         _stage.EndReference3DOpticalInteractionPreview();
         _stage.Capture = false;
         RefreshInteractionCursorAtPointer();
+        // 拖动期间的缩放文本是节流更新的，停下后补一次精确值。
+        if (!IsDisposed && !Disposing) UpdateStatusBar();
     }
 
     private bool TryHoldTemporaryCanvasPan()
@@ -833,14 +835,16 @@ internal sealed partial class MainForm : Form
             else _stage.DollyReferenceCamera(e.Delta);
         }
         else _stage.ZoomAt(e.Location, MathF.Pow(1.12f, e.Delta / 120f), interactivePreview: true);
-        // StatusStrip text changes cause a separate GDI repaint/layout. Merge
-        // those during high-rate wheel input; the settled value is exact.
+        UpdateNavigationStatusThrottled();
+    }
+
+    // StatusStrip 文本变化会触发额外 GDI 重排；连续导航时合并更新，停下后再补齐精确值。
+    private void UpdateNavigationStatusThrottled()
+    {
         var now = Stopwatch.GetTimestamp();
-        if (Stopwatch.GetElapsedTime(_lastNavigationStatusUpdate, now).TotalMilliseconds >= 100)
-        {
-            _lastNavigationStatusUpdate = now;
-            UpdateStatusBar();
-        }
+        if (Stopwatch.GetElapsedTime(_lastNavigationStatusUpdate, now).TotalMilliseconds < 100) return;
+        _lastNavigationStatusUpdate = now;
+        UpdateStatusBar();
     }
 
     private void ClearCanvasNavigationFeedback()
@@ -873,7 +877,7 @@ internal sealed partial class MainForm : Form
         {
             var factor = Math.Clamp(Math.Exp(-dy * 0.01), 0.2, 5.0);
             _stage.ZoomAt(e.Location, (float)factor, interactivePreview: true);
-            UpdateStatusBar();
+            UpdateNavigationStatusThrottled();
         }
         else if (_viewOrbiting) _stage.RotateReferenceCamera(dx, dy);
         return true;

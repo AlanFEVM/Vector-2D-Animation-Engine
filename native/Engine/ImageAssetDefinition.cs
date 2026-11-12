@@ -9,6 +9,8 @@ internal sealed class ImageAssetDefinition
 {
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
     public string Name { get; internal set; } = "Image";
+    public string AssetFolderId { get; internal set; } = "";
+    public IReadOnlyList<string> AssetTagIds { get; internal set; } = Array.Empty<string>();
 
     /// <summary>Original file the image was imported from. Retained for diagnostics and Relink.</summary>
     public string OriginalSourcePath { get; internal set; } = "";

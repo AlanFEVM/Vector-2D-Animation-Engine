@@ -6,6 +6,7 @@ internal static partial class Benchmark
 {
     private static void RunUiRefreshStabilityRegression()
     {
+        RunPanelHistoryWorkflowRegression();
         RunConfiguredWorkbenchShortcutRegression();
         RunUiCornerRenderingRegression();
         RunImmediateColorEditingRegression();
@@ -307,7 +308,8 @@ internal static partial class Benchmark
         lighting.InteractionCanceled += (_, _) => lightCancels++;
         EditPicker(() => RequireMethod(typeof(SceneLightingPanel), "ChooseColor").Invoke(lighting, null), _ =>
             AssertTimeline(lightChanges == 2, "Light color did not update while the picker was open."), escape: true);
-        AssertTimeline(lightCompletes == 1 && lightCancels == 0, "Escape rolled back live light color.");
+        AssertTimeline(lightCompletes == 0 && lightCancels == 1 && lightChanges == 3,
+            "Escape failed to cancel the light color transaction and restore its preview.");
 
         using var filters = new SymbolFiltersPanel();
         filters.SetFilters(new SymbolFilters { Glow = SymbolGlowFilter.Default });
@@ -322,7 +324,8 @@ internal static partial class Benchmark
             _ => AssertTimeline(patches == 2, "Glow color did not update before close."));
         EditPicker(() => RequireMethod(typeof(SymbolFiltersPanel), "ChooseEdgeColor").Invoke(filters, [false]),
             _ => AssertTimeline(patches == 4, "Edge color did not update before close."), escape: true);
-        AssertTimeline(filterCompletes == 2 && filterCancels == 0, "Filter color close canceled its live transaction.");
+        AssertTimeline(filterCompletes == 1 && filterCancels == 1 && patches == 5,
+            "Filter color confirmation/cancellation lost its transaction or rollback preview.");
 
         using var form = new MainForm { ShowInTaskbar = false, Location = new Point(-30000, -30000) };
         var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
@@ -330,11 +333,20 @@ internal static partial class Benchmark
         var layerColor = scene.GetLayerColor(scene.ActiveLayer);
         EditPicker(() => RequireMethod(typeof(MainForm), "ChooseTimelineLayerColor").Invoke(form, null), picker =>
             AssertTimeline(scene.GetLayerColor(scene.ActiveLayer) == picker.Color, "Layer color was only applied after close."), escape: true);
+        AssertTimeline(scene.GetLayerColor(scene.ActiveLayer) == layerColor
+            && RequireMethod(typeof(MainForm), "UndoLastEdit").Invoke(form, null) is false,
+            "Canceling layer color retained its preview or created an undo entry.");
+        EditPicker(() => RequireMethod(typeof(MainForm), "ChooseTimelineLayerColor").Invoke(form, null), picker =>
+            AssertTimeline(scene.GetLayerColor(scene.ActiveLayer) == picker.Color, "Layer color preview did not apply."));
         AssertTimeline(scene.GetLayerColor(scene.ActiveLayer) != layerColor
             && RequireMethod(typeof(MainForm), "UndoLastEdit").Invoke(form, null) is true
             && scene.GetLayerColor(scene.ActiveLayer) == layerColor, "Live layer color did not preserve one undo step.");
         var groupId = scene.Timeline.CreateTabGroup("Live color");
         var oldGroup = scene.Timeline.TabGroups.Single(group => group.Id == groupId);
+        EditPicker(() => RequireMethod(typeof(TimelineStrip), "EditTabGroupColor").Invoke(timeline, [groupId]), _ => { }, escape: true);
+        AssertTimeline(scene.Timeline.TabGroups.Single(group => group.Id == groupId) == oldGroup
+            && RequireMethod(typeof(MainForm), "UndoLastEdit").Invoke(form, null) is false,
+            "Canceling tab group color replaced its inherited color or created an undo entry.");
         EditPicker(() => RequireMethod(typeof(TimelineStrip), "EditTabGroupColor").Invoke(timeline, [groupId]), picker =>
             AssertTimeline((Color?)RequireMethod(typeof(TimelineStrip), "GetTabGroupColor").Invoke(timeline, [groupId]) == picker.Color,
                 "Tab group color did not apply before close."));
@@ -349,7 +361,7 @@ internal static partial class Benchmark
         AssertTimeline(bitmap.GetPixel(dock.Width - 5, dock.Height / 2).ToArgb() == host.BackColor.ToArgb(),
             "Workspace color entry retained its outer surface or border.");
         bitmap.Save(Path.Combine(output, "workspace-swatch.png"));
-        Console.WriteLine("immediate_color_editing=ok,swatch_only=ok,close_keeps_color=ok,layer_and_group_undo=ok");
+        Console.WriteLine("immediate_color_editing=ok,swatch_only=ok,confirm_cancel=ok,layer_and_group_undo=ok");
 
         void EditPicker(Action open, Action<ProfessionalColorPickerDialog> check, bool escape = false)
         {
@@ -364,8 +376,8 @@ internal static partial class Benchmark
                 visited = true;
                 try
                 {
-                    AssertTimeline(!Descendants(picker).OfType<Button>().Any(button => button.Text is "Apply" or "Cancel"),
-                        "A color dialog still shows confirmation buttons.");
+                    AssertTimeline(picker.AcceptButton is Button && picker.CancelButton is Button,
+                        "A color dialog lacks confirmation or cancellation.");
                     var hex = (ModernTextInput)RequireField(typeof(ProfessionalColorPickerDialog), "_hex").GetValue(picker)!;
                     hex.Text = "#123456";
                     hex.Text = "#345678";
@@ -376,7 +388,7 @@ internal static partial class Benchmark
                         AssertTimeline((bool)RequireMethod(typeof(ProfessionalColorPickerDialog), "ProcessCmdKey",
                             [typeof(Message).MakeByRefType(), typeof(Keys)]).Invoke(picker, args)!, "Escape did not close color editing.");
                     }
-                    else picker.Close();
+                    else ((Button)picker.AcceptButton!).PerformClick();
                 }
                 catch (Exception ex) { failure = ex; picker.Close(); }
             };
@@ -571,7 +583,8 @@ internal static partial class Benchmark
             RequireMethod(typeof(ModernNumericUpDown), "BeginStepperInteraction").Invoke(numeric, null);
             numeric.Value = 350;
             numeric.Value = 370;
-            Near(drawing.X[bitmap], previousX, "Numeric gesture committed before completion");
+            Near(drawing.X[bitmap], 370, "Numeric gesture did not preview the latest value");
+            AssertTimeline(UndoCount() == beforeGesture, "A numeric preview added undo entries before completion.");
             RequireMethod(typeof(ModernNumericUpDown), "EndStepperInteraction", [typeof(bool)]).Invoke(numeric, [false]);
             Near(drawing.X[bitmap], 370, "Numeric gesture completion");
             AssertTimeline(UndoCount() == beforeGesture + 1, "Numeric gesture must create one undo entry.");

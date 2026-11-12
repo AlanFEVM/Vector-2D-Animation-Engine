@@ -3,6 +3,7 @@ namespace VectorAnimationEngine;
 internal sealed class ShortcutProfilesDialog : ModernDialogForm
 {
     private readonly ShortcutProfileEditorPanel _shortcutProfiles;
+    internal Func<bool>? ApplyRequested { get; set; }
 
     public ShortcutProfilesDialog() : this(ShortcutProfiles.TraditionalFlashProfileId, [])
     {
@@ -32,7 +33,7 @@ internal sealed class ShortcutProfilesDialog : ModernDialogForm
         layout.Controls.Add(_shortcutProfiles, 0, 0);
         layout.Controls.Add(new Label
         {
-            Text = "Confirm changes here, then save in Settings.",
+            Text = "Apply saves these preferences immediately. Cancel leaves them unchanged.",
             Dock = DockStyle.Fill,
             ForeColor = Theme.Muted,
             BackColor = Theme.Panel,
@@ -41,7 +42,8 @@ internal sealed class ShortcutProfilesDialog : ModernDialogForm
             Padding = new Padding(2, 0, 0, 0),
             Margin = Padding.Empty
         }, 0, 1);
-        AcceptButton = AddDialogAction("OK", DialogResult.OK, DialogActionStyle.Primary);
+        AcceptButton = AddDialogAction("Apply", DialogResult.OK, DialogActionStyle.Primary,
+            () => ApplyRequested?.Invoke() ?? true);
         CancelButton = AddDialogAction("Cancel", DialogResult.Cancel);
         UiLocalization.Watch(this);
     }

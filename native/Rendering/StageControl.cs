@@ -649,6 +649,8 @@ internal sealed partial class StageControl : Control
     private const int MarqueePreviewObjectThreshold = 2_000;
     private const int ZoomLodPreviewObjectThreshold = 320;
     private const int ZoomLodPreviewIdleMilliseconds = 250;
+    private const int GdiRasterZoomPreviewIdleMilliseconds = 120;
+    private const double GdiRasterZoomPreviewFrameBudgetMilliseconds = 1000d / 60d;
     private const int DistortRasterMaximumDimension = 2048;
     private const int DistortPreviewRasterMaximumDimension = 1024;
     private const long DistortRasterCacheBudgetBytes = 64L * 1024 * 1024;
@@ -705,6 +707,16 @@ internal sealed partial class StageControl : Control
     private long _distortRasterCacheBytes;
     private Bitmap? _gdiBaseFrameBitmap;
     private Size _gdiBaseFrameSize;
+    private int _gdiBaseFrameOverscan;
+    private float _gdiBaseFrameCameraX;
+    private float _gdiBaseFrameCameraY;
+    private float _gdiBaseFrameZoom;
+    private float _gdiBaseFrameCanvasRotation;
+    private float _gdiBaseFrameGridOpacity;
+    private WorldGridType _gdiBaseFrameGridType;
+    private long _gdiBaseFrameRevision;
+    private bool _gdiRasterZoomPreviewActive;
+    private long _gdiRasterZoomSettleDeadline;
     private Reference3DBaseFrameRenderState _gdiBaseFrameRenderState;
     private RenderStats _gdiBaseFrameStats;
     private RenderStats _gdiBaseFrameEditableStats;
@@ -1358,6 +1370,7 @@ internal sealed partial class StageControl : Control
     internal int LastGdiDistortRasterReuses { get; private set; }
     internal int LastGdiBaseFrameCacheBuilds { get; private set; }
     internal int LastGdiBaseFrameCacheReuses { get; private set; }
+    internal int LastGdiBaseFrameZoomPreviews { get; private set; }
     internal double LastGdiBaseFrameCopyMilliseconds { get; private set; }
     internal double LastPointerDownHandlerMilliseconds { get; private set; }
     internal double LastPointerDownToPaintMilliseconds { get; private set; }
@@ -1652,6 +1665,7 @@ internal sealed partial class StageControl : Control
         BeginInteractiveInput(pointerDown: false);
         try
         {
+            if (_gdiRasterZoomPreviewActive) EndZoomLodPreview(invalidate: true);
             base.OnMouseUp(e);
         }
         finally
@@ -2252,6 +2266,8 @@ internal sealed partial class StageControl : Control
 
     public void Pan(float dx, float dy)
     {
+        // 零位移或异常增量不产生视图变化，跳过整帧失效与 ViewChanged 通知。
+        if (!float.IsFinite(dx) || !float.IsFinite(dy) || (dx == 0 && dy == 0)) return;
         CompleteReferenceCameraTransitionForDirectInput();
         var cos = MathF.Cos(CanvasRotation);
         var sin = MathF.Sin(CanvasRotation);
@@ -2268,11 +2284,32 @@ internal sealed partial class StageControl : Control
     public void ZoomAt(Point screen, float factor, bool interactivePreview = false)
     {
         CompleteReferenceCameraTransitionForDirectInput();
-        var before = ScreenToWorld(screen);
-        Zoom = (float)Math.Clamp(Zoom * factor, 0.02, 64);
-        var after = ScreenToWorld(screen);
-        CameraX += before.X - after.X;
-        CameraY += before.Y - after.Y;
+        if (!float.IsFinite(factor) || factor <= 0) return;
+        var unrotated = UnrotateCanvasScreenPoint(screen);
+        var offsetX = (double)unrotated.X - Width * 0.5;
+        var offsetY = (double)unrotated.Y - Height * 0.5;
+        // 先把光标下的世界坐标锚点算成 double，再由锚点直接反推相机位置。
+        // 旧实现用「新相机偏移」的两次 float 结果相减，放大坐标或极端缩放下会丢失精度，
+        // 表现为缩放时画面轻微漂移。
+        var anchorX = (double)CameraX + offsetX / Zoom * VectorUnits.UnitsPerPixel;
+        var anchorY = (double)CameraY + offsetY / Zoom * VectorUnits.UnitsPerPixel;
+        var newZoom = (float)Math.Clamp((double)Zoom * factor, 0.02, 64);
+        if (newZoom == Zoom)
+        {
+            // 已到缩放上下限：视图本就不变，只延长正在进行的缩放预览，避免多跑一整帧。
+            if (interactivePreview
+                && (_zoomLodPreviewActive || _distortZoomPreviewActive || _selectionZoomPreviewActive))
+            {
+                _zoomLodPreviewTimer.Stop();
+                _zoomLodPreviewTimer.Start();
+            }
+            return;
+        }
+
+        Zoom = newZoom;
+        CameraX = (float)(anchorX - offsetX / newZoom * VectorUnits.UnitsPerPixel);
+        CameraY = (float)(anchorY - offsetY / newZoom * VectorUnits.UnitsPerPixel);
+        var rasterPreview = interactivePreview && ShouldUseGdiRasterZoomPreview();
         var objectLodPreview = interactivePreview
             && ShouldUseZoomLodPreview(Scene.ObjectCount, Scene.HasDisplayLayerEffects);
         var distortPreview = interactivePreview && HasSoftwareDistortionForCurrentFrame();
@@ -2281,10 +2318,12 @@ internal sealed partial class StageControl : Control
         {
             BeginZoomLodPreview(objectLodPreview, distortPreview);
         }
-        else
+        else if (!rasterPreview)
         {
             EndZoomLodPreview(invalidate: false);
         }
+        if (rasterPreview) BeginGdiRasterZoomPreview();
+        else if (_gdiRasterZoomPreviewActive) EndGdiRasterZoomPreview();
         if (!interactivePreview) _direct2DRenderer.InvalidateSelectionCommands();
         RefreshBrushTipCursorScale();
         RequestStageFrame(
@@ -2301,6 +2340,18 @@ internal sealed partial class StageControl : Control
 
     public RectangleF VisibleWorldBounds()
     {
+        var margin = _gdiBaseFrameOverscan;
+        if (margin > 0)
+        {
+            var widenedCorners = new[] { ScreenToWorld(new Point(-margin, -margin)), ScreenToWorld(new Point(Width + margin, -margin)),
+                ScreenToWorld(new Point(Width + margin, Height + margin)), ScreenToWorld(new Point(-margin, Height + margin)) };
+            return RectangleF.FromLTRB(
+                widenedCorners.Min(p => p.X),
+                widenedCorners.Min(p => p.Y),
+                widenedCorners.Max(p => p.X),
+                widenedCorners.Max(p => p.Y));
+        }
+
         var corners = new[] { ScreenToWorld(Point.Empty), ScreenToWorld(new Point(Width, 0)),
             ScreenToWorld(new Point(Width, Height)), ScreenToWorld(new Point(0, Height)) };
         return RectangleF.FromLTRB(corners.Min(p => p.X), corners.Min(p => p.Y), corners.Max(p => p.X), corners.Max(p => p.Y));
@@ -3300,16 +3351,150 @@ internal sealed partial class StageControl : Control
             || SceneHasDistortionsForRendering(DragPreviewScene);
     }
 
+    private bool ShouldUseGdiRasterZoomPreview()
+    {
+        if (!CanUseGdiRasterZoomPreview()) return false;
+        if (_gdiRasterZoomPreviewActive) return true;
+        return LastFrameRenderMilliseconds > GdiRasterZoomPreviewFrameBudgetMilliseconds;
+    }
+
+    private bool CanUseGdiRasterZoomPreview()
+    {
+        return _gdiBaseFrameBitmap is not null
+            && !_gdiBaseFrameBorrowed
+            && _gdiBaseFrameOverscan > 0
+            && _gdiBaseFrameZoom > 0f
+            && !PlaybackActive
+            && !ShotWorkspacePreviewActive
+            && !RenderingCanvasOutput
+            && !RendersReferenceProjection
+            && !HasSoftwareDistortionForCurrentFrame()
+            && !LastFrameUsedDirect2D;
+    }
+
+    private void BeginGdiRasterZoomPreview()
+    {
+        if (!CanUseGdiRasterZoomPreview()) return;
+        _gdiRasterZoomPreviewActive = true;
+        _gdiRasterZoomSettleDeadline = Stopwatch.GetTimestamp()
+            + (long)(GdiRasterZoomPreviewIdleMilliseconds * Stopwatch.Frequency / 1000d);
+        if (!_zoomLodPreviewTimer.Enabled || _zoomLodPreviewTimer.Interval > GdiRasterZoomPreviewIdleMilliseconds)
+        {
+            _zoomLodPreviewTimer.Interval = GdiRasterZoomPreviewIdleMilliseconds;
+            _zoomLodPreviewTimer.Start();
+        }
+    }
+
+    private void EndGdiRasterZoomPreview()
+    {
+        _gdiRasterZoomPreviewActive = false;
+    }
+
+    private bool TryDrawGdiRasterZoomPreview(Graphics graphics)
+    {
+        var bitmap = _gdiBaseFrameBitmap;
+        if (bitmap is null || _gdiBaseFrameSize != ClientSize) return false;
+        var sourceZoom = _gdiBaseFrameZoom;
+        if (sourceZoom <= 0f) return false;
+        var scale = Zoom / sourceZoom;
+        if (!float.IsFinite(scale) || scale <= 0f) return false;
+        var margin = _gdiBaseFrameOverscan;
+        var centerX = ClientSize.Width * 0.5;
+        var centerY = ClientSize.Height * 0.5;
+        var offsetX = centerX
+            + (_gdiBaseFrameCameraX - CameraX) / VectorUnits.UnitsPerPixel * Zoom
+            - (margin + centerX) * scale;
+        var offsetY = centerY
+            + (_gdiBaseFrameCameraY - CameraY) / VectorUnits.UnitsPerPixel * Zoom
+            - (margin + centerY) * scale;
+        var sourceLeft = (0 - offsetX) / scale;
+        var sourceTop = (0 - offsetY) / scale;
+        var sourceRight = (ClientSize.Width - offsetX) / scale;
+        var sourceBottom = (ClientSize.Height - offsetY) / scale;
+        if (sourceLeft < -0.5 || sourceTop < -0.5
+            || sourceRight > bitmap.Width + 0.5 || sourceBottom > bitmap.Height + 0.5)
+        {
+            return false;
+        }
+
+        var copyStarted = Stopwatch.GetTimestamp();
+        double copyMilliseconds;
+        if (!_direct2DRenderer.TryDrawRasterZoomPreview(
+                graphics,
+                bitmap,
+                _gdiBaseFrameRevision,
+                (float)offsetX,
+                (float)offsetY,
+                (float)scale,
+                ClientSize,
+                out copyMilliseconds))
+        {
+            var state = graphics.Save();
+            try
+            {
+                graphics.ResetTransform();
+                graphics.CompositingMode = CompositingMode.SourceCopy;
+                graphics.SmoothingMode = SmoothingMode.None;
+                graphics.PixelOffsetMode = PixelOffsetMode.HighSpeed;
+                graphics.InterpolationMode = InterpolationMode.Bilinear;
+                graphics.SetClip(new Rectangle(0, 0, ClientSize.Width, ClientSize.Height));
+                graphics.TranslateTransform((float)offsetX, (float)offsetY);
+                graphics.ScaleTransform(scale, scale);
+                graphics.DrawImage(
+                    bitmap,
+                    new Rectangle(0, 0, bitmap.Width, bitmap.Height),
+                    0,
+                    0,
+                    bitmap.Width,
+                    bitmap.Height,
+                    GraphicsUnit.Pixel);
+            }
+            finally
+            {
+                graphics.Restore(state);
+            }
+            copyMilliseconds = Stopwatch.GetElapsedTime(copyStarted).TotalMilliseconds;
+        }
+
+        LastGdiBaseFrameCopyMilliseconds = copyMilliseconds;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        LastStats = _gdiBaseFrameStats;
+        ReplayGdiBaseScenePassOrder();
+        DrawGdiDynamic2D(graphics, _gdiBaseFrameEditableStats);
+        return true;
+    }
+
     private void DrawCachedGdi2D(Graphics graphics)
     {
-        if (!CanReuseGdiBaseFrame())
+        if (_gdiRasterZoomPreviewActive && TryDrawGdiRasterZoomPreview(graphics))
         {
-            EnsureGdiBaseFrameBitmap();
-            using var baseGraphics = Graphics.FromImage(_gdiBaseFrameBitmap!);
-            var editableStats = RendersReferenceProjection
-                ? DrawGdiReferenceBase(baseGraphics)
-                : DrawGdiBase2D(baseGraphics);
-            StoreGdiBaseFrame(editableStats);
+            LastGdiBaseFrameCacheReuses = 1;
+            LastGdiBaseFrameZoomPreviews = 1;
+            return;
+        }
+
+        var overscan = 0;
+        if (CanCacheGdiBaseFrameWithOverscan()) overscan = ComputeGdiBaseFrameOverscan();
+        if (!CanReuseGdiBaseFrame(overscan, out var sourceOffset))
+        {
+            EnsureGdiBaseFrameBitmap(overscan);
+            var previousOverscan = _gdiBaseFrameOverscan;
+            _gdiBaseFrameOverscan = overscan;
+            try
+            {
+                using var baseGraphics = Graphics.FromImage(_gdiBaseFrameBitmap!);
+                if (overscan > 0) baseGraphics.TranslateTransform(overscan, overscan);
+                var editableStats = RendersReferenceProjection
+                    ? DrawGdiReferenceBase(baseGraphics)
+                    : DrawGdiBase2D(baseGraphics);
+                StoreGdiBaseFrame(editableStats);
+            }
+            finally
+            {
+                _gdiBaseFrameOverscan = previousOverscan;
+            }
+
             LastGdiBaseFrameCacheBuilds = 1;
         }
         else
@@ -3325,7 +3510,22 @@ internal sealed partial class StageControl : Control
         {
             graphics.ResetTransform();
             graphics.CompositingMode = CompositingMode.SourceCopy;
-            graphics.DrawImageUnscaled(_gdiBaseFrameBitmap!, 0, 0);
+            var margin = _gdiBaseFrameOverscan;
+            if (margin == 0 && sourceOffset.IsEmpty)
+            {
+                graphics.DrawImageUnscaled(_gdiBaseFrameBitmap!, 0, 0);
+            }
+            else
+            {
+                graphics.DrawImage(
+                    _gdiBaseFrameBitmap!,
+                    new Rectangle(0, 0, ClientSize.Width, ClientSize.Height),
+                    margin + sourceOffset.X,
+                    margin + sourceOffset.Y,
+                    ClientSize.Width,
+                    ClientSize.Height,
+                    GraphicsUnit.Pixel);
+            }
         }
         finally
         {
@@ -3338,6 +3538,37 @@ internal sealed partial class StageControl : Control
         else DrawGdiDynamic2D(graphics, _gdiBaseFrameEditableStats);
     }
 
+    private bool CanCacheGdiBaseFrameWithOverscan()
+    {
+        return !RendersReferenceProjection
+            && !HasSoftwareDistortionForCurrentFrame()
+            && SymbolEditingReference is null
+            && !_gdiBaseFrameBorrowed;
+    }
+
+    // Pixel margin kept around the viewport inside the GDI base frame. Panning then
+    // re-samples the cached raster by an integer offset instead of rebuilding it.
+    // The margin must fit the isolated compositing surface budget unchanged, because
+    // a shrunken filter padding would alter the visible filter result.
+    private int ComputeGdiBaseFrameOverscan()
+    {
+        if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return 0;
+        var desired = Math.Clamp(Math.Min(ClientSize.Width, ClientSize.Height) / 16, 16, 96);
+        var padding = HeadroomFilterPadding(LayerFilterBounds.GetPadding(Scene, ActiveViewZoom));
+        for (var margin = desired; margin >= 16; margin /= 2)
+        {
+            var requested = new SymbolFilterPadding(
+                padding.Left + margin,
+                padding.Top + margin,
+                padding.Right + margin,
+                padding.Bottom + margin);
+            var budget = LayerFilterBounds.ApplyCompositeBudget(ClientSize, requested);
+            if (budget.FiltersEnabled && budget.FilterScaleFactor >= 1f) return margin;
+        }
+
+        return 0;
+    }
+
     private bool CanReuseGdiBaseFrame()
     {
         return _gdiBaseFrameBitmap is not null
@@ -3345,20 +3576,60 @@ internal sealed partial class StageControl : Control
             && _gdiBaseFrameRenderState == CreateReference3DBaseFrameRenderState();
     }
 
-    private void EnsureGdiBaseFrameBitmap()
+    private bool CanReuseGdiBaseFrame(int overscan, out Point sourceOffset)
     {
-        if (!_gdiBaseFrameBorrowed && _gdiBaseFrameBitmap is not null && _gdiBaseFrameSize == ClientSize) return;
+        sourceOffset = Point.Empty;
+        if (_gdiBaseFrameBitmap is null) return false;
+        if (_gdiBaseFrameSize != ClientSize) return false;
+        if (_gdiBaseFrameOverscan != overscan) return false;
+        if (_gdiBaseFrameZoom != Zoom || _gdiBaseFrameCanvasRotation != CanvasRotation) return false;
+        if (_gdiBaseFrameGridOpacity != WorldGridOpacity || _gdiBaseFrameGridType != WorldGridType) return false;
+        var current = CreateReference3DBaseFrameRenderState();
+        if ((_gdiBaseFrameRenderState with { PresentationRevision = current.PresentationRevision }) != current)
+        {
+            return false;
+        }
+
+        var deltaX = (_gdiBaseFrameCameraX - CameraX) / VectorUnits.UnitsPerPixel * Zoom;
+        var deltaY = (_gdiBaseFrameCameraY - CameraY) / VectorUnits.UnitsPerPixel * Zoom;
+        if (!double.IsFinite(deltaX) || !double.IsFinite(deltaY)) return false;
+        var roundedX = (int)Math.Round(deltaX);
+        var roundedY = (int)Math.Round(deltaY);
+        if (Math.Abs(deltaX - roundedX) > 0.01 || Math.Abs(deltaY - roundedY) > 0.01) return false;
+        if (Math.Abs(roundedX) > overscan || Math.Abs(roundedY) > overscan) return false;
+        sourceOffset = new Point(-roundedX, -roundedY);
+        return true;
+    }
+
+    private void EnsureGdiBaseFrameBitmap(int overscan)
+    {
+        if (!_gdiBaseFrameBorrowed
+            && _gdiBaseFrameBitmap is not null
+            && _gdiBaseFrameSize == ClientSize
+            && _gdiBaseFrameOverscan == overscan)
+        {
+            return;
+        }
+
         ClearGdiBaseFrameCache();
         _gdiBaseFrameBitmap = new Bitmap(
-            ClientSize.Width,
-            ClientSize.Height,
+            ClientSize.Width + overscan * 2,
+            ClientSize.Height + overscan * 2,
             PixelFormat.Format32bppPArgb);
         _gdiBaseFrameSize = ClientSize;
+        _gdiBaseFrameOverscan = overscan;
     }
 
     private void StoreGdiBaseFrame(RenderStats editableStats)
     {
         _gdiBaseFrameRenderState = CreateReference3DBaseFrameRenderState();
+        _gdiBaseFrameCameraX = CameraX;
+        _gdiBaseFrameCameraY = CameraY;
+        _gdiBaseFrameZoom = Zoom;
+        _gdiBaseFrameCanvasRotation = CanvasRotation;
+        _gdiBaseFrameGridOpacity = WorldGridOpacity;
+        _gdiBaseFrameGridType = WorldGridType;
+        _gdiBaseFrameRevision++;
         _gdiBaseFrameStats = LastStats;
         _gdiBaseFrameEditableStats = editableStats;
     }
@@ -3377,6 +3648,13 @@ internal sealed partial class StageControl : Control
         _gdiBaseFrameBorrowed = false;
         _gdiBaseFrameBitmap = null;
         _gdiBaseFrameSize = default;
+        _gdiBaseFrameOverscan = 0;
+        _gdiBaseFrameCameraX = 0;
+        _gdiBaseFrameCameraY = 0;
+        _gdiBaseFrameZoom = 0;
+        _gdiBaseFrameCanvasRotation = 0;
+        _gdiBaseFrameGridOpacity = 0;
+        _gdiBaseFrameGridType = default;
         _gdiBaseFrameRenderState = default;
         _gdiBaseFrameStats = default;
         _gdiBaseFrameEditableStats = default;
@@ -3390,6 +3668,7 @@ internal sealed partial class StageControl : Control
         LastGdiDistortRasterReuses = 0;
         LastGdiBaseFrameCacheBuilds = 0;
         LastGdiBaseFrameCacheReuses = 0;
+        LastGdiBaseFrameZoomPreviews = 0;
         LastGdiBaseFrameCopyMilliseconds = 0;
     }
 
@@ -3547,6 +3826,7 @@ internal sealed partial class StageControl : Control
         }
 
         var editableLimit = Math.Max(0, objectDrawLimit - underlayStats.DrawnObjects - onionSkinStats.DrawnObjects);
+        DrawSelectionMoveOrigins(g);
         RecordEditableScenePass();
         var editableStats = DrawSceneGdi(
             g,
@@ -3560,7 +3840,6 @@ internal sealed partial class StageControl : Control
 
     private void DrawGdiDynamic2D(Graphics g, RenderStats editableStats)
     {
-        DrawSelectionMoveOrigins(g);
         DrawCanvasFrameGdi(g);
         var objectDrawLimit = ObjectDrawLimit();
         if (DragPreviewScene is { } dragPreview)
@@ -5385,12 +5664,17 @@ internal sealed partial class StageControl : Control
     private void EndZoomLodPreview(bool invalidate)
     {
         _zoomLodPreviewTimer.Stop();
-        if (!_zoomLodPreviewActive && !_distortZoomPreviewActive && !_selectionZoomPreviewActive && !_referenceNavigationPreviewActive) return;
+        if (!_gdiRasterZoomPreviewActive && !_zoomLodPreviewActive && !_distortZoomPreviewActive && !_selectionZoomPreviewActive && !_referenceNavigationPreviewActive) return;
         var navigationPreview = _referenceNavigationPreviewActive;
+        _gdiRasterZoomPreviewActive = false;
         _referenceNavigationPreviewActive = false;
         _zoomLodPreviewActive = false;
         _distortZoomPreviewActive = false;
         _selectionZoomPreviewActive = false;
+        if (!_zoomLodPreviewActive && !_distortZoomPreviewActive && !_selectionZoomPreviewActive && !_referenceNavigationPreviewActive)
+        {
+            _zoomLodPreviewTimer.Interval = ZoomLodPreviewIdleMilliseconds;
+        }
         UpdateSelectionHighlightAnimation();
         if (invalidate)
         {

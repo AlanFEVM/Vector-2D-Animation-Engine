@@ -36,13 +36,14 @@ internal static class DrawingObjectSymbolPackageService
 
         var closure = CollectClosure(project, root);
         var svgAssets = CaptureSvgAssets(project, closure);
+        var imageAssets = CaptureImageAssets(project, closure);
         var tagNames = project.AssetTags.ToDictionary(
             tag => tag.Id,
             tag => tag.Name,
             StringComparer.Ordinal);
         var folderPaths = BuildFolderPathLookup(project);
 
-        // Only tags actually referenced by enclosed symbols travel with the file.
+        // Only tags referenced by enclosed symbols or their resources travel with the file.
         var referencedTags = new Dictionary<string, ProjectAssetTag>(StringComparer.Ordinal);
         foreach (var symbol in closure)
         {
@@ -54,6 +55,11 @@ internal static class DrawingObjectSymbolPackageService
                 if (existing is not null) referencedTags[tagId] = existing;
             }
         }
+        foreach (var name in imageAssets.SelectMany(asset => asset.TagNames).Concat(svgAssets.SelectMany(asset => asset.TagNames)))
+        {
+            var tag = project.AssetTags.FirstOrDefault(tag => string.Equals(tag.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (tag is not null) referencedTags[tag.Id] = tag;
+        }
 
         var includedTagIds = referencedTags.Keys.ToHashSet(StringComparer.Ordinal);
         var symbols = closure.Select(symbol => CreateSymbolEntry(symbol, folderPaths, tagNames, includedTagIds))
@@ -61,6 +67,8 @@ internal static class DrawingObjectSymbolPackageService
         var folders = symbols
             .Where(symbol => symbol.FolderPath.Length > 0)
             .Select(symbol => symbol.FolderPath)
+            .Concat(imageAssets.Select(asset => asset.FolderPath)).Concat(svgAssets.Select(asset => asset.FolderPath))
+            .Where(path => path.Length > 0)
             .Distinct(StringComparer.Ordinal)
             .OrderBy(path => path, StringComparer.Ordinal)
             .Select(path => new DrawingObjectSymbolPackage.FolderPackageEntry { Path = path })
@@ -73,6 +81,7 @@ internal static class DrawingObjectSymbolPackageService
             RootSymbolId = root.Id,
             Symbols = symbols,
             ExternalSvgAssets = svgAssets,
+            ImageAssets = imageAssets,
             Folders = folders,
             Tags = referencedTags.Values
                 .OrderBy(tag => tag.Name, StringComparer.OrdinalIgnoreCase)
@@ -118,22 +127,49 @@ internal static class DrawingObjectSymbolPackageService
             geometry[symbol.Id] = DecodeGeometry(symbol);
         }
         ValidateSvgAssetReferences(package, geometry.Values);
+        ValidateImageAssetReferences(package, geometry.Values);
+        if (project.ImageAssets.Count + package.ImageAssets.Length > VectorProject.MaxImageAssetCount)
+            throw new InvalidDataException("The symbol package would exceed the image library limit.");
 
         // Library metadata is merged next because symbols are placed into folders as
         // they are created. Both merges are additive and idempotent: re-importing the
         // same package reuses the folders and tags it created the first time.
-        var folderIds = MergeFolders(project, package);
-        var tagIds = MergeTags(project, package);
-
+        var originalFolderIds = project.AssetFolders.Select(folder => folder.Id).ToHashSet(StringComparer.Ordinal);
+        var originalTags = project.AssetTags.Select(tag => new ProjectAssetTagData(tag.Id, tag.Name, tag.ColorArgb)).ToArray();
         var imported = new Dictionary<string, DrawingObjectDefinition>(StringComparer.Ordinal);
         var importedSvgAssets = new Dictionary<string, string>(StringComparer.Ordinal);
+        var importedImageAssets = new Dictionary<string, string>(StringComparer.Ordinal);
         try
         {
+            var folderIds = MergeFolders(project, package);
+            var tagIds = MergeTags(project, package);
             foreach (var asset in package.ExternalSvgAssets)
-                importedSvgAssets.Add(asset.Id, ImportSvgAsset(project, asset));
+            {
+                var importedId = ImportSvgAsset(project, asset);
+                importedSvgAssets.Add(asset.Id, importedId);
+                ApplyResourceMetadata(project, importedId, asset.FolderPath, asset.TagNames, folderIds, tagIds);
+            }
+            foreach (var asset in package.ImageAssets)
+            {
+                var importedId = ImportImageAsset(project, asset);
+                importedImageAssets.Add(asset.Id, importedId);
+                ApplyResourceMetadata(project, importedId, asset.FolderPath, asset.TagNames, folderIds, tagIds);
+            }
             foreach (var snapshot in geometry.Values)
+            {
                 foreach (var index in snapshot.ImportedSvgAssetIds.Keys.ToArray())
                     snapshot.ImportedSvgAssetIds[index] = importedSvgAssets[snapshot.ImportedSvgAssetIds[index]];
+                foreach (var index in snapshot.BitmapObjects.Keys.ToArray())
+                {
+                    var source = snapshot.BitmapObjects[index];
+                    snapshot.BitmapObjects[index] = new BitmapObjectData
+                    {
+                        ImageAssetId = importedImageAssets[source.ImageAssetId],
+                        PlacedSize = source.PlacedSize,
+                        VisibleContours = source.VisibleContours
+                    };
+                }
+            }
             foreach (var symbol in ordered)
             {
                 // AddDrawingObject always mints a fresh identifier, which is exactly the
@@ -158,13 +194,100 @@ internal static class DrawingObjectSymbolPackageService
         }
         catch
         {
-            // Every symbol created by this call is removed, so a mid-merge failure does
-            // not leave partially imported symbols behind. Merged folders and tags are
-            // additive and emptied-of-symbols, so leaving them is harmless and keeps
-            // this path free of destructive project surgery.
+            // Remove this import's additions, including metadata created before a
+            // resource failed. Existing folders and tag assignments stay intact.
             foreach (var drawingObject in imported.Values) RemoveUnconditionally(project, drawingObject.Id);
             foreach (var assetId in importedSvgAssets.Values) project.TryRemoveExternalSvgAsset(assetId, out _);
+            foreach (var assetId in importedImageAssets.Values) project.TryRemoveImageAsset(assetId, out _);
+            foreach (var folderId in project.AssetFolders.Where(folder => !originalFolderIds.Contains(folder.Id)).Select(folder => folder.Id).ToArray())
+                project.TryRemoveAssetFolder(folderId);
+            var anchor = project.DrawingObjects[0];
+            project.TryApplyAssetTagEdit(anchor.Id, originalTags, anchor.AssetTagIds);
             throw;
+        }
+    }
+
+    private static void ApplyResourceMetadata(VectorProject project, string assetId, string folderPath,
+        IEnumerable<string> tagNames, IReadOnlyDictionary<string, string> folderIds, IReadOnlyDictionary<string, string> tagIds)
+    {
+        var folderId = folderPath.Length == 0 ? "" : folderIds[folderPath];
+        if (!project.TryMoveLibraryAssetToFolder(assetId, folderId)
+            || !project.TrySetLibraryAssetTags(assetId, tagNames.Select(name => tagIds[name])))
+            throw new InvalidDataException("The imported library resource metadata could not be applied.");
+    }
+
+    private static DrawingObjectSymbolPackage.ImagePackageEntry[] CaptureImageAssets(
+        VectorProject project, IEnumerable<DrawingObjectDefinition> symbols)
+    {
+        var ids = symbols.SelectMany(symbol => symbol.Scene.CreateSnapshot().BitmapObjects.Values)
+            .Select(bitmap => bitmap.ImageAssetId).Distinct(StringComparer.Ordinal);
+        var images = new List<DrawingObjectSymbolPackage.ImagePackageEntry>();
+        var folderPaths = BuildFolderPathLookup(project);
+        long totalBytes = 0;
+        foreach (var id in ids)
+        {
+            var asset = project.FindImageAsset(id)
+                ?? throw new InvalidOperationException("A symbol references a missing image library resource.");
+            ProjectTemporaryResources.RejectReparsePath(asset.SourcePath);
+            byte[] bytes;
+            using (var stream = new FileStream(asset.SourcePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                totalBytes += stream.Length;
+                if (stream.Length is <= 0 or > BitmapImageFormats.MaximumSourceBytes
+                    || totalBytes > DrawingObjectSymbolPackage.MaxDecodedBytes / 4 * 3)
+                    throw new InvalidDataException("The symbol package image resources exceed the supported size limit.");
+                bytes = new byte[checked((int)stream.Length)];
+                stream.ReadExactly(bytes);
+            }
+            var checksum = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+            if (!string.Equals(checksum, asset.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("An image resource changed since it was imported.");
+            images.Add(new DrawingObjectSymbolPackage.ImagePackageEntry
+            {
+                FolderPath = folderPaths.GetValueOrDefault(asset.AssetFolderId, ""),
+                TagNames = project.AssetTags.Where(tag => asset.AssetTagIds.Contains(tag.Id)).Select(tag => tag.Name).ToArray(),
+                Id = id, Name = asset.Name, Extension = Path.GetExtension(asset.SourcePath).ToLowerInvariant(),
+                Sha256 = checksum, Data = bytes, PixelWidth = asset.PixelWidth, PixelHeight = asset.PixelHeight,
+                NaturalPixelsPerUnit = asset.NaturalPixelsPerUnit, ImportSettings = asset.ImportSettings
+            });
+        }
+        return images.ToArray();
+    }
+
+    private static void ValidateImageAssetReferences(
+        DrawingObjectSymbolPackage package, IEnumerable<VectorSceneSnapshot> snapshots)
+    {
+        var ids = package.ImageAssets.Select(asset => asset.Id).ToHashSet(StringComparer.Ordinal);
+        var referenced = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var snapshot in snapshots)
+            foreach (var bitmap in snapshot.BitmapObjects.Values)
+            {
+                if (!ids.Contains(bitmap.ImageAssetId))
+                    throw new InvalidDataException("The symbol package is missing a referenced image. Export it again from the source project.");
+                referenced.Add(bitmap.ImageAssetId);
+            }
+        if (referenced.Count != ids.Count)
+            throw new InvalidDataException("The symbol package contains unreferenced image resources.");
+    }
+
+    private static string ImportImageAsset(VectorProject project, DrawingObjectSymbolPackage.ImagePackageEntry entry)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"v2d-symbol-image-{Guid.NewGuid():N}{entry.Extension.ToLowerInvariant()}");
+        try
+        {
+            // The project API copies these verified bytes into its owned resource storage.
+            // Deleting this interchange file cannot invalidate the imported asset.
+            using (var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                output.Write(entry.Data);
+            if (!project.TryAddImageAssetFromSource(entry.Name, path, entry.Sha256, entry.PixelWidth,
+                    entry.PixelHeight, entry.NaturalPixelsPerUnit, entry.ImportSettings, out var asset) || asset is null)
+                throw new InvalidDataException("The symbol package image resource could not be imported.");
+            asset.OriginalSourcePath = "";
+            return asset.Id;
+        }
+        finally
+        {
+            TryDelete(path, null);
         }
     }
 
@@ -172,6 +295,7 @@ internal static class DrawingObjectSymbolPackageService
         VectorProject project, IEnumerable<DrawingObjectDefinition> symbols)
     {
         var assets = new Dictionary<string, DrawingObjectSymbolPackage.ExternalSvgPackageEntry>(StringComparer.Ordinal);
+        var folderPaths = BuildFolderPathLookup(project);
         foreach (var symbol in symbols)
         {
             var snapshot = symbol.Scene.CreateSnapshot();
@@ -190,6 +314,8 @@ internal static class DrawingObjectSymbolPackageService
                 }
                 assets.Add(id, new DrawingObjectSymbolPackage.ExternalSvgPackageEntry
                 {
+                    FolderPath = folderPaths.GetValueOrDefault(asset.AssetFolderId, ""),
+                    TagNames = project.AssetTags.Where(tag => asset.AssetTagIds.Contains(tag.Id)).Select(tag => tag.Name).ToArray(),
                     Id = id, Name = asset.Name, Source = source
                 });
             }
@@ -609,7 +735,18 @@ internal static class DrawingObjectSymbolPackageService
         // metadata identifies folders by path and re-import must reuse the folder that
         // already occupies each path rather than creating a parallel copy.
         var byPath = BuildFolderPathToIdLookup(project);
-        var pending = package.Folders.Select(folder => folder.Path).ToList();
+        var paths = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var folder in package.Folders)
+        {
+            var path = folder.Path;
+            while (path.Length > 0)
+            {
+                paths.Add(path);
+                var separator = path.LastIndexOf('/');
+                path = separator < 0 ? "" : path[..separator];
+            }
+        }
+        var pending = paths.ToList();
         while (pending.Count > 0)
         {
             var progressed = false;
@@ -666,6 +803,8 @@ internal static class DrawingObjectSymbolPackageService
         var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var tag in project.AssetTags) byName[tag.Name] = tag.Id;
         if (package.Tags.Length == 0) return byName;
+        if (project.AssetTags.Count + package.Tags.Count(tag => !byName.ContainsKey(tag.Name)) > VectorProject.MaxAssetTagCount)
+            throw new InvalidDataException("The packaged asset tags would exceed the project tag limit.");
 
         var definitions = project.AssetTags
             .Select(tag => new ProjectAssetTagData(tag.Id, tag.Name, tag.ColorArgb))

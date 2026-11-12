@@ -2,6 +2,7 @@ namespace VectorAnimationEngine;
 
 internal sealed class SelectionPreferencesDialog : ModernDialogForm
 {
+    internal Func<bool>? ApplyRequested { get; set; }
     private readonly ComboBox _blackArrow = CreateBehaviorSelector();
     private readonly ComboBox _whiteArrow = CreateBehaviorSelector();
     private readonly ModernToggleSwitch _enterSymbols = new() { Text = "Double-click to enter symbol editing" };
@@ -56,7 +57,8 @@ internal sealed class SelectionPreferencesDialog : ModernDialogForm
         layout.SetColumnSpan(reset, 2);
         scroll.Content.Controls.Add(layout);
         DialogContent.Controls.Add(scroll);
-        AcceptButton = AddDialogAction("OK", DialogResult.OK, DialogActionStyle.Primary);
+        AcceptButton = AddDialogAction("Apply", DialogResult.OK, DialogActionStyle.Primary,
+            () => ApplyRequested?.Invoke() ?? true);
         CancelButton = AddDialogAction("Cancel", DialogResult.Cancel);
         Bind(settings.Normalized());
         UiLocalization.Watch(this);

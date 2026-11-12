@@ -2,65 +2,41 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class MainForm
 {
+    private IReadOnlyList<string>? LibraryAssetTagIds(string assetId) =>
+        FindVaultSymbol(assetId)?.AssetTagIds
+        ?? _project.FindImageAsset(assetId)?.AssetTagIds
+        ?? _project.FindExternalSvgAsset(assetId)?.AssetTagIds;
+
     private void SetDrawingObjectAssetTagAssignment(string drawingObjectId, string tagId, bool assigned)
     {
-        var drawingObject = _drawingObjects.FirstOrDefault(item =>
-            string.Equals(item.Id, drawingObjectId, StringComparison.Ordinal));
-        if (drawingObject is null
-            || !_project.AssetTags.Any(tag => string.Equals(tag.Id, tagId, StringComparison.Ordinal)))
+        var current = LibraryAssetTagIds(drawingObjectId);
+        if (current is null || !_project.AssetTags.Any(tag => tag.Id == tagId)) return;
+        var next = current.ToHashSet(StringComparer.Ordinal);
+        if (!(assigned ? next.Add(tagId) : next.Remove(tagId))) return;
+        ExecuteLibraryPanelCommand(() =>
         {
-            AppLog.Warn($"Unable to set asset tag because the symbol or tag no longer exists: {drawingObjectId}/{tagId}");
-            return;
-        }
-
-        var assignedTagIds = drawingObject.AssetTagIds.ToHashSet(StringComparer.Ordinal);
-        var changed = assigned ? assignedTagIds.Add(tagId) : assignedTagIds.Remove(tagId);
-        if (!changed) return;
-
-        var tags = _project.AssetTags
-            .Select(tag => new ProjectAssetTagData(tag.Id, tag.Name, tag.ColorArgb))
-            .ToArray();
-        if (!_project.TryApplyAssetTagEdit(drawingObject.Id, tags, assignedTagIds))
-        {
-            AppLog.Warn($"Unable to set asset tag assignment for symbol: {drawingObject.Id}");
-            return;
-        }
-
-        AppLog.Info($"{(assigned ? "Assigned" : "Unassigned")} asset tag for symbol: {drawingObject.Name}");
+            if (!_project.TrySetLibraryAssetTags(drawingObjectId, next))
+                throw new InvalidOperationException("The asset tag changes could not be applied.");
+        });
     }
 
-    private void EditDrawingObjectAssetTags(string drawingObjectId)
+    private void EditDrawingObjectAssetTags(string drawingObjectId) => EditLibraryAssetTags([drawingObjectId]);
+
+    private void EditLibraryAssetTags(IEnumerable<string> assetIds)
     {
-        var drawingObject = _drawingObjects.FirstOrDefault(item =>
-            string.Equals(item.Id, drawingObjectId, StringComparison.Ordinal));
-        if (drawingObject is null)
+        var ids = assetIds.Distinct(StringComparer.Ordinal).Where(id => LibraryAssetTagIds(id) is not null).ToArray();
+        if (ids.Length == 0) return;
+        var common = LibraryAssetTagIds(ids[0])!.ToHashSet(StringComparer.Ordinal);
+        foreach (var id in ids.Skip(1)) common.IntersectWith(LibraryAssetTagIds(id)!);
+        if (!LibraryVaultPanel.TryEditAssetTags(this, _project, common.ToArray(), out var tags,
+                out var assigned, ids.Length)) return;
+        var definitionsUnchanged = tags.SequenceEqual(_project.AssetTags.Select(tag =>
+            new ProjectAssetTagData(tag.Id, tag.Name, tag.ColorArgb)));
+        if (definitionsUnchanged && ids.All(id => LibraryAssetTagIds(id)!.SequenceEqual(assigned))) return;
+        ExecuteLibraryPanelCommand(() =>
         {
-            AppLog.Warn($"Unable to edit asset tags because the symbol no longer exists: {drawingObjectId}");
-            return;
-        }
-
-        if (!LibraryVaultPanel.TryEditAssetTags(
-                this,
-                _project,
-                drawingObject,
-                out var tags,
-                out var assignedTagIds))
-        {
-            return;
-        }
-
-        if (!_project.TryApplyAssetTagEdit(drawingObject.Id, tags, assignedTagIds))
-        {
-            AppLog.Warn($"Unable to apply asset tag changes for symbol: {drawingObject.Id}");
-            ModernMessageDialog.Show(
-                this,
-                UiLocalization.T("The asset tag changes could not be applied."),
-                UiLocalization.T("Asset Tags"),
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            return;
-        }
-
-        AppLog.Info($"Updated asset tags for symbol: {drawingObject.Name}");
+            if (!_project.TryApplyLibraryAssetTagEdit(ids, tags, assigned))
+                throw new InvalidOperationException("The asset tag changes could not be applied.");
+        });
     }
 }

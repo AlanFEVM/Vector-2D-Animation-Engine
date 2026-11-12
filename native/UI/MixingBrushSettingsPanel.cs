@@ -8,7 +8,7 @@ internal sealed class MixingBrushSettingsPanel : UserControl
     private const int PanelHeight = PanelPaddingTop
         + PanelPaddingBottom
         + Theme.InspectorTitleHeight
-        + Theme.InspectorRowHeight * PanelRowCount;
+        + 40 + 80 * (PanelRowCount - 1);
 
     private readonly SegmentedButton _opticalMode = new() { Text = "Optical" };
     private readonly SegmentedButton _pigmentMode = new() { Text = "Pigment" };
@@ -16,11 +16,12 @@ internal sealed class MixingBrushSettingsPanel : UserControl
     private readonly ModernSlider _viscosity = new();
     private readonly ModernSlider _paintLoad = new();
     private readonly ModernSlider _influence = new();
-    private readonly Label _strengthValue = CreateValueLabel("Mixing strength value");
-    private readonly Label _viscosityValue = CreateValueLabel("Mixing viscosity value");
-    private readonly Label _paintLoadValue = CreateValueLabel("Mixing paint load value");
-    private readonly Label _influenceValue = CreateValueLabel("Mixing influence value");
+    private readonly ModernNumericUpDown _strengthValue = CreateValueInput("Mixing strength value");
+    private readonly ModernNumericUpDown _viscosityValue = CreateValueInput("Mixing viscosity value");
+    private readonly ModernNumericUpDown _paintLoadValue = CreateValueInput("Mixing paint load value");
+    private readonly ModernNumericUpDown _influenceValue = CreateValueInput("Mixing influence value");
     private BrushMixingMode _mode = BrushMixingMode.Optical;
+    private MixingBrushSettings _settings = new(BrushMixingMode.Optical, 0, 0, 0, 0);
     private bool _updating;
 
     public MixingBrushSettingsPanel()
@@ -31,7 +32,7 @@ internal sealed class MixingBrushSettingsPanel : UserControl
         Font = Theme.UiFont();
         Height = PanelHeight;
         MinimumSize = new Size(0, PanelHeight);
-        Padding = Theme.InspectorSectionPadding;
+        Padding = new Padding(16, Theme.InspectorSectionPaddingVertical, 16, Theme.InspectorSectionPaddingVertical);
         AccessibleRole = AccessibleRole.Pane;
         AccessibleName = "Mixing brush settings";
 
@@ -47,12 +48,12 @@ internal sealed class MixingBrushSettingsPanel : UserControl
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76));
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 40));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0));
         for (var row = 0; row < content.RowCount; row++)
         {
-            content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, row == 0 ? 40 : 80));
         }
 
         var modeSelector = new TableLayoutPanel
@@ -116,22 +117,20 @@ internal sealed class MixingBrushSettingsPanel : UserControl
         _viscosity.ValueChanged += (_, _) => SliderValueChanged(_viscosity, _viscosityValue);
         _paintLoad.ValueChanged += (_, _) => SliderValueChanged(_paintLoad, _paintLoadValue);
         _influence.ValueChanged += (_, _) => SliderValueChanged(_influence, _influenceValue);
+        HookExactValue(_strengthValue, _strength);
+        HookExactValue(_viscosityValue, _viscosity);
+        HookExactValue(_paintLoadValue, _paintLoad);
+        HookExactValue(_influenceValue, _influence);
 
         Controls.Add(content);
         Controls.Add(title);
         RefreshModeButtons();
-        RefreshValueLabels();
         ResumeLayout(performLayout: true);
     }
 
     public event EventHandler? SettingsChanged;
 
-    public MixingBrushSettings Settings => new(
-        _mode,
-        _strength.Value / 100f,
-        _viscosity.Value / 100f,
-        _paintLoad.Value / 100f,
-        _influence.Value / 100f);
+    public MixingBrushSettings Settings => _settings with { Mode = _mode };
 
     public int PreferredPanelHeight => PanelHeight;
 
@@ -143,12 +142,16 @@ internal sealed class MixingBrushSettingsPanel : UserControl
             _mode = settings.Mode == BrushMixingMode.Pigment
                 ? BrushMixingMode.Pigment
                 : BrushMixingMode.Optical;
-            _strength.Value = ToPercent(settings.Strength);
-            _viscosity.Value = ToPercent(settings.Viscosity);
-            _paintLoad.Value = ToPercent(settings.PaintLoad);
-            _influence.Value = ToPercent(settings.Influence);
+            _settings = new(_mode, settings.Strength, settings.Viscosity, settings.PaintLoad, settings.Influence);
+            _strengthValue.Value = ExactPercent(_settings.Strength);
+            _viscosityValue.Value = ExactPercent(_settings.Viscosity);
+            _paintLoadValue.Value = ExactPercent(_settings.PaintLoad);
+            _influenceValue.Value = ExactPercent(_settings.Influence);
+            _strength.Value = ToPercent(_settings.Strength);
+            _viscosity.Value = ToPercent(_settings.Viscosity);
+            _paintLoad.Value = ToPercent(_settings.PaintLoad);
+            _influence.Value = ToPercent(_settings.Influence);
             RefreshModeButtons();
-            RefreshValueLabels();
         }
         finally
         {
@@ -190,27 +193,47 @@ internal sealed class MixingBrushSettingsPanel : UserControl
         TableLayoutPanel content,
         string label,
         ModernSlider slider,
-        Label value,
+        ModernNumericUpDown value,
         int row)
     {
-        content.Controls.Add(InspectorModuleStyle.CreateFieldLabel(label), 0, row);
-        content.Controls.Add(slider, 1, row);
-        content.Controls.Add(value, 2, row);
+        var fields = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, Margin = Padding.Empty, ColumnCount = 2, RowCount = 2
+        };
+        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
+        fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        fields.Controls.Add(InspectorModuleStyle.CreateFieldLabel(label), 0, 0);
+        fields.Controls.Add(value, 1, 0);
+        fields.Controls.Add(slider, 0, 1);
+        fields.SetColumnSpan(slider, 2);
+        content.Controls.Add(fields, 0, row);
+        content.SetColumnSpan(fields, 3);
     }
 
-    private static Label CreateValueLabel(string accessibleName)
+    private static ModernNumericUpDown CreateValueInput(string accessibleName)
     {
-        var label = InspectorModuleStyle.CreateTextLabel();
-        label.Text = "0%";
-        label.Dock = DockStyle.Fill;
-        label.BackColor = Color.Transparent;
-        label.ForeColor = Theme.PanelSecondaryText;
-        label.Font = Theme.UiFont(Theme.InspectorLabelFontSize);
-        label.TextAlign = ContentAlignment.MiddleRight;
-        label.Margin = Padding.Empty;
-        label.AccessibleName = accessibleName;
-        label.AccessibleRole = AccessibleRole.StaticText;
+        var label = new ModernNumericUpDown
+        {
+            Minimum = 0, Maximum = 100, DecimalPlaces = 2, Increment = 0.1m,
+            Suffix = "%", ShowSuffix = true, Dock = DockStyle.Fill, AccessibleName = accessibleName
+        };
+        InspectorModuleStyle.StyleField(label);
         return label;
+    }
+
+    private void HookExactValue(ModernNumericUpDown input, ModernSlider slider)
+    {
+        input.ValueChanged += (_, _) =>
+        {
+            if (_updating) return;
+            _updating = true;
+            try { slider.Value = (int)Math.Round(input.Value); }
+            finally { _updating = false; }
+            UpdateSetting(input);
+            SettingsChanged?.Invoke(this, EventArgs.Empty);
+        };
     }
 
     private void SelectMode(BrushMixingMode mode)
@@ -221,10 +244,14 @@ internal sealed class MixingBrushSettingsPanel : UserControl
         if (!_updating) SettingsChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private void SliderValueChanged(ModernSlider slider, Label value)
+    private void SliderValueChanged(ModernSlider slider, ModernNumericUpDown value)
     {
-        value.Text = $"{slider.Value}%";
-        if (!_updating) SettingsChanged?.Invoke(this, EventArgs.Empty);
+        if (_updating) return;
+        _updating = true;
+        try { value.Value = slider.Value; }
+        finally { _updating = false; }
+        UpdateSetting(value);
+        SettingsChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void RefreshModeButtons()
@@ -235,13 +262,16 @@ internal sealed class MixingBrushSettingsPanel : UserControl
         _pigmentMode.Invalidate();
     }
 
-    private void RefreshValueLabels()
+    private void UpdateSetting(ModernNumericUpDown input)
     {
-        _strengthValue.Text = $"{_strength.Value}%";
-        _viscosityValue.Text = $"{_viscosity.Value}%";
-        _paintLoadValue.Text = $"{_paintLoad.Value}%";
-        _influenceValue.Text = $"{_influence.Value}%";
+        var value = (float)(input.Value / 100m);
+        if (input == _strengthValue) _settings = _settings with { Strength = value };
+        else if (input == _viscosityValue) _settings = _settings with { Viscosity = value };
+        else if (input == _paintLoadValue) _settings = _settings with { PaintLoad = value };
+        else if (input == _influenceValue) _settings = _settings with { Influence = value };
     }
+
+    private static decimal ExactPercent(float value) => (decimal)Math.Clamp(value, 0, 1) * 100m;
 
     private static int ToPercent(float value)
     {

@@ -2539,17 +2539,20 @@ internal sealed partial class StageControl
         return hash;
     }
 
-    private object? _interactiveLayerStateKey;
+    private readonly record struct InteractiveLayerRenderStateKey(VectorScene Scene,
+        long GeometryRevision, long SummaryRevision, long ActiveContentRevision,
+        long LayerPresentationRevision, int Frame, long NavigationContentRevision);
+    private InteractiveLayerRenderStateKey? _interactiveLayerStateKey;
     private ulong _interactiveLayerStateHash;
 
     private ulong GetInteractiveLayerRenderState(VectorScene scene)
     {
-        // Camera and idle refreshes preserve the content revision. Editing
-        // layer state invalidates it through ordinary stage invalidation; do
+        // Camera and idle refreshes preserve the content revision. Model
+        // setters and ordinary stage invalidation notify layer-state edits; do
         // not hash thousands of layer names and exposures on each idle repaint.
-        object key = (scene, scene.GeometryRevision, scene.SummaryRevision, scene.ActiveContentRevision,
+        var key = new InteractiveLayerRenderStateKey(scene, scene.GeometryRevision, scene.SummaryRevision, scene.ActiveContentRevision, scene.LayerPresentationRevision,
             Frame, _referenceNavigationContentRevision);
-        if (!Equals(key, _interactiveLayerStateKey))
+        if (_interactiveLayerStateKey != key)
         {
             _interactiveLayerStateKey = key;
             _interactiveLayerStateHash = GetReference3DLayerRenderState(scene, Frame);

@@ -313,14 +313,10 @@ internal sealed partial class TimelineStrip
                 x += tab.Bounds.Width + ScaleTimelineMetric(4);
             }
         }
-        foreach (var tab in paintTabs)
+        foreach (var paintTab in paintTabs.OrderBy(tab => _draggingTabGroup && tab.Id == _pressedTabGroupId ? 0 : 1))
         {
-            if (_draggingTabGroup && tab.Id == _pressedTabGroupId)
-            {
-                using var placeholder = new Pen(Theme.ReadableUiColor(background, Theme.Border)) { DashStyle = DashStyle.Dot };
-                graphics.DrawRectangle(placeholder, Rectangle.Inflate(tab.Bounds, -1, -1));
-                continue;
-            }
+            var tab = _draggingTabGroup && paintTab.Id == _pressedTabGroupId
+                ? paintTab with { Bounds = _tabGroupDragSourceBounds } : paintTab;
             Color? customColor = tab.Id == AnimationTimeline.AllTabGroupId ? null : GetTabGroupDisplayColor(tab.Id);
             var active = string.Equals(activeId, tab.Id, StringComparison.Ordinal);
             var hovered = string.Equals(_hoveredTabGroupId, tab.Id, StringComparison.Ordinal)
@@ -363,6 +359,11 @@ internal sealed partial class TimelineStrip
                 textBounds,
                 textColor,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
+            if (_draggingTabGroup && tab.Id == _pressedTabGroupId)
+            {
+                using var originVeil = new SolidBrush(Color.FromArgb(191, background));
+                graphics.FillRectangle(originVeil, tab.Bounds);
+            }
             if (Focused && ShowFocusCues && string.Equals(_focusedTabGroupId, tab.Id, StringComparison.Ordinal))
                 Theme.DrawKeyboardFocus(graphics, Rectangle.Inflate(tab.Bounds, -ScaleTimelineMetric(3), -ScaleTimelineMetric(3)), textColor, fill);
         }
@@ -732,6 +733,7 @@ internal sealed partial class TimelineStrip
     {
         var timeline = _timeline;
         if (!timeline.TabGroups.Any(group => group.Id == id)) return;
+        var originalColor = timeline.TabGroups.Single(group => group.Id == id).ColorArgb;
         using var picker = new ProfessionalColorPickerDialog(
             GetTabGroupColor(id) ?? Theme.Accent, UiLocalization.T("Tab Group Color"));
         picker.ColorChanged += (_, _) =>
@@ -739,7 +741,11 @@ internal sealed partial class TimelineStrip
             if (ReferenceEquals(timeline, _timeline)) timeline.SetTabGroupColor(id, picker.Color.ToArgb());
         };
         TabGroupEditStarting?.Invoke(this, EventArgs.Empty);
-        try { picker.ShowDialog(DialogOwner); }
+        try
+        {
+            if (picker.ShowDialog(DialogOwner) != DialogResult.OK && ReferenceEquals(timeline, _timeline))
+                timeline.SetTabGroupColor(id, originalColor);
+        }
         finally { TabGroupEditCompleted?.Invoke(this, EventArgs.Empty); }
     }
 

@@ -37,7 +37,20 @@ internal sealed partial class StageControl
 
     private void TickZoomLodPreviewIdle()
     {
-        var remaining = _referenceNavigationSettleDeadline - System.Diagnostics.Stopwatch.GetTimestamp();
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (_gdiRasterZoomPreviewActive)
+        {
+            var rasterRemaining = _gdiRasterZoomSettleDeadline - now;
+            if (rasterRemaining > 0)
+            {
+                _zoomLodPreviewTimer.Interval = Math.Max(1,
+                    (int)Math.Ceiling(rasterRemaining * 1000d / System.Diagnostics.Stopwatch.Frequency));
+                return;
+            }
+            EndZoomLodPreview(invalidate: true);
+            return;
+        }
+        var remaining = _referenceNavigationSettleDeadline - now;
         if (_referenceNavigationPreviewActive && remaining > 0)
         {
             _zoomLodPreviewTimer.Interval = Math.Max(1,

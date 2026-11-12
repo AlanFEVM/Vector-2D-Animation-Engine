@@ -18,18 +18,21 @@ internal class ProfessionalColorPickerDialog : ModernDialogForm
     private Color _color;
 
     public ProfessionalColorPickerDialog(Color color, string title = "Color")
-        : base(title, new Size(446, 462))
+        : base(title, new Size(446, 520))
     {
         _initialColor = Opaque(color);
         _color = _initialColor;
-        MinimumSize = new Size(390, 430);
+        MinimumSize = new Size(390, 488);
         AccessibleName = title;
 
         BuildUi();
         WireEvents();
         SetColor(_initialColor, raiseChanged: false);
 
-        HideDialogActions();
+        var apply = AddDialogAction("OK", DialogResult.OK, DialogActionStyle.Primary, TryCommitHex);
+        var cancel = AddDialogAction("Cancel", DialogResult.Cancel);
+        AcceptButton = apply;
+        CancelButton = cancel;
         UiLocalization.Watch(this);
     }
 
@@ -43,10 +46,16 @@ internal class ProfessionalColorPickerDialog : ModernDialogForm
     {
         if (keyData == Keys.Escape)
         {
-            Close();
+            RequestDialogResult(DialogResult.Cancel);
             return true;
         }
         return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (DialogResult != DialogResult.OK) SetColor(_initialColor);
+        base.OnFormClosing(e);
     }
 
     private void BuildUi()

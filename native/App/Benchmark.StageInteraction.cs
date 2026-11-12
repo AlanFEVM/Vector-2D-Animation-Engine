@@ -7848,8 +7848,7 @@ internal static partial class Benchmark
             var firstFrameTotalMilliseconds = 0d;
             var firstFrameInputMilliseconds = 0d;
             var firstFrameRenderMilliseconds = 0d;
-            var previewUsedTiles = false;
-            var previewSkippedDetails = false;
+            var previewRetainedContent = true;
             for (var frame = 0; frame < 72; frame++)
             {
                 var before = stage.ScreenToWorld(anchor);
@@ -7858,8 +7857,7 @@ internal static partial class Benchmark
                 var inputTime = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
                 var overlayStarted = Stopwatch.GetTimestamp();
                 stage.Refresh();
-                previewUsedTiles |= stage.ZoomLodPreviewActive && stage.LastStats.TileLod;
-                previewSkippedDetails |= stage.ZoomLodPreviewActive && stage.LastDirect2DLodDetailObjectDraws == 0;
+                previewRetainedContent &= stage.LastStats.DrawnObjects == owners.Count;
                 var refreshMilliseconds = Stopwatch.GetElapsedTime(overlayStarted).TotalMilliseconds;
                 Application.DoEvents();
                 var totalMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
@@ -7881,8 +7879,8 @@ internal static partial class Benchmark
             Console.WriteLine($"dense_line_wheel:avg_ms={timings.Average():F3},p95_ms={timings[56]:F3},max_ms={timings[^1]:F3},input_avg_ms={inputTimings.Average():F3},drawn={stage.LastStats.DrawnObjects},size={stage.Width}x{stage.Height},gpu={renderer.GpuAdapterName}");
             Console.WriteLine($"dense_line_wheel_first_frame:total_ms={firstFrameTotalMilliseconds:F3},input_ms={firstFrameInputMilliseconds:F3},render_ms={firstFrameRenderMilliseconds:F3}");
             Console.WriteLine($"dense_line_wheel_geometry_builds={renderer.SelectionGeometryBuilds - builds},reuses={renderer.SelectionGeometryReuses}");
-            AssertTimeline(previewUsedTiles && previewSkippedDetails,
-                "Dense wheel zoom did not use tile preview without redrawing selected objects.");
+            AssertTimeline(previewRetainedContent && renderer.SelectionGeometryBuilds == builds,
+                "Dense wheel zoom omitted scene content or rebuilt stable selection geometry.");
             AssertTimeline(renderer.SelectionCommandBuilds == selectionCommandBuilds
                 && renderer.SelectionCommandReuses - selectionCommandReuses >= 60,
                 "Dense wheel zoom rebuilt its selection command instead of reusing the cached overlay.");
@@ -8413,13 +8411,14 @@ internal static partial class Benchmark
             timings.Sort();
             var p95 = timings[(int)Math.Ceiling(timings.Count * 0.95) - 1];
             Console.WriteLine($"dense_zoom_selected:avg_ms={timings.Average():F3},p95_ms={p95:F3},max_ms={timings[^1]:F3},drawn={stage.LastStats.DrawnObjects},frames={timings.Count}");
+            Console.WriteLine($"dense_zoom_measurement_commands_avg_ms={commandTime / timings.Count:F3},present_avg_ms={presentTime / timings.Count:F3},geometry_builds={renderer.SelectionGeometryBuilds - geometryBuilds},command_builds={renderer.SelectionCommandBuilds - commandBuilds}");
             Console.WriteLine($"dense_selection_zoom_budget_met={(timings.Average() <= 16.667 && p95 <= 16.667).ToString().ToLowerInvariant()}");
             AssertTimeline(timings.Average() <= 16.667 && p95 <= 16.667,
                 "Dense selected-object zoom exceeded the 60 FPS frame-time budget.");
             AssertTimeline(renderer.SelectionCommandBuilds == commandBuilds,
                 "Dense zoom rebuilt unchanged selection commands during wheel frames.");
-            AssertTimeline(stage.LastStats.TileLod && renderer.LastLodDetailObjectDraws == 0,
-                "Dense all-selected zoom bypassed tile preview or redrew selected object details.");
+            AssertTimeline(stage.LastStats.DrawnObjects == owners.Count,
+                "Dense all-selected zoom omitted authored objects from the current full-geometry path.");
             // Exercise the real idle-completion path instead of explicitly invalidating
             // unchanged world-space geometry with Stage.Invalidate().
             RequireMethod(typeof(StageControl), "EndZoomLodPreview").Invoke(stage, [true]);

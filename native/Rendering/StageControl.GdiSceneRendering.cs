@@ -192,12 +192,64 @@ internal sealed partial class StageControl : Control
             padding = new SymbolFilterPadding(padding.Left + childPadding.Left, padding.Top + childPadding.Top,
                 padding.Right + childPadding.Right, padding.Bottom + childPadding.Bottom);
         }
+        // Filter padding follows the zoom continuously, so a one-pixel rounding change
+        // would rebuild every allocated surface on each wheel step. Reserve a small
+        // headroom instead: the extra transparent margin cannot alter rendered pixels,
+        // and the same compositor then survives a whole zoom gesture.
+        padding = HeadroomFilterPadding(padding);
+        // The GDI base frame keeps a pan margin around the viewport. Layer surfaces
+        // must cover that margin so a reused base frame can be shifted without
+        // exposing uncomposited pixels. The extra margin is transparent.
+        if (_gdiBaseFrameOverscan > 0)
+        {
+            var margin = _gdiBaseFrameOverscan;
+            padding = new SymbolFilterPadding(
+                padding.Left + margin,
+                padding.Top + margin,
+                padding.Right + margin,
+                padding.Bottom + margin);
+        }
+        // Keep the composed surface inside a fixed memory budget. Normal zoom
+        // levels keep the exact padding; extreme zoom shrinks it and, as a last
+        // resort, drops the filters so drawing stays responsive instead of
+        // allocating hundreds of megabytes.
+        var budget = LayerFilterBounds.ApplyCompositeBudget(size, padding);
+        var filterScale = ActiveViewZoom * budget.FilterScaleFactor;
         if (_layerBlendCompositor is not null && _layerBlendCompositor.Size == size
-            && _layerBlendCompositor.Padding == padding
-            && _layerBlendCompositor.FilterPixelScale == ActiveViewZoom) return _layerBlendCompositor;
+            && _layerBlendCompositor.FiltersEnabled == budget.FiltersEnabled
+            && PaddingReusable(_layerBlendCompositor.Padding, budget.Padding))
+        {
+            // Zoom only changes the filter sampling scale while the already reserved
+            // margin still covers the request. Keep the allocated surfaces and pixel
+            // buffers instead of rebuilding them for every wheel step.
+            _layerBlendCompositor.UpdateFilterPixelScale(filterScale);
+            return _layerBlendCompositor;
+        }
         _layerBlendCompositor?.Dispose();
-        _layerBlendCompositor = new LayerBlendCompositor(size, padding, ActiveViewZoom);
+        _layerBlendCompositor = new LayerBlendCompositor(size, budget.Padding, filterScale, budget.FiltersEnabled);
         return _layerBlendCompositor;
+    }
+
+    private static SymbolFilterPadding HeadroomFilterPadding(SymbolFilterPadding padding)
+    {
+        static int Grow(int value) => value <= 0 ? 0 : value + Math.Max(2, value / 4);
+        return new SymbolFilterPadding(
+            Grow(padding.Left),
+            Grow(padding.Top),
+            Grow(padding.Right),
+            Grow(padding.Bottom));
+    }
+
+    private static bool PaddingReusable(SymbolFilterPadding retained, SymbolFilterPadding requested)
+    {
+        // A larger reserved margin is harmless, but keep the retained surface from
+        // staying far larger than the current zoom needs after a long zoom-out.
+        static bool Reusable(int retainedSide, int requestedSide) =>
+            retainedSide >= requestedSide && retainedSide <= requestedSide * 2 + 8;
+        return Reusable(retained.Left, requested.Left)
+            && Reusable(retained.Top, requested.Top)
+            && Reusable(retained.Right, requested.Right)
+            && Reusable(retained.Bottom, requested.Bottom);
     }
 
     private void DrawLodDetailObjects(Graphics graphics)
@@ -2207,19 +2259,20 @@ internal sealed partial class StageControl : Control
             return;
         }
 
-        if (origin.Y >= 0 && origin.Y <= Height)
+        if (origin.Y >= GdiBaseRenderTop && origin.Y <= GdiBaseRenderBottom)
         {
             _gridPen.Color = Color.FromArgb(PlanarGridAlpha(205), 214, 82, 82);
             _gridPen.Width = 1.6f;
-            g.DrawLine(_gridPen, 0, origin.Y, Width, origin.Y);
+            g.DrawLine(_gridPen, GdiBaseRenderLeft, origin.Y, GdiBaseRenderRight, origin.Y);
         }
-        if (origin.X >= 0 && origin.X <= Width)
+        if (origin.X >= GdiBaseRenderLeft && origin.X <= GdiBaseRenderRight)
         {
             _gridPen.Color = Color.FromArgb(PlanarGridAlpha(205), 82, 190, 122);
             _gridPen.Width = 1.6f;
-            g.DrawLine(_gridPen, origin.X, 0, origin.X, Height);
+            g.DrawLine(_gridPen, origin.X, GdiBaseRenderTop, origin.X, GdiBaseRenderBottom);
         }
-        if (origin.X >= 0 && origin.X <= Width && origin.Y >= 0 && origin.Y <= Height)
+        if (origin.X >= GdiBaseRenderLeft && origin.X <= GdiBaseRenderRight
+            && origin.Y >= GdiBaseRenderTop && origin.Y <= GdiBaseRenderBottom)
         {
             var previousSmoothing = g.SmoothingMode;
             g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -2327,7 +2380,8 @@ internal sealed partial class StageControl : Control
                 WorldToScreen(segment.End.X, segment.End.Y));
         }
 
-        if (origin.X >= 0 && origin.X <= Width && origin.Y >= 0 && origin.Y <= Height)
+        if (origin.X >= GdiBaseRenderLeft && origin.X <= GdiBaseRenderRight
+            && origin.Y >= GdiBaseRenderTop && origin.Y <= GdiBaseRenderBottom)
         {
             graphics.FillEllipse(BrushFor(Color.FromArgb(PlanarGridAlpha(230), 224, 232, 234).ToArgb()), origin.X - 3, origin.Y - 3, 6, 6);
             _gridPen.Color = Color.FromArgb(PlanarGridAlpha(235), 22, 26, 29);
@@ -2343,6 +2397,11 @@ internal sealed partial class StageControl : Control
             (float)(origin.X + Math.Cos(angle) * radius),
             (float)(origin.Y + Math.Sin(angle) * radius));
     }
+
+    private int GdiBaseRenderLeft => _gdiBaseFrameOverscan > 0 ? -_gdiBaseFrameOverscan : 0;
+    private int GdiBaseRenderTop => _gdiBaseFrameOverscan > 0 ? -_gdiBaseFrameOverscan : 0;
+    private int GdiBaseRenderRight => Width + Math.Max(0, _gdiBaseFrameOverscan);
+    private int GdiBaseRenderBottom => Height + Math.Max(0, _gdiBaseFrameOverscan);
 
     private void DrawWorldGridLines(
         Graphics graphics,
@@ -2369,16 +2428,16 @@ internal sealed partial class StageControl : Control
                 continue;
             }
             var position = vertical ? WorldToScreen((float)world, 0).X : WorldToScreen(0, (float)world).Y;
-            if (vertical && (position < -style.Width || position > Width + style.Width)
-                || !vertical && (position < -style.Width || position > Height + style.Width))
+            if (vertical && (position < GdiBaseRenderLeft - style.Width || position > GdiBaseRenderRight + style.Width)
+                || !vertical && (position < GdiBaseRenderTop - style.Width || position > GdiBaseRenderBottom + style.Width))
             {
                 continue;
             }
 
             _gridPen.Color = style.Color;
             _gridPen.Width = style.Width;
-            if (vertical) graphics.DrawLine(_gridPen, position, 0, position, Height);
-            else graphics.DrawLine(_gridPen, 0, position, Width, position);
+            if (vertical) graphics.DrawLine(_gridPen, position, GdiBaseRenderTop, position, GdiBaseRenderBottom);
+            else graphics.DrawLine(_gridPen, GdiBaseRenderLeft, position, GdiBaseRenderRight, position);
         }
     }
 

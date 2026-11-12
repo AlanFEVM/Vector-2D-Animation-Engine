@@ -15,7 +15,8 @@ internal sealed partial class MainForm : Form
         DrawingObjectInstanceDefinition[]? SceneInstanceSnapshot,
         SceneLightDefinition[]? SceneLightSnapshot,
         SceneLayerSnapshot? SceneLayerSnapshot,
-        TimelineSelectionSnapshot TimelineSelection);
+        TimelineSelectionSnapshot TimelineSelection,
+        SceneShotSnapshot[]? ShotSnapshot = null);
 
     private VectorScene?[] _sceneMaskTimelineClipboardSources = [];
     private readonly Dictionary<object, long> _undoSequenceByEntry = new(ReferenceEqualityComparer.Instance);
@@ -1769,7 +1770,8 @@ internal sealed partial class MainForm : Form
                 sceneDefinition?.CreateInstanceSnapshot(),
                 sceneDefinition?.Lights.Select(light => light.Clone()).ToArray(),
                 sceneDefinition?.CreateLayerSnapshot(),
-                _timeline.CaptureSelectionSnapshot());
+                _timeline.CaptureSelectionSnapshot(),
+                sceneDefinition?.CreateShotSnapshot());
 
             _timelineClipboard = new TimelineFrameClipboard
             {
@@ -1830,6 +1832,10 @@ internal sealed partial class MainForm : Form
 
         if (context is SceneDefinition sceneDefinition)
         {
+            var sourceCamera = sceneDefinition.FindShot(sourceTrack.TargetId);
+            var destinationCamera = sceneDefinition.FindShot(destinationTrack.TargetId);
+            if (sourceCamera is not null || destinationCamera is not null)
+                return source.IsCamera && sourceCamera is not null && destinationCamera is not null;
             var sourceLight = sceneDefinition.FindLight(sourceTrack.TargetId);
             var destinationLight = sceneDefinition.FindLight(destinationTrack.TargetId);
             if (sourceLight is not null || destinationLight is not null)
@@ -1877,6 +1883,7 @@ internal sealed partial class MainForm : Form
                 sceneDefinition.RestoreLights(state.SceneLightSnapshot, lightsWerePresent: true);
                 _selectedSceneLightId = string.Empty;
             }
+            if (state.ShotSnapshot is not null) sceneDefinition.RestoreShotSnapshot(state.ShotSnapshot);
             if (state.SceneTimelineSnapshot is not null) sceneDefinition.Timeline.RestoreSnapshot(state.SceneTimelineSnapshot);
         }
         else if (drawingScene is not null && state.DrawingSnapshot is not null)
@@ -1970,7 +1977,9 @@ internal sealed partial class MainForm : Form
                 var evaluatedFrame = Math.Min(cell.Frame, track.Duration - 1);
                 var exposure = track.EvaluateExposure(evaluatedFrame);
                 var sourceLayer = drawingScene is null ? -1 : Array.IndexOf(drawingScene.LayerIds, track.TargetId);
-                var sourceKind = sceneDefinition?.ResolveKeyframeKindForLayerContent(
+                var sourceCamera = sceneDefinition?.FindShot(track.TargetId);
+                var sourceKind = sourceCamera is not null ? exposure.SourceKind ?? TimelineKeyframeKind.Blank
+                    : sceneDefinition?.ResolveKeyframeKindForLayerContent(
                     track.TargetId,
                     exposure.SourceKind ?? TimelineKeyframeKind.Blank,
                     cell.Frame) ?? exposure.SourceKind ?? TimelineKeyframeKind.Blank;
@@ -2002,7 +2011,11 @@ internal sealed partial class MainForm : Form
                         entry => entry.State,
                         StringComparer.Ordinal),
                     sourceLight?.Kind,
-                    sourceLightSettings)
+                    sourceLightSettings,
+                    sourceCamera is not null,
+                    sourceCamera is not null && exposure.HasContent
+                        && sceneDefinition!.TryEvaluateShotSettings(sourceCamera.Id, evaluatedFrame, out var cameraSettings)
+                            ? cameraSettings : null)
                 {
                     InstanceStateEntries = instanceStateEntries
                 };
@@ -2082,6 +2095,7 @@ internal sealed partial class MainForm : Form
         var sceneLightSnapshot = undoState?.SceneLightSnapshot ?? sceneDefinition?.Lights.Select(light => light.Clone()).ToArray();
         var timelineSelection = undoState?.TimelineSelection ?? _timeline.CaptureSelectionSnapshot();
         var sceneLayerSnapshot = undoState?.SceneLayerSnapshot ?? sceneDefinition?.CreateLayerSnapshot();
+        var shotSnapshot = undoState?.ShotSnapshot ?? sceneDefinition?.CreateShotSnapshot();
         var changed = false;
         var pastedCells = new List<TimelineFrameCell>();
 
@@ -2097,6 +2111,20 @@ internal sealed partial class MainForm : Form
                     int.MaxValue);
                 if (destinationTrackIndex < 0 || destinationTrackIndex >= timeline.Tracks.Count) continue;
                 var track = timeline.Tracks[destinationTrackIndex];
+                var destinationCamera = sceneDefinition?.FindShot(track.TargetId);
+                if (destinationCamera is not null || source.IsCamera)
+                {
+                    if (destinationCamera is null || !source.IsCamera) continue;
+                    if (source.Kind == TimelineKeyframeKind.Populated && source.CameraSettings is { } cameraSettings)
+                    {
+                        changed |= sceneDefinition!.InsertShotTimelineKeyframe(destinationCamera.Id, destinationFrame);
+                        changed |= sceneDefinition.UpdateShotAtFrame(destinationCamera.Id, destinationFrame, cameraSettings);
+                    }
+                    else if (source.Kind == TimelineKeyframeKind.Blank)
+                        changed |= sceneDefinition!.InsertShotTimelineBlankKeyframe(destinationCamera.Id, destinationFrame);
+                    pastedCells.Add(new TimelineFrameCell(track.Id, destinationFrame));
+                    continue;
+                }
                 var destinationLight = sceneDefinition?.FindLight(track.TargetId);
                 if (destinationLight is not null || source.LightKind is not null)
                 {
@@ -2210,7 +2238,8 @@ internal sealed partial class MainForm : Form
                 instanceSnapshot: sceneInstanceSnapshot,
                 playheadFrame: _frame,
                 timelineSelection: timelineSelection,
-                lightSnapshot: sceneLightSnapshot);
+                lightSnapshot: sceneLightSnapshot,
+                shotSnapshot: shotSnapshot);
         }
         CompleteTimelineMutation(context, drawingScene, previousLastFrame);
         _timeline.PlayCommandFeedback(feedbackCommand, pastedCells);
@@ -2780,7 +2809,13 @@ internal sealed partial class MainForm : Form
                 foreach (var layer in layers) drawingScene.SetLayerColor(layer, picker.Color);
                 RefreshTimelineLayerDisplay(context);
             };
-            picker.ShowDialog(this);
+            if (picker.ShowDialog(this) != DialogResult.OK)
+            {
+                for (var index = 0; index < layers.Length; index++)
+                    drawingScene.SetLayerColor(layers[index], Color.FromArgb(drawingOriginalColors[index]));
+                RefreshTimelineLayerDisplay(context);
+                return;
+            }
             if (!layers.Select((layer, index) => drawingScene.GetLayerColor(layer).ToArgb() != drawingOriginalColors[index]).Any(changed => changed)) return;
             PushUndoSnapshot(snapshot);
             RefreshTimelineLayerDisplay(context);
@@ -2809,7 +2844,13 @@ internal sealed partial class MainForm : Form
                 foreach (var layerId in sceneLayerIds) sceneDefinition.SetLayerColor(layerId, picker.Color);
                 RefreshTimelineLayerDisplay(context);
             };
-            picker.ShowDialog(this);
+            if (picker.ShowDialog(this) != DialogResult.OK)
+            {
+                for (var index = 0; index < sceneLayerIds.Length; index++)
+                    sceneDefinition.SetLayerColor(sceneLayerIds[index], Color.FromArgb(originalColors[index]));
+                RefreshTimelineLayerDisplay(context);
+                return;
+            }
             var changed = sceneLayerIds
                 .Select((layerId, index) => sceneDefinition.FindLayer(layerId)!.ColorArgb != originalColors[index])
                 .Any(value => value);
@@ -4210,6 +4251,9 @@ internal sealed partial class MainForm : Form
         foreach (var entry in _sharedAssetUndoStack) retained.Add(entry);
         foreach (var entry in _sceneTimelineUndoStack) retained.Add(entry);
         foreach (var entry in _canvasSettingsUndo) retained.Add(entry);
+        foreach (var entry in _symbolDeletionUndo) retained.Add(entry);
+        foreach (var entry in _panelCommandUndo) retained.Add(entry);
+        foreach (var entry in _scenePanelHistories.Values.SelectMany(history => history.Entries)) retained.Add(entry);
         foreach (var entry in _undoSequenceByEntry.Keys.Where(entry => !retained.Contains(entry)).ToArray())
         {
             _undoSequenceByEntry.Remove(entry);
@@ -4265,9 +4309,24 @@ internal sealed partial class MainForm : Form
             canUndoDrawing ? UndoSequence(drawingUndo!) : 0);
         if (_sharedAssetUndoStack.TryPeek(out var latestAssetUndo) && ReferenceEquals(latestAssetUndo.Project, _project))
             latestOtherSequence = Math.Max(latestOtherSequence, UndoSequence(latestAssetUndo));
-        if (TryUndoCanvasSettings(latestOtherSequence))
+        var symbolUndo = _symbolDeletionUndo.TryPeek(out var symbolHistory)
+            && ReferenceEquals(symbolHistory.Project, _project) ? symbolHistory : null;
+        var latestSequence = Math.Max(latestOtherSequence, symbolUndo is null ? 0 : UndoSequence(symbolUndo));
+        var latestCanvasSequence = _canvasSettingsUndo.TryPeek(out var pendingCanvas)
+            && ReferenceEquals(pendingCanvas.Project, _project) && ReferenceEquals(pendingCanvas.Scene, ActiveScene())
+                ? UndoSequence(pendingCanvas) : 0;
+        if (TryUndoPanelCommand(Math.Max(latestSequence, latestCanvasSequence))) return true;
+        if (TryUndoCanvasSettings(latestSequence))
         {
             if (_canvasSettingsRedo.TryPeek(out var canvasRedo)) CaptureDocumentRedo(canvasRedo);
+            return true;
+        }
+        if (symbolUndo is not null && UndoSequence(symbolUndo) >= latestOtherSequence)
+        {
+            CaptureDocumentRedo(symbolUndo);
+            _symbolDeletionUndo.Pop();
+            _undoSequenceByEntry.Remove(symbolUndo);
+            RestoreSymbolDeletionHistory(symbolUndo);
             return true;
         }
         if (_sharedAssetUndoStack.TryPeek(out var assetUndo)

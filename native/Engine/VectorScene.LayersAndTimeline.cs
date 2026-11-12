@@ -10,6 +10,7 @@ internal sealed partial class VectorScene
     public const string CollisionTerrainLayerName = "Collision Terrain";
     private const float CollisionTerrainLayerOpacity = 0.35f;
     private static readonly Color CollisionTerrainObjectColor = Color.FromArgb(255, 236, 181, 72);
+    internal long LayerPresentationRevision { get; private set; }
 
     internal static int NormalizeCollisionTerrainObjectArgb(int colorArgb)
     {
@@ -262,6 +263,7 @@ internal sealed partial class VectorScene
         normalized = normalized.Length <= 80 ? normalized : normalized[..80];
         if (string.Equals(LayerNames[layer], normalized, StringComparison.Ordinal)) return false;
         LayerNames[layer] = normalized;
+        unchecked { LayerPresentationRevision++; }
         return true;
     }
 
@@ -269,6 +271,7 @@ internal sealed partial class VectorScene
     {
         if ((uint)layer >= LayerCount) return false;
         LayerLocked[layer] = !LayerLocked[layer];
+        unchecked { LayerPresentationRevision++; }
         return true;
     }
 
@@ -276,6 +279,7 @@ internal sealed partial class VectorScene
     {
         if ((uint)layer >= LayerCount || LayerLocked[layer] == locked) return false;
         LayerLocked[layer] = locked;
+        unchecked { LayerPresentationRevision++; }
         return true;
     }
 
@@ -643,6 +647,7 @@ internal sealed partial class VectorScene
         var next = color.ToArgb();
         if (LayerColorArgb[layer] == next) return false;
         LayerColorArgb[layer] = next;
+        unchecked { LayerPresentationRevision++; }
         return true;
     }
 
@@ -650,6 +655,7 @@ internal sealed partial class VectorScene
     {
         if ((uint)layer >= LayerCount || !Enum.IsDefined(blendMode) || LayerBlendModes[layer] == blendMode) return false;
         LayerBlendModes[layer] = blendMode;
+        unchecked { LayerPresentationRevision++; }
         return true;
     }
 
@@ -675,6 +681,7 @@ internal sealed partial class VectorScene
     {
         if ((uint)layer >= LayerCount) return false;
         LayerOutline[layer] = !LayerOutline[layer];
+        unchecked { LayerPresentationRevision++; }
         return true;
     }
 
@@ -682,6 +689,7 @@ internal sealed partial class VectorScene
     {
         if ((uint)layer >= LayerCount || LayerOutline[layer] == outline) return false;
         LayerOutline[layer] = outline;
+        unchecked { LayerPresentationRevision++; }
         return true;
     }
 

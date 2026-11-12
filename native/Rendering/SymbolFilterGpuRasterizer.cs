@@ -91,25 +91,30 @@ internal sealed class SymbolFilterGpuRasterizer : IDisposable
                     new(transform.BlueOffset, transform.GreenOffset, transform.RedOffset, 0)));
                 current = target;
             }
-            if (filters.Blur.Enabled) current = Blur(current, null, filters.Blur.BlurX, filters.Blur.BlurY, filters.Blur.Quality, filters.Blur.FlashCompatible);
-            if (filters.AdditionalBlurs is { } chain)
+            var order = filters.Order ?? SymbolFilterOrder.Default;
+            for (var orderIndex = 0; orderIndex < 6; orderIndex++)
+            {
+            var kind = order[orderIndex];
+            if (kind == SymbolFilterKind.Blur && filters.Blur.Enabled) current = Blur(current, null, filters.Blur.BlurX, filters.Blur.BlurY, filters.Blur.Quality, filters.Blur.FlashCompatible);
+            if (kind == SymbolFilterKind.Blur && filters.AdditionalBlurs is { } chain)
                 for (int i = 0; i < chain.Count; i++)
                 {
                     var item = chain[i];
                     if (item.Enabled) current = Blur(current, null, item.BlurX, item.BlurY, item.Quality, item.FlashCompatible);
                 }
-            if (Visible(filters.Glow.Enabled, filters.Glow.Strength, filters.Glow.Opacity, filters.Glow.ColorArgb))
+            if (kind == SymbolFilterKind.Glow && Visible(filters.Glow.Enabled, filters.Glow.Strength, filters.Glow.Opacity, filters.Glow.ColorArgb))
                 Behind(filters.Glow.BlurX, filters.Glow.BlurY, filters.Glow.ColorArgb, filters.Glow.Strength, filters.Glow.Opacity, 0, 0, filters.Glow.Quality);
-            if (Visible(filters.Shadow.Enabled, filters.Shadow.Strength, filters.Shadow.Opacity, filters.Shadow.ColorArgb))
+            if (kind == SymbolFilterKind.Shadow && Visible(filters.Shadow.Enabled, filters.Shadow.Strength, filters.Shadow.Opacity, filters.Shadow.ColorArgb))
             {
                 var angle = filters.Shadow.Angle * (Math.PI / 180);
                 var distance = (double)filters.Shadow.Distance * scale;
                 Behind(filters.Shadow.BlurX, filters.Shadow.BlurY, filters.Shadow.ColorArgb, filters.Shadow.Strength, filters.Shadow.Opacity,
                     (float)(Math.Cos(angle) * distance), (float)(Math.Sin(angle) * distance), filters.Shadow.Quality);
             }
-            Edge(filters.Bevel, 3);
-            Edge(filters.GradientBevel, 4);
-            Edge(filters.GradientGlow, 5);
+            if (kind == SymbolFilterKind.Bevel) Edge(filters.Bevel, 3);
+            if (kind == SymbolFilterKind.GradientBevel) Edge(filters.GradientBevel, 4);
+            if (kind == SymbolFilterKind.GradientGlow) Edge(filters.GradientGlow, 5);
+            }
             if (filters.FlashFilters is { } flash)
                 for (int i = 0; i < flash.Count; i++)
                 {
@@ -177,10 +182,11 @@ internal sealed class SymbolFilterGpuRasterizer : IDisposable
                 var target = Available(current, mask);
                 double angle = filter.Angle * Math.PI / 180;
                 double distance = (double)filter.Distance * scale;
+                var stops = mode != 3 ? filter.GradientStops : null;
                 Dispatch(current, mask, target, new(new(width, height, mode, 0),
-                    new(filter.Opacity, 0, 0, 0), ColorVector(filter.StartColorArgb),
+                    new(filter.Opacity, stops?.Count ?? 0, 0, 0), ColorVector(filter.StartColorArgb),
                     new((float)(Math.Cos(angle) * distance), (float)(Math.Sin(angle) * distance), filter.Strength, 0),
-                    ColorVector(filter.EndColorArgb)));
+                    ColorVector(filter.EndColorArgb), GradientConstants.Create(stops)));
                 current = target;
             }
             void Behind(float x, float y, int argb, float strength, float opacity, float dx, float dy, int? quality)
@@ -291,7 +297,37 @@ internal sealed class SymbolFilterGpuRasterizer : IDisposable
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private readonly record struct Constants(Vector4 Bounds, Vector4 Kernel, Vector4 Color, Vector4 Effect, Vector4 EndColor = default);
+    private readonly record struct Constants(Vector4 Bounds, Vector4 Kernel, Vector4 Color, Vector4 Effect, Vector4 EndColor = default, GradientConstants Gradient = default);
+    [StructLayout(LayoutKind.Sequential)]
+    private readonly record struct GradientConstants(Vector4 Color0, Vector4 Color1, Vector4 Color2, Vector4 Color3, Vector4 Color4, Vector4 Color5, Vector4 Color6, Vector4 Color7, Vector4 Color8, Vector4 Color9, Vector4 Color10, Vector4 Color11, Vector4 Color12, Vector4 Color13, Vector4 Color14, Vector4 Color15, Vector4 Offset0, Vector4 Offset1, Vector4 Offset2, Vector4 Offset3)
+    {
+        internal static GradientConstants Create(SymbolGradientStops? stops)
+        {
+            Vector4 Color(int i) => stops is not null && i < stops.Count ? SymbolGradientStops.LinearPremultiplied(stops[i].ColorArgb) : default;
+            float Offset(int i) => stops is not null && i < stops.Count ? stops[i].Offset : 1;
+            return new(Color(0),
+                Color(1),
+                Color(2),
+                Color(3),
+                Color(4),
+                Color(5),
+                Color(6),
+                Color(7),
+                Color(8),
+                Color(9),
+                Color(10),
+                Color(11),
+                Color(12),
+                Color(13),
+                Color(14),
+                Color(15),
+                new(Offset(0), Offset(1), Offset(2), Offset(3)),
+                new(Offset(4), Offset(5), Offset(6), Offset(7)),
+                new(Offset(8), Offset(9), Offset(10), Offset(11)),
+                new(Offset(12), Offset(13), Offset(14), Offset(15)));
+        }
+    }
+
     private sealed class Texture : IDisposable
     {
         internal readonly ID3D11Texture2D Resource;
@@ -425,7 +461,7 @@ internal sealed class SymbolFilterGpuRasterizer : IDisposable
 
 
     private const string ShaderSource = """
-        cbuffer Settings : register(b0) { float4 bounds; float4 kernel; float4 tint; float4 effect; float4 endTint; };
+        cbuffer Settings : register(b0) { float4 bounds; float4 kernel; float4 tint; float4 effect; float4 endTint; float4 stopColors[16]; float4 stopOffsets[4]; };
         Texture2D<float4> source : register(t0);
         Texture2D<float4> mask : register(t1);
         RWTexture2D<float4> target : register(u0);
@@ -441,6 +477,23 @@ internal sealed class SymbolFilterGpuRasterizer : IDisposable
         float SampleAlpha(float2 q) {
             int2 a = (int2)floor(q); float2 f = q - a;
             return lerp(lerp(Alpha(a), Alpha(a+int2(1,0)), f.x), lerp(Alpha(a+int2(0,1)), Alpha(a+1), f.x), f.y);
+        }
+        float Offset(int i) { return stopOffsets[i / 4][i % 4]; }
+        float3 EncodeLinear(float3 v) {
+            return float3(v.x <= 0.0031308 ? v.x * 12.92 : 1.055 * pow(v.x, 1.0 / 2.4) - 0.055,
+                v.y <= 0.0031308 ? v.y * 12.92 : 1.055 * pow(v.y, 1.0 / 2.4) - 0.055,
+                v.z <= 0.0031308 ? v.z * 12.92 : 1.055 * pow(v.z, 1.0 / 2.4) - 0.055);
+        }
+        float4 Gradient(float t) {
+            int count = (int)kernel.y;
+            float4 color = stopColors[count - 1];
+            if (t < Offset(0)) color = stopColors[0];
+            else for (int i = 1; i < count; i++) {
+                if (t >= Offset(i)) continue;
+                color = lerp(stopColors[i - 1], stopColors[i], saturate((t - Offset(i - 1)) / max(1e-10, Offset(i) - Offset(i - 1))));
+                break;
+            }
+            return float4(color.w > 0 ? EncodeLinear(color.xyz / max(color.w, 1e-10)) : 0, color.w);
         }
         [numthreads(16,16,1)]
         void Pixels(uint3 id : SV_DispatchThreadID) {
@@ -483,7 +536,7 @@ internal sealed class SymbolFilterGpuRasterizer : IDisposable
                 bool glow = bounds.z == 5;
                 float signal = glow ? Alpha(p) : SampleAlpha((float2)p + effect.xy) - SampleAlpha((float2)p - effect.xy);
                 float t = glow ? saturate(signal) : bounds.z == 4 ? (signal + 1) * 0.5 : signal >= 0 ? 1 : 0;
-                float4 color = lerp(tint, endTint, t);
+                float4 color = kernel.y >= 2 ? Gradient(t) : lerp(tint, endTint, t);
                 float alpha = saturate(abs(signal) * effect.z) * kernel.x * color.w;
                 alpha *= glow ? 1 - value.w : value.w;
                 float keep = glow ? 1 : 1 - alpha / max(value.w, 1e-10);

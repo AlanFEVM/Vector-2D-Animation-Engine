@@ -83,10 +83,11 @@ internal sealed partial class SymbolFiltersPanel
             ApplyPatch(f => PatchEdge(f, kind, e => end ? e with { EndColorArgb = argb } : e with { StartColorArgb = argb }));
         }
         picker.ColorChanged += (_, _) => { if (_interactionActive && !_disposing) Preview(); };
+        var accepted = false;
         try
         {
-            picker.ShowDialog(FindForm());
+            accepted = picker.ShowDialog(FindForm()) == DialogResult.OK;
         }
-        finally { _activePicker = null; CompleteInteraction(); }
+        finally { _activePicker = null; if (accepted) CompleteInteraction(); else CancelInteraction(); }
     }
 }

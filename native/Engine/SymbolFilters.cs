@@ -2,9 +2,10 @@ namespace VectorAnimationEngine;
 
 // Value types keep timeline keys, undo snapshots and duplicated instances independent.
 // A missing field in older documents is the all-disabled default. Sizes are stage pixels
-// at 100% zoom. Effects run in the fixed order blur, glow, shadow, bevel, gradient bevel, gradient glow.
+// at 100% zoom. Missing Order retains the legacy built-in sequence.
 internal readonly record struct SymbolFilters
 {
+    public SymbolFilterOrder? Order { get; init; }
     public SymbolFlashColorTransform ColorTransform { get; init; }
     public SymbolBlurFilter Blur { get; init; }
     // Imported Flash blur filters run in source order after Blur. The immutable
@@ -22,6 +23,80 @@ internal readonly record struct SymbolFilters
         && (AdditionalBlurs?.IsValid ?? true)
         && (FlashFilters?.IsValid ?? true)
         && Bevel.IsValid && GradientBevel.IsValid && GradientGlow.IsValid;
+}
+
+internal enum SymbolFilterKind { Blur, Glow, Shadow, Bevel, GradientBevel, GradientGlow }
+
+internal sealed class SymbolFilterOrder : IEquatable<SymbolFilterOrder>
+{
+    private readonly SymbolFilterKind[] _items;
+    internal static SymbolFilterOrder Default { get; } = new(Enum.GetValues<SymbolFilterKind>());
+    [System.Text.Json.Serialization.JsonConstructor]
+    public SymbolFilterOrder(SymbolFilterKind[] items)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        if (items.Length != 6 || items.Distinct().Count() != 6 || items.Any(item => !Enum.IsDefined(item)))
+            throw new ArgumentException("A filter order must contain each of the six built-in filters exactly once.", nameof(items));
+        _items = (SymbolFilterKind[])items.Clone();
+    }
+    public SymbolFilterKind[] Items => (SymbolFilterKind[])_items.Clone();
+    internal SymbolFilterKind this[int index] => _items[index];
+    public bool Equals(SymbolFilterOrder? other) => other is not null && _items.AsSpan().SequenceEqual(other._items);
+    public override bool Equals(object? other) => other is SymbolFilterOrder order && Equals(order);
+    public override int GetHashCode() { var hash = new HashCode(); foreach (var item in _items) hash.Add(item); return hash.ToHashCode(); }
+}
+
+internal readonly record struct SymbolGradientStop(float Offset, int ColorArgb);
+
+internal sealed class SymbolGradientStops : IEquatable<SymbolGradientStops>
+{
+    internal const int MaximumCount = 16;
+    private readonly SymbolGradientStop[] _items;
+    [System.Text.Json.Serialization.JsonConstructor]
+    public SymbolGradientStops(SymbolGradientStop[] items)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        if (items.Length is < 2 or > MaximumCount || items.Any(item => !float.IsFinite(item.Offset) || item.Offset is < 0 or > 1))
+            throw new ArgumentException("A gradient needs 2 to 16 finite color stops between zero and one.", nameof(items));
+        _items = items.OrderBy(item => item.Offset).ToArray();
+        if (_items[0].Offset != 0 || _items[^1].Offset != 1)
+            throw new ArgumentException("A filter gradient must include stops at zero and one.", nameof(items));
+        if (_items.Zip(_items.Skip(1), (left, right) => left.Offset >= right.Offset).Any(invalid => invalid))
+            throw new ArgumentException("Filter gradient stop positions must be distinct.", nameof(items));
+    }
+    public SymbolGradientStop[] Items => (SymbolGradientStop[])_items.Clone();
+    internal int Count => _items.Length;
+    internal SymbolGradientStop this[int index] => _items[index];
+    internal System.Numerics.Vector4 Sample(float position)
+    {
+        if (position < _items[0].Offset) return Straight(_items[0].ColorArgb);
+        for (var i = 1; i < _items.Length; i++)
+        {
+            if (position >= _items[i].Offset) continue;
+            var amount = Math.Clamp((position - _items[i - 1].Offset) / Math.Max(1e-10f, _items[i].Offset - _items[i - 1].Offset), 0, 1);
+            var a = LinearPremultiplied(_items[i - 1].ColorArgb);
+            var b = LinearPremultiplied(_items[i].ColorArgb);
+            var value = System.Numerics.Vector4.Lerp(a, b, amount);
+            if (value.W <= 0) return default;
+            return new(Encode(value.X / value.W), Encode(value.Y / value.W), Encode(value.Z / value.W), value.W);
+        }
+        return Straight(_items[^1].ColorArgb);
+    }
+    internal static System.Numerics.Vector4 LinearPremultiplied(int argb)
+    {
+        var value = Straight(argb);
+        return new(Decode(value.X) * value.W, Decode(value.Y) * value.W, Decode(value.Z) * value.W, value.W);
+    }
+    private static System.Numerics.Vector4 Straight(int argb)
+    {
+        var color = (uint)argb;
+        return new((color & 255) / 255f, ((color >> 8) & 255) / 255f, ((color >> 16) & 255) / 255f, (color >> 24) / 255f);
+    }
+    private static float Decode(float value) => value <= 0.04045f ? value / 12.92f : MathF.Pow((value + 0.055f) / 1.055f, 2.4f);
+    private static float Encode(float value) => value <= 0.0031308f ? value * 12.92f : 1.055f * MathF.Pow(value, 1f / 2.4f) - 0.055f;
+    public bool Equals(SymbolGradientStops? other) => other is not null && _items.AsSpan().SequenceEqual(other._items);
+    public override bool Equals(object? other) => other is SymbolGradientStops stops && Equals(stops);
+    public override int GetHashCode() { var hash = new HashCode(); foreach (var item in _items) hash.Add(item); return hash.ToHashCode(); }
 }
 
 // Straight RGB affine transform, applied to the isolated source before its filters.
@@ -121,6 +196,7 @@ internal sealed class SymbolBlurStack : IEquatable<SymbolBlurStack>
 
 internal readonly record struct SymbolEdgeFilter
 {
+    public SymbolGradientStops? GradientStops { get; init; }
     public bool Enabled { get; init; }
     public int? Quality { get; init; }
     public float BlurX { get; init; }

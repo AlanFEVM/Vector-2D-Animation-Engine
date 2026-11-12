@@ -189,7 +189,8 @@ internal sealed partial class ShotDirectorPanel : UserControl
         Maximum = (decimal)SceneShotSettings.MaximumFocalLength,
         Increment = 1,
         DecimalPlaces = 1,
-        Suffix = "mm"
+        Suffix = "mm",
+        ShowSuffix = true
     };
     private readonly ModernNumericUpDown _orthographicSize = new()
     {
@@ -198,9 +199,10 @@ internal sealed partial class ShotDirectorPanel : UserControl
         Increment = 10,
         DecimalPlaces = 1,
         Suffix = "vu",
+        ShowSuffix = true,
         AccessibleDescription = "Camera frame size in scene units; aspect ratio is preserved."
     };
-    private readonly Button _resetCameraButton = new SvgIconButton(SvgIconKind.RestoreSize) { Text = "Reset", AccessibleName = "Reset camera", AutoSize = false, Height = 26 };
+    private readonly Button _resetCameraButton = new SvgIconButton(SvgIconKind.RestoreSize) { Text = "Reset", AccessibleName = "Reset camera transform", AutoSize = false, Height = 26 };
     private readonly ModernNumericUpDown _zoomEditor = new()
     {
         Minimum = 0.01m,
@@ -213,12 +215,6 @@ internal sealed partial class ShotDirectorPanel : UserControl
     };
 
     private ShotDirectorState _state = new();
-    private readonly ModernToggleSwitch _advancedCameraSettings = new()
-    {
-        Text = "Advanced camera settings",
-        AccessibleName = "Advanced camera settings",
-        AutoSize = false
-    };
     private bool _experimental3DEnabled = true;
 
     internal void SetExperimental3DEnabled(bool enabled)
@@ -260,13 +256,19 @@ internal sealed partial class ShotDirectorPanel : UserControl
         Controls.Add(_summary);
         Controls.Add(_previewButton);
         Controls.Add(_simpleCameraStyle);
-        _inspector.Content.Controls.Add(_advancedCameraSettings);
-        _advancedCameraSettings.CheckedChanged += (_, _) => PerformLayout();
         _simpleCameraStyle.CheckedChanged += (_, _) =>
         {
             if (!_updatingCameraStyle) CameraStyleChanged?.Invoke(this, EventArgs.Empty);
         };
         _cameraList.DrawItem += DrawCameraItem;
+        _cameraList.MouseMove += (_, e) =>
+        {
+            var index = _cameraList.IndexFromPoint(e.Location);
+            var text = index >= 0 && index < _cameraList.Items.Count && _cameraList.Items[index] is ShotDirectorItem item
+                ? item.Name : "";
+            if (_help.GetToolTip(_cameraList) != text) _help.SetToolTip(_cameraList, text);
+        };
+        _cameraList.MouseLeave += (_, _) => _help.SetToolTip(_cameraList, "");
         _cameraList.SelectedIndexChanged += (_, _) => SelectCameraFromList();
         InitializeDesignedCamera();
         UiLocalization.Watch(this);
@@ -391,7 +393,12 @@ internal sealed partial class ShotDirectorPanel : UserControl
         }
     }
 
-    public void RefreshSummary() => _help.SetToolTip(_title, BuildSummaryText());
+    public void RefreshSummary()
+    {
+        var summary = BuildSummaryText();
+        _help.SetToolTip(_title, summary);
+        _help.SetToolTip(_sceneCamerasCaption, summary);
+    }
 
     public void SetSelectedShotFraming(SceneShotSettings settings, bool editable)
     {
@@ -501,6 +508,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
             editor.Font = Theme.UiFont(11f);
         }
         Theme.StyleButton(_resetCameraButton);
+        _help.SetToolTip(_resetCameraButton, UiLocalization.T("Reset position and rotation. Lens, aspect ratio and parallax settings are preserved."));
         _nameEditor.AccessibleName = "Camera name";
         _detailEditor.AccessibleName = "Camera description";
 
@@ -550,7 +558,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
             editor.Enter += (_, _) => ShotEditStarted?.Invoke(this, EventArgs.Empty);
             editor.InteractionStarted += (_, _) => ShotEditStarted?.Invoke(this, EventArgs.Empty);
             editor.InteractionCompleted += (_, _) => ShotEditCompleted?.Invoke(this, EventArgs.Empty);
-            editor.InteractionCanceled += (_, _) => ShotEditCompleted?.Invoke(this, EventArgs.Empty);
+            editor.InteractionCanceled += (_, _) => ShotEditCanceled?.Invoke(this, EventArgs.Empty);
             editor.ValueChanged += (_, _) =>
             {
                 if (_updatingEditors) return;
@@ -600,7 +608,12 @@ internal sealed partial class ShotDirectorPanel : UserControl
         }
         for (var index = 0; index < editors.Count; index++)
         {
-            var axisLabel = CreateInspectorLabel(axisLabels[index]);
+            var axisLabel = new Label
+            {
+                Font = rowLabel.Font,
+                AutoSize = false,
+                UseMnemonic = false
+            };
             axisLabel.Tag = editors[index];
             var axisName = axisLabels[index];
             var axisEditor = editors[index];
@@ -851,17 +864,20 @@ internal sealed partial class ShotDirectorPanel : UserControl
         if (shot is null)
         {
             _help.SetToolTip(_inspectorTitle, "");
+            _help.SetToolTip(_cameraStatus, "");
             return;
         }
 
         var frameInfo = string.Format(
             CultureInfo.CurrentCulture,
             UiLocalization.T("Frame {0} / {1} · {2} keys · {3} tweens"),
-            Math.Max(0, _state.CurrentFrame),
-            Math.Max(0, _state.FrameCount - 1),
+            Math.Max(1, _state.CurrentFrame + 1),
+            Math.Max(1, _state.FrameCount),
             shot.KeyframeCount,
             shot.TweenCount);
         _help.SetToolTip(_inspectorTitle, frameInfo);
+        _help.SetToolTip(_cameraStatus, shot.Name + Environment.NewLine + frameInfo);
+        _help.SetToolTip(_nameEditor, shot.Name);
     }
 
     private void LocateShot(string shotId)
@@ -901,7 +917,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
             ? UiLocalization.T("3D camera (disabled)")
             : UiLocalization.T(_experimental3DEnabled ? projection : "2D Camera");
         var textColor = Theme.ReadableText(background, Theme.Text);
-        SvgIcons.Draw(e.Graphics, SvgIconKind.Camera, new Rectangle(e.Bounds.Left + ScaleMetric(12), e.Bounds.Top + ScaleMetric(14), ScaleMetric(18), ScaleMetric(18)), Theme.ReadableUiColor(background, Theme.Accent));
+        SvgIcons.Draw(e.Graphics, SvgIconKind.Camera, new Rectangle(e.Bounds.Left + ScaleMetric(12), e.Bounds.Top + (e.Bounds.Height - ScaleMetric(18)) / 2, ScaleMetric(18), ScaleMetric(18)), Theme.ReadableUiColor(background, Theme.Accent));
         TextRenderer.DrawText(e.Graphics, title, Theme.UiFont(9f), new Rectangle(e.Bounds.Left + ScaleMetric(40), e.Bounds.Top, Math.Max(1, e.Bounds.Width - ScaleMetric(132)), e.Bounds.Height), textColor, TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         TextRenderer.DrawText(e.Graphics, meta, Font, new Rectangle(e.Bounds.Right - ScaleMetric(86), e.Bounds.Top, ScaleMetric(76), e.Bounds.Height), Theme.ReadableText(background, Theme.PanelSecondaryText), TextFormatFlags.Right | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         if (_state.CurrentFrame >= shot.StartFrame && _state.CurrentFrame <= shot.EndFrame)
@@ -923,7 +939,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
     {
         if (editors.Length == 0) return;
         var left = ScaleMetric(16);
-        var start = left + (int)Math.Round((right - left) * 0.30f);
+        var start = DesignedFieldStart(right);
         var group = editors[0].Parent;
         if (group is null) return;
         foreach (var editor in editors)
@@ -958,8 +974,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
     }
 
     private bool IsCameraAxisVisible(ModernNumericUpDown editor)
-        => _experimental3DEnabled || editor == _positionZ && _advancedCameraSettings.Checked
-            || editor != _positionZ && editor != _rotationX && editor != _rotationY;
+        => _experimental3DEnabled || editor != _rotationX && editor != _rotationY;
 
     private int ScaleMetric(int logical) => Math.Max(1, (int)Math.Round(logical * DeviceDpi / 96f));
 
@@ -1012,6 +1027,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
         Increment = 1,
         DecimalPlaces = 1,
         Suffix = "deg",
+        ShowSuffix = true,
         AccessibleName = accessibleName
     };
 }

@@ -14,11 +14,18 @@ internal sealed partial class VectorProject
         string drawingObjectId,
         IEnumerable<ProjectAssetTagData> tags,
         IEnumerable<string> assignedTagIds)
+        => TryApplyLibraryAssetTagEdit([drawingObjectId], tags, assignedTagIds);
+
+    public bool TryApplyLibraryAssetTagEdit(
+        IEnumerable<string> assetIds,
+        IEnumerable<ProjectAssetTagData> tags,
+        IEnumerable<string> assignedTagIds)
     {
         ArgumentNullException.ThrowIfNull(tags);
         ArgumentNullException.ThrowIfNull(assignedTagIds);
-        var drawingObject = FindDrawingObject(drawingObjectId);
-        if (drawingObject is null) return false;
+        var selectedIds = assetIds?.ToHashSet(StringComparer.Ordinal);
+        if (selectedIds is null || selectedIds.Count == 0 || selectedIds.Any(id =>
+            FindDrawingObject(id) is null && FindImageAsset(id) is null && FindExternalSvgAsset(id) is null)) return false;
 
         var normalized = NormalizeAssetTags(tags);
         if (normalized is null) return false;
@@ -36,12 +43,24 @@ internal sealed partial class VectorProject
         var assignmentsChanged = false;
         foreach (var candidate in _drawingObjects)
         {
-            var next = ReferenceEquals(candidate, drawingObject)
+            var next = selectedIds.Contains(candidate.Id)
                 ? normalizedAssignments
                 : candidate.AssetTagIds.Where(validIds.Contains).ToArray();
             if (candidate.AssetTagIds.SequenceEqual(next, StringComparer.Ordinal)) continue;
             assignmentsChanged = true;
             candidate.ReplaceAssetTagIds(next);
+        }
+        foreach (var asset in _imageAssets)
+        {
+            var retained = selectedIds.Contains(asset.Id) ? normalizedAssignments : asset.AssetTagIds.Where(validIds.Contains).ToArray();
+            assignmentsChanged |= !asset.AssetTagIds.SequenceEqual(retained, StringComparer.Ordinal);
+            asset.AssetTagIds = retained;
+        }
+        foreach (var asset in _externalSvgAssets)
+        {
+            var retained = selectedIds.Contains(asset.Id) ? normalizedAssignments : asset.AssetTagIds.Where(validIds.Contains).ToArray();
+            assignmentsChanged |= !asset.AssetTagIds.SequenceEqual(retained, StringComparer.Ordinal);
+            asset.AssetTagIds = retained;
         }
 
         if (!definitionsChanged && !assignmentsChanged) return true;

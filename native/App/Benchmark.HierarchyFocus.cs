@@ -126,14 +126,11 @@ internal static partial class Benchmark
         var placeholderTree = placeholder.Controls.OfType<TreeView>().Single();
         var placeholderRequests = 0;
         placeholder.HierarchyFocusRequested += (_, _) => placeholderRequests++;
-        var placeholderLayer = placeholderTree.Nodes[0].Nodes[0].Nodes[0];
-        var placeholderObject = placeholderTree.Nodes[0].Nodes[1].Nodes[0];
+        if (placeholderTree.Nodes.Count != 1 || placeholderTree.Nodes[0].Nodes.Count != 0)
+            throw new InvalidOperationException("The empty hierarchy contains fabricated layers or objects.");
         raiseDoubleClick.Invoke(
             placeholderTree,
-            [new TreeNodeMouseClickEventArgs(placeholderLayer, MouseButtons.Left, 2, 0, 0)]);
-        raiseDoubleClick.Invoke(
-            placeholderTree,
-            [new TreeNodeMouseClickEventArgs(placeholderObject, MouseButtons.Left, 2, 0, 0)]);
+            [new TreeNodeMouseClickEventArgs(placeholderTree.Nodes[0], MouseButtons.Left, 2, 0, 0)]);
         if (placeholderRequests != 0)
         {
             throw new InvalidOperationException("Hierarchy placeholder double-click emitted a focus request.");

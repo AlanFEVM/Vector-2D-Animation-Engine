@@ -418,8 +418,22 @@ internal sealed partial class MainForm
                 scene.InsertShotTimelineKeyframe(shotId, editFrame);
             }
 
-            var settings = _applicationSettings.Experimental3DEnabled ? SceneShotSettings.Default
-                : (SceneShotSettings.Default with { Kind = SceneShotCameraKind.TwoD }).EnforceKind();
+            if (!scene.TryEvaluateShotSettings(shotId, editFrame, out var current)) return false;
+            var defaults = SceneShotSettings.Default;
+            var cameraZ = defaults.Z;
+            if (current.Kind == SceneShotCameraKind.TwoD && current.Parallax.Enabled)
+            {
+                var nearestDepth = scene.Layers.Where(layer => layer.Kind == SceneLayerKind.Content && layer.ParallaxEnabled)
+                    .Select(layer => layer.ParallaxDepth).Append(current.Parallax.ReferenceZ).Min();
+                cameraZ = Math.Max(-SceneShotSettings.MaximumPosition,
+                    Math.Min(cameraZ, nearestDepth - SceneShotParallaxSettings.NearDistance));
+            }
+            var settings = current with
+            {
+                X = defaults.X, Y = defaults.Y, Z = cameraZ,
+                RotationX = defaults.RotationX, RotationY = defaults.RotationY,
+                RotationDegrees = defaults.RotationDegrees
+            };
             return scene.UpdateShotAtFrame(shotId, editFrame, settings);
         });
         _shotDirectorFramingPushed = null;

@@ -71,6 +71,10 @@ internal static class HotReloadModuleResolver
         nameof(DrawingObjectInstancePanel),
         nameof(SymbolFiltersPanel),
         nameof(SymbolFilters),
+        nameof(SymbolFilterOrder),
+        nameof(SymbolFilterKind),
+        nameof(SymbolGradientStops),
+        nameof(SymbolGradientStop),
         nameof(SymbolBlurFilter),
         nameof(SymbolBlurStack),
         nameof(SymbolFlashFilterStack),
@@ -382,6 +386,10 @@ internal static class HotReloadModuleResolver
 
         if (typeName is nameof(VectorScene)
             or nameof(SymbolFilters)
+            or nameof(SymbolFilterOrder)
+            or nameof(SymbolFilterKind)
+            or nameof(SymbolGradientStops)
+            or nameof(SymbolGradientStop)
             or nameof(SymbolBlurFilter)
             or nameof(SymbolBlurStack)
             or nameof(SymbolFlashFilterStack)

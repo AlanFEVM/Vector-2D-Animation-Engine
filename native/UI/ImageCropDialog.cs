@@ -129,7 +129,7 @@ internal sealed class ImageCropDialog : UserControl
             _fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
             _fields.Controls.Add(new Label { Text = names[i], Dock = DockStyle.Fill, ForeColor = Theme.Text, AutoEllipsis = true }, i, 0);
             _values[i] = new ModernNumericUpDown { Minimum = i < 2 ? 0 : 1, Maximum = i % 2 == 0 ? sourceSize.Width : sourceSize.Height,
-                Dock = DockStyle.Fill, Suffix = "px", AccessibleName = names[i] };
+                Dock = DockStyle.Fill, Suffix = "px", ShowSuffix = true, AccessibleName = names[i] };
             var index = i; _values[i].ValueChanged += (_, _) => UpdateFromFields(index); _fields.Controls.Add(_values[i], i, 1);
         }
         _layout.Controls.Add(_fields, 0, 4);
@@ -310,20 +310,39 @@ internal sealed class ImageCropDialog : UserControl
     private void UpdateFromFields(int index)
     {
         if (_updating) return;
-        EndDrag(true); SetRatio(0);
+        EndDrag(true);
         var r = _selection; var value = (int)_values[index].Value;
-        if (index == 0) { r.X = Math.Min(value, _sourceSize.Width - 1); r.Width = Math.Min(r.Width, _sourceSize.Width - r.X); }
-        if (index == 1) { r.Y = Math.Min(value, _sourceSize.Height - 1); r.Height = Math.Min(r.Height, _sourceSize.Height - r.Y); }
+        if (index == 0) r.X = Math.Min(value, _sourceSize.Width - 1);
+        if (index == 1) r.Y = Math.Min(value, _sourceSize.Height - 1);
         if (index == 2) r.Width = Math.Min(value, _sourceSize.Width - r.X);
         if (index == 3) r.Height = Math.Min(value, _sourceSize.Height - r.Y);
-        SetSelection(r);
+        r.Width = Math.Min(r.Width, _sourceSize.Width - r.X);
+        r.Height = Math.Min(r.Height, _sourceSize.Height - r.Y);
+        if (AspectRatio > 0)
+        {
+            if (index == 3) r.Width = Math.Clamp((int)Math.Round(r.Height * AspectRatio), 1, _sourceSize.Width - r.X);
+            else if (index == 2) r.Height = Math.Clamp((int)Math.Round(r.Width / AspectRatio), 1, _sourceSize.Height - r.Y);
+            var fittedWidth = Math.Min(r.Width, (int)Math.Floor(r.Height * AspectRatio));
+            r.Width = Math.Max(1, fittedWidth);
+            r.Height = Math.Clamp((int)Math.Round(r.Width / AspectRatio), 1, _sourceSize.Height - r.Y);
+        }
+        SetSelection(r, preserveView: true);
     }
 
-    private void SetSelection(Rectangle selection)
+    private void SetSelection(Rectangle selection, bool preserveView = false)
     {
         var x = Math.Clamp(selection.X, 0, _sourceSize.Width - 1); var y = Math.Clamp(selection.Y, 0, _sourceSize.Height - 1);
         _selection = new Rectangle(x, y, Math.Clamp(selection.Width, 1, _sourceSize.Width - x), Math.Clamp(selection.Height, 1, _sourceSize.Height - y));
-        SyncFields(); FitView();
+        SyncFields();
+        if (!preserveView || _imageBounds.IsEmpty) FitView();
+        else
+        {
+            var scaleX = _imageBounds.Width / _sourceSize.Width;
+            var scaleY = _imageBounds.Height / _sourceSize.Height;
+            _frame = new RectangleF(_imageBounds.X + _selection.X * scaleX,
+                _imageBounds.Y + _selection.Y * scaleY, _selection.Width * scaleX, _selection.Height * scaleY);
+            _canvas.Invalidate();
+        }
     }
 
     private void SyncFields()

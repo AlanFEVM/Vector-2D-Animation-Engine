@@ -36,11 +36,21 @@ internal static class InspectorModuleStyle
     public static Label CreateTextLabel() => new InspectorTextLabel
     {
         Font = Theme.UiFont(),
-        ForeColor = Theme.Text,
+        ForeColor = Theme.PanelValueText,
         TextAlign = ContentAlignment.MiddleLeft,
         AutoEllipsis = true,
         UseMnemonic = false
     };
+
+    public static Label CreateReadOnlyValueLabel()
+    {
+        var label = CreateTextLabel();
+        label.ForeColor = Theme.PanelValueText;
+        label.Font = Theme.UiFont(Theme.InspectorLabelFontSize);
+        label.BackColor = Color.Transparent;
+        label.BorderStyle = BorderStyle.None;
+        return label;
+    }
 
     public static Label CreateFieldLabel(string text)
     {
@@ -75,6 +85,38 @@ internal static class InspectorModuleStyle
         }
         input.MinimumSize = new Size(input.MinimumSize.Width, Math.Max(input.MinimumSize.Height, height));
         input.Height = Math.Max(input.Height, height);
+    }
+
+    public static Control CreateSectionHeader(
+        string text, ShotDirectorPanel.CameraSectionToggle toggle, Action layout)
+    {
+        var row = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1,
+            BackColor = Theme.Panel, Margin = Padding.Empty, Padding = Padding.Empty
+        };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28 * toggle.DeviceDpi / 96f));
+        var title = CreateTextLabel();
+        title.Text = text;
+        title.Dock = DockStyle.Fill;
+        title.Margin = Padding.Empty;
+        title.BackColor = Color.Transparent;
+        title.Font = Theme.UiFont(Theme.InspectorSectionFontSize);
+        title.ForeColor = Theme.Text;
+        title.TextAlign = ContentAlignment.MiddleLeft;
+        title.Cursor = Cursors.Hand;
+        title.Click += (_, _) =>
+        {
+            toggle.Focus();
+            toggle.PerformClick();
+        };
+        toggle.Dock = DockStyle.Fill;
+        toggle.Margin = Padding.Empty;
+        toggle.Click += (_, _) => layout();
+        row.Controls.Add(title, 0, 0);
+        row.Controls.Add(toggle, 1, 0);
+        return row;
     }
 
     public static Color DividerColor => Theme.ControlOutline;

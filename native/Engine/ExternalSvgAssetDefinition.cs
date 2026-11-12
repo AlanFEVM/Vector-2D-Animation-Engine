@@ -4,6 +4,8 @@ internal sealed class ExternalSvgAssetDefinition
 {
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
     public string Name { get; internal set; } = "SVG";
+    public string AssetFolderId { get; internal set; } = "";
+    public IReadOnlyList<string> AssetTagIds { get; internal set; } = Array.Empty<string>();
     public string OriginalSourcePath { get; internal set; } = "";
     public string SourcePath { get; internal set; } = "";
     public string ProjectRelativePath { get; internal set; } = "";

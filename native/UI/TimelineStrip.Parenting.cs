@@ -36,6 +36,9 @@ internal sealed partial class TimelineStrip
     private int MotionParentingColumnWidth => MotionParentingAvailable && MotionParentingVisible ? ScaleTimelineMetric(112) : 0;
     private static string ParentingText(string english, string chinese) => UiLocalization.CurrentLanguage == UiLanguage.SimplifiedChinese ? chinese : UiLocalization.T(english);
     private static string ParentingTitle => ParentingText("Layer parenting (2D edit following)", "图层父子关系（二维编辑跟随）");
+    private static string ParentingUsageHint => ParentingText(
+        "Follows 2D pointer transforms only; parent animation is not inherited during playback.",
+        "仅跟随二维拖动与自由变换；播放时不继承父层动画。");
     private Rectangle MotionParentToggleBounds(TimelineLayout layout)
     {
         if (!MotionParentingAvailable) return Rectangle.Empty;
@@ -243,14 +246,15 @@ internal sealed partial class TimelineStrip
             _motionParentPointer = point;
             var target = MotionParentColumnBounds(layout).Contains(point) && TryGetTrackIndex(point, layout, out var index) ? index : -1;
             Cursor = MotionParentTargetAllowed(TrackIndexForId(_motionParentDragTrackId), target) ? Cursors.Hand : Cursors.No;
-            SetLayerControlToolTip(ParentingTitle + "\n" + ParentingText("Drag child to parent; Escape cancels", "从子层拖向父层；Escape 取消"));
+            SetLayerControlToolTip(ParentingTitle + "\n" + ParentingText("Drag child to parent; Escape cancels", "从子层拖向父层；Escape 取消")
+                + "\n" + ParentingUsageHint);
             Invalidate();
             return true;
         }
         if (MotionParentToggleBounds(layout).Contains(point) || MotionParentingColumnWidth > 0 && MotionParentColumnBounds(layout).Contains(point))
         {
             Cursor = Enabled ? Cursors.Hand : Cursors.Default;
-            var hint = ParentingTitle;
+            var hint = ParentingTitle + "\n" + ParentingUsageHint;
             if (TryGetTrackIndex(point, layout, out var track))
             {
                 _motionParentHoverTrackId = _timeline.Tracks[track].Id;

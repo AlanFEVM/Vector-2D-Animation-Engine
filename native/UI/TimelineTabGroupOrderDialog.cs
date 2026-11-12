@@ -87,8 +87,8 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
             if (group is null) return;
             using var picker = new ProfessionalColorPickerDialog(
                 group.ColorArgb is { } argb ? Color.FromArgb(argb) : Theme.Accent, UiLocalization.T("Tab Group Color"));
-            picker.ShowDialog(this);
-            ReplaceSelected(group with { ColorArgb = picker.Color.ToArgb() });
+            if (picker.ShowDialog(this) == DialogResult.OK)
+                ReplaceSelected(group with { ColorArgb = picker.Color.ToArgb() });
         };
         _resetColor.Click += (_, _) =>
         {
@@ -201,8 +201,26 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
                 if (e.Button != MouseButtons.Left || _dragId != group.Id
                     || new Rectangle(_dragStart.X - SystemInformation.DragSize.Width / 2, _dragStart.Y - SystemInformation.DragSize.Height / 2,
                         SystemInformation.DragSize.Width, SystemInformation.DragSize.Height).Contains(e.Location)) return;
+                var dragging = true;
+                PaintEventHandler paintOrigin = (_, paint) =>
+                {
+                    if (!dragging) return;
+                    using var veil = new SolidBrush(Color.FromArgb(191, _tags.Items.BackColor));
+                    paint.Graphics.FillRectangle(veil, tag.ClientRectangle);
+                };
+                tag.Paint += paintOrigin;
+                tag.Invalidate();
+                tag.Update();
                 try { tag.DoDragDrop(group.Id, DragDropEffects.Move); }
-                finally { _dragId = null; _dropMarkerX = -1; _tags.Items.Invalidate(); }
+                finally
+                {
+                    dragging = false;
+                    tag.Paint -= paintOrigin;
+                    if (!tag.IsDisposed) tag.Invalidate();
+                    _dragId = null;
+                    _dropMarkerX = -1;
+                    _tags.Items.Invalidate();
+                }
             };
             tag.DragOver += (_, e) =>
             {

@@ -4,7 +4,6 @@ internal sealed class SelectionSummaryPanel : UserControl
 {
     private readonly Label _title = new();
     private readonly Label _selection = InspectorModuleStyle.CreateTextLabel();
-    private readonly Label _hint = new() { AutoEllipsis = true, UseMnemonic = false };
     private readonly Label _layerCaption = InspectorModuleStyle.CreateFieldLabel("Layer");
     private readonly Label _layer = InspectorModuleStyle.CreateTextLabel();
     private readonly Label _detailCaption = InspectorModuleStyle.CreateFieldLabel("Geometry atoms");
@@ -31,18 +30,16 @@ internal sealed class SelectionSummaryPanel : UserControl
         InspectorModuleStyle.StylePageTitle(_title);
         _title.Text = "Object";
         _selection.Font = Theme.UiFont(11f);
-        _hint.Font = Theme.UiFont();
-        _hint.ForeColor = Theme.PanelSecondaryText;
-        _hint.Text = "Select an object on the stage to inspect its properties.";
         Theme.StyleToolTip(_toolTip);
-        Controls.AddRange([_title, _selection, _hint, _layerCaption, _layer,
+        Controls.AddRange([_title, _selection, _layerCaption, _layer,
             _detailCaption, _detail, _totalCaption, _total, _preview]);
+        _toolTip.SetToolTip(_total, UiLocalization.T("Total drawing objects, not the number of selected objects."));
         _layoutReady = true;
         SetSummary(null, null, null, null, 0);
         PerformLayout();
     }
 
-    public int PreferredHeight => _hasImagePreview ? 258 : 230;
+    public int PreferredHeight => _hasImagePreview ? 218 : 230;
 
     public void SetImagePreview(bool hasImage, BitmapImageRaster? raster, BitmapSampling sampling)
     {
@@ -61,7 +58,6 @@ internal sealed class SelectionSummaryPanel : UserControl
         SetText(_detailCaption, UiLocalization.T(detailCaption ?? "Geometry atoms"));
         SetText(_detail, detail ?? "–");
         SetText(_total, CompactFormat.Number(objectCount));
-        _toolTip.SetToolTip(_total, UiLocalization.T("Total drawing objects, not the number of selected objects."));
         if (_hasSelection != hasSelection)
         {
             _hasSelection = hasSelection;
@@ -71,7 +67,8 @@ internal sealed class SelectionSummaryPanel : UserControl
 
     private void SetText(Label label, string value)
     {
-        if (label.Text != value) label.Text = value;
+        if (label.Text == value) return;
+        label.Text = value;
         label.AccessibleDescription = value;
         _toolTip.SetToolTip(label, value);
     }
@@ -88,10 +85,9 @@ internal sealed class SelectionSummaryPanel : UserControl
         _selection.SetBounds(inset, ScaleMetric(66), summaryWidth, ScaleMetric(32));
         _preview.Visible = _hasSelection && _hasImagePreview;
         _preview.SetBounds(inset + width - previewWidth, ScaleMetric(66), Math.Max(1, previewWidth), ScaleMetric(140));
-        _hint.SetBounds(inset, ScaleMetric(110), width, ScaleMetric(56));
-        _hint.Visible = !_hasSelection;
         _layerCaption.Visible = _layer.Visible = _hasSelection;
-        _detailCaption.Visible = _detail.Visible = _hasSelection;
+        _detailCaption.Visible = _detail.Visible = _hasSelection && !_hasImagePreview;
+        _totalCaption.Visible = _total.Visible = !_hasImagePreview;
         void Row(Label caption, Label value, int top)
         {
             caption.Dock = DockStyle.None;
@@ -106,10 +102,7 @@ internal sealed class SelectionSummaryPanel : UserControl
         {
             _layerCaption.SetBounds(inset, ScaleMetric(106), summaryWidth, ScaleMetric(20));
             _layer.SetBounds(inset, ScaleMetric(128), summaryWidth, ScaleMetric(24));
-            _detailCaption.SetBounds(inset, ScaleMetric(160), summaryWidth, ScaleMetric(20));
-            _detail.SetBounds(inset, ScaleMetric(182), summaryWidth, ScaleMetric(24));
         }
-        if (_hasImagePreview) Row(_totalCaption, _total, 218);
     }
 
     protected override void OnPaint(PaintEventArgs eventArgs)

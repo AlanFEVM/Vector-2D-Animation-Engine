@@ -24,7 +24,7 @@ internal sealed partial class MainForm
     private readonly ComboBox _inspectorCategorySelector = new();
     private static readonly InspectorCategory[] InspectorCategoryOrder =
         [InspectorCategory.None, InspectorCategory.Color,
-            InspectorCategory.Physics, InspectorCategory.Camera, InspectorCategory.Scene];
+            InspectorCategory.Camera, InspectorCategory.Scene];
     private static readonly InspectorCategory[] InspectorPropertyOrder =
         [InspectorCategory.None, InspectorCategory.Tools, InspectorCategory.Document];
     private readonly Panel _inspectorPropertyNavigation = new();
@@ -106,7 +106,7 @@ internal sealed partial class MainForm
         }
         _colorInspectorPage.Dock = DockStyle.Fill;
         _colorInspectorPage.BackColor = Theme.Panel;
-        _colorInspectorPage.ShowScrollBar = false;
+        _colorInspectorPage.ShowScrollBar = true;
         _colorInspectorPage.ContentPadding = new Padding(0, 0, 2, 0);
         _colorInspectorPage.Visible = false;
         inspector.Controls.Add(_colorInspectorPage);
@@ -337,11 +337,14 @@ internal sealed partial class MainForm
         var document = IsDocumentInspectorContext;
         _materialEditor.Visible = color && !unavailable;
         _materialEditor.Enabled = _colorMaterialAvailable && drawingContext;
+        // Only announce exceptional states; the neutral "editing the selection" line was
+        // permanent filler above the material editor.
         _appearanceInspectorSummary.Text = !_colorMaterialAvailable
             ? UiLocalization.T("This selection has no editable fill or stroke.")
             : _selectedObjects.Count == 0 && !_selectedElement.IsValid
                 ? UiLocalization.T("No selection: current drawing appearance.")
-                : UiLocalization.T("Editing the appearance of the current selection.");
+                : "";
+        _appearanceInspectorSummary.Visible = _appearanceInspectorSummary.Text.Length > 0;
         _colorInspectorPage.Visible = color && !unavailable;
         _toolInspectorPage.Visible = tools && !unavailable;
         _inspectorUnavailablePage.Visible = unavailable;
@@ -400,7 +403,6 @@ internal sealed partial class MainForm
         if (category == _inspectorCategory)
         {
             UpdateInspector();
-            if (category == InspectorCategory.None) _basicInspectorPage.RestoreScrollPosition(0);
             return;
         }
         if (!CommitTextEdit()) return;
@@ -414,7 +416,7 @@ internal sealed partial class MainForm
         InspectorCategory.Color => true,
         InspectorCategory.Tools => true,
         InspectorCategory.Document => true,
-        // No physics content yet; the rail keeps the button disabled.
+        // Reserved for document/shortcut compatibility; no navigation is exposed yet.
         InspectorCategory.Physics => false,
         InspectorCategory.Camera => true,
         InspectorCategory.Scene => true,

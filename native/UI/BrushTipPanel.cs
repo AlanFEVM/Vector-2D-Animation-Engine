@@ -190,6 +190,12 @@ internal sealed class BrushTipPanel : UserControl
         _hardness.Enabled = brushShape.IsDefaultSoftRound;
         _hardness.Value = brushShape.Hardness;
         _hardnessValue.Text = brushShape.IsDefaultSoftRound ? $"{brushShape.Hardness}%" : "-";
+        var hardnessHint = UiLocalization.T(brushShape.IsDefaultSoftRound
+            ? "Adjust the soft round brush edge hardness."
+            : "Hardness is available for the soft round brush. Custom and traditional tips keep their own edge shape.");
+        _toolTip.SetToolTip(_hardness, hardnessHint);
+        _toolTip.SetToolTip(_hardnessValue, hardnessHint);
+        _hardness.AccessibleDescription = hardnessHint;
         if (brushShape.IsTraditionalBrush)
         {
             _traditionalTip.SelectedIndex = brushShape.TraditionalTipKind == TraditionalBrushTipKind.Square ? 1 : 0;

@@ -1,4 +1,4 @@
-namespace VectorAnimationEngine;
+﻿namespace VectorAnimationEngine;
 
 internal sealed class SettingsDialog : ModernDialogForm
 {
@@ -170,7 +170,7 @@ internal sealed class SettingsDialog : ModernDialogForm
             RowCount = 10
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        foreach (var height in new[] { 32, 46, 154, 16, 48, 36, 46, 40, 32, 46 })
+        foreach (var height in new[] { 32, 46, 174, 16, 48, 36, 46, 40, 32, 46 })
             content.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         var generalScroll = new ThemedScrollPanel { Dock = DockStyle.Fill, ContentPadding = Padding.Empty };
         generalScroll.Content.Controls.Add(content);
@@ -265,6 +265,7 @@ internal sealed class SettingsDialog : ModernDialogForm
         selectionPreferences.Click += (_, _) =>
         {
             using var dialog = new SelectionPreferencesDialog(SelectionSettings);
+            dialog.ApplyRequested = () => SelectionPreferencesSaveRequested?.Invoke(dialog) ?? true;
             if (dialog.ShowDialog(this) == DialogResult.OK) SelectionSettings = dialog.SelectedSettings;
         };
         selectionPreferences.Margin = new Padding(4, 0, 4, 0);
@@ -275,7 +276,8 @@ internal sealed class SettingsDialog : ModernDialogForm
         settingsPanels.SetColumn(shortcutProfiles, 2);
         settingsPanels.Controls.Add(selectionPreferences, 1, 0);
         KeepSettingsEditorsVisible(content, generalScroll);
-        var save = AddDialogAction("Save", DialogResult.OK, DialogActionStyle.Primary);
+        var save = AddDialogAction("Save", DialogResult.OK, DialogActionStyle.Primary,
+            () => SaveRequested?.Invoke(this) ?? true);
         var cancel = AddDialogAction("Cancel", DialogResult.Cancel);
         AcceptButton = save;
         CancelButton = cancel;
@@ -319,6 +321,10 @@ internal sealed class SettingsDialog : ModernDialogForm
     public bool FreeTransformShiftProportionalEnabled => _freeTransformShiftProportionalEnabled;
     internal event EventHandler? ThemePreviewChanged;
     internal event EventHandler? CornerPreviewChanged;
+    internal Func<SettingsDialog, bool>? SaveRequested { get; set; }
+    internal Func<OperationPreferencesDialog, bool>? OperationPreferencesSaveRequested { get; set; }
+    internal Func<ShortcutProfilesDialog, bool>? ShortcutProfilesSaveRequested { get; set; }
+    internal Func<SelectionPreferencesDialog, bool>? SelectionPreferencesSaveRequested { get; set; }
     public ToolShortcutPreset SelectedPreset => ShortcutProfiles.LegacyPresetForProfile(
         SelectedShortcutProfileId,
         CustomShortcutProfiles);
@@ -339,6 +345,7 @@ internal sealed class SettingsDialog : ModernDialogForm
     private void OpenOperationPreferences()
     {
         using var dialog = new OperationPreferencesDialog(_freeTransformShiftProportionalEnabled, SelectedToolbarPosition);
+        dialog.ApplyRequested = () => OperationPreferencesSaveRequested?.Invoke(dialog) ?? true;
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
             _freeTransformShiftProportionalEnabled = dialog.FreeTransformShiftProportionalEnabled;
@@ -349,6 +356,7 @@ internal sealed class SettingsDialog : ModernDialogForm
     private void OpenShortcutProfiles()
     {
         using var dialog = new ShortcutProfilesDialog(_selectedShortcutProfileId, _customShortcutProfiles);
+        dialog.ApplyRequested = () => ShortcutProfilesSaveRequested?.Invoke(dialog) ?? true;
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         _selectedShortcutProfileId = dialog.SelectedShortcutProfileId;
         _customShortcutProfiles = dialog.CustomShortcutProfiles;
@@ -582,15 +590,14 @@ internal sealed class SettingsDialog : ModernDialogForm
                 Dock = DockStyle.Fill,
                 BackColor = Theme.Panel,
                 ColumnCount = 1,
-                RowCount = 4,
+                RowCount = 5,
                 Margin = Padding.Empty,
                 Padding = Padding.Empty
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+            for (var index = 0; index < 3; index++) layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             Controls.Add(layout);
 
             layout.Controls.Add(CreateHeader(title, accessiblePrefix), 0, 0);
@@ -763,8 +770,9 @@ internal sealed class SettingsDialog : ModernDialogForm
             input.DecimalPlaces = 0;
             input.Increment = 1;
             input.Suffix = suffix;
+            input.ShowSuffix = !string.IsNullOrEmpty(suffix);
             input.Dock = DockStyle.Fill;
-            input.Margin = new Padding(3, 1, 0, 1);
+            input.Margin = new Padding(3, 4, 0, 4);
             input.AccessibleName = accessibleName;
             input.AccessibleDescription = accessibleDescription;
             Theme.StyleNumeric(input);

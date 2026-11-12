@@ -37,6 +37,8 @@ internal sealed class ProjectAssetFolderRestartSnapshot
 
 internal sealed class ExternalSvgAssetRestartSnapshot
 {
+    public string AssetFolderId { get; init; } = "";
+    public string[] AssetTagIds { get; init; } = [];
     public string Id { get; init; } = "";
     public string Name { get; init; } = "SVG";
     public string OriginalSourcePath { get; init; } = "";
@@ -48,6 +50,8 @@ internal sealed class ExternalSvgAssetRestartSnapshot
 
 internal sealed class ImageAssetRestartSnapshot
 {
+    public string AssetFolderId { get; init; } = "";
+    public string[] AssetTagIds { get; init; } = [];
     public string Id { get; init; } = "";
     public string Name { get; init; } = "Image";
     public string OriginalSourcePath { get; init; } = "";

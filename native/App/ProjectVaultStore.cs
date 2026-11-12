@@ -222,6 +222,8 @@ internal static class ProjectVaultStore
 
                 imageEntries.Add(new ImageAssetDescriptor
                 {
+                    AssetFolderId = imageAsset.AssetFolderId,
+                    AssetTagIds = imageAsset.AssetTagIds,
                     Id = imageAsset.Id,
                     Name = imageAsset.Name,
                     SourcePath = imageAsset.SourcePath,
@@ -253,6 +255,7 @@ internal static class ProjectVaultStore
                     throw new InvalidDataException($"SVG asset '{asset.Name}' changed on disk.");
                 svgEntries.Add(new ExternalSvgAssetDescriptor
                 {
+                    AssetFolderId = asset.AssetFolderId, AssetTagIds = asset.AssetTagIds,
                     Id = asset.Id, Name = asset.Name, SourcePath = asset.SourcePath,
                     OriginalSourcePath = asset.OriginalSourcePath,
                     ProjectRelativePath = relative, LastKnownSha256 = hash, CreatedAt = asset.CreatedAt
@@ -421,6 +424,7 @@ internal static class ProjectVaultStore
             // is retained only as a diagnostic breadcrumb and a Relink target.
             imageAssets[index] = new ImageAssetRestartSnapshot
             {
+                AssetFolderId = entry.AssetFolderId, AssetTagIds = entry.AssetTagIds,
                 Id = entry.Id,
                 Name = entry.Name,
                 SourcePath = imagePath,
@@ -495,6 +499,7 @@ internal static class ProjectVaultStore
                     ValidateFile(path, entry.LastKnownSha256, MaxSvgAssetBytes, "SVG asset"));
                 externalSvgAssets[index] = new ExternalSvgAssetRestartSnapshot
                 {
+                    AssetFolderId = entry.AssetFolderId, AssetTagIds = entry.AssetTagIds,
                     Id = entry.Id, Name = entry.Name, SourcePath = path,
                     OriginalSourcePath = entry.OriginalSourcePath,
                     ProjectRelativePath = expected, LastKnownSha256 = entry.LastKnownSha256,
@@ -996,6 +1001,8 @@ internal static class ProjectVaultStore
 
         var folderIds = manifest.AssetFolders.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         var assetTagIds = manifest.AssetTags.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var asset in manifest.ImageAssets) ValidateLibraryMetadata(asset.AssetFolderId, asset.AssetTagIds, folderIds, assetTagIds);
+        foreach (var asset in manifest.ExternalSvgAssets) ValidateLibraryMetadata(asset.AssetFolderId, asset.AssetTagIds, folderIds, assetTagIds);
         var externalSvgAssetIds = manifest.ExternalSvgAssets.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         if (externalSvgAssetIds.Overlaps(manifest.DrawingObjects.Select(item => item.Id)))
         {
@@ -1065,6 +1072,15 @@ internal static class ProjectVaultStore
         var resolved = ResolveExpectedRelativePath(projectRoot, relativePath, expectedPath);
         if (!paths.Add(resolved)) throw new InvalidDataException("The project manifest contains duplicate file references.");
         if (!IsSha256(checksum)) throw new InvalidDataException($"The checksum for '{relativePath}' is invalid.");
+    }
+
+    private static void ValidateLibraryMetadata(string folderId, string[] tagIds, ISet<string> folderIds, ISet<string> validTagIds)
+    {
+        if (folderId is null || folderId.Length > 0 && !folderIds.Contains(folderId)
+            || tagIds is null || tagIds.Length > MaxAssetTags
+            || tagIds.Distinct(StringComparer.Ordinal).Count() != tagIds.Length
+            || tagIds.Any(id => id is null || !validTagIds.Contains(id)))
+            throw new InvalidDataException("Invalid library asset folder or tag reference.");
     }
 
     private static void ValidateAssetFolders(IReadOnlyList<AssetFolderDescriptor> folders)
@@ -1347,11 +1363,16 @@ internal static class ProjectVaultStore
         ValidateExternalSvgAssets(snapshot.ExternalSvgAssets, projectRoot);
         ValidateRestartSnapshotImageAssets(snapshot.ImageAssets, projectRoot);
         var assetTagIds = snapshot.AssetTags.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        ValidateAssetFolders(snapshot.AssetFolders.Select(AssetFolderDescriptor.From).ToArray());
+        var folderIds = snapshot.AssetFolders.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var asset in snapshot.ImageAssets) ValidateLibraryMetadata(asset.AssetFolderId, asset.AssetTagIds, folderIds, assetTagIds);
+        foreach (var asset in snapshot.ExternalSvgAssets) ValidateLibraryMetadata(asset.AssetFolderId, asset.AssetTagIds, folderIds, assetTagIds);
         var drawingIds = snapshot.DrawingObjects.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         var svgAssetIds = snapshot.ExternalSvgAssets.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         var imageAssetIds = snapshot.ImageAssets.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         if (drawingIds.Overlaps(snapshot.ExternalSvgAssets.Select(item => item.Id))
-            || drawingIds.Overlaps(snapshot.ImageAssets.Select(item => item.Id)))
+            || drawingIds.Overlaps(snapshot.ImageAssets.Select(item => item.Id))
+            || svgAssetIds.Overlaps(imageAssetIds))
         {
             throw new InvalidDataException("An asset ID collides with a symbol ID.");
         }
@@ -2868,6 +2889,8 @@ internal static class ProjectVaultStore
 
     private sealed class ExternalSvgAssetDescriptor
     {
+        public string AssetFolderId { get; init; } = "";
+        public string[] AssetTagIds { get; init; } = [];
         public string Id { get; init; } = "";
         public string Name { get; init; } = "SVG";
         public string SourcePath { get; init; } = "";
@@ -2878,6 +2901,7 @@ internal static class ProjectVaultStore
 
         public static ExternalSvgAssetDescriptor From(ExternalSvgAssetRestartSnapshot snapshot) => new()
         {
+            AssetFolderId = snapshot.AssetFolderId, AssetTagIds = snapshot.AssetTagIds,
             Id = snapshot.Id,
             Name = snapshot.Name,
             SourcePath = snapshot.SourcePath,
@@ -2889,6 +2913,7 @@ internal static class ProjectVaultStore
 
         public ExternalSvgAssetRestartSnapshot ToSnapshot() => new()
         {
+            AssetFolderId = AssetFolderId, AssetTagIds = AssetTagIds,
             Id = Id,
             Name = Name,
             SourcePath = SourcePath,
@@ -2901,6 +2926,8 @@ internal static class ProjectVaultStore
 
     private sealed class ImageAssetDescriptor
     {
+        public string AssetFolderId { get; init; } = "";
+        public string[] AssetTagIds { get; init; } = [];
         public string Id { get; init; } = "";
         public string Name { get; init; } = "Image";
         public string SourcePath { get; init; } = "";

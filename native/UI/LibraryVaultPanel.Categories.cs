@@ -186,8 +186,9 @@ internal sealed partial class LibraryVaultPanel
         var externalSvg = _activeAssetCategory == AssetCategory.ExternalSvg;
         var images = _activeAssetCategory == AssetCategory.Images;
         var hosted = externalSvg || images;
-        _assetTagFilter.Enabled = !hosted;
-        _manageTagsButton.Enabled = !hosted && SelectedProjectDrawingObject() is not null;
+        _assetTagFilter.Enabled = true;
+        _manageTagsButton.Enabled = SelectedProjectRow() is { } selectedRow
+            && (selectedRow.DrawingObject is not null || selectedRow.ImageAsset is not null || selectedRow.ExternalSvgAsset is not null);
         _newFolderButton.Icon = images ? SvgIconKind.ImportImage : externalSvg ? SvgIconKind.AssetAdd : SvgIconKind.TimelineFolder;
         _newFolderButton.AccessibleName = UiLocalization.T(
             externalSvg ? "Import SVG Asset" : images ? "Import Image" : "New Folder");
@@ -244,11 +245,36 @@ internal sealed partial class LibraryVaultPanel
             ? AssetCategory.ThreeDimensionalSymbols
             : AssetCategory.BasicSymbols;
 
-    private void AddExternalSvgAssetNodes(TreeNodeCollection nodes)
+    private void AddHostedAssetTree(string folderId, TreeNodeCollection nodes, ISet<string> expandedIds)
+    {
+        if (_project is null) return;
+        foreach (var folder in _project.AssetFolders.Where(folder => folder.ParentFolderId == folderId))
+        {
+            var node = new TreeNode(folder.Name + "/")
+            {
+                Tag = new VaultRow(new VaultItem { Kind = "Folder", Name = folder.Name }, null, false, Folder: folder)
+            };
+            AddHostedAssetTree(folder.Id, node.Nodes, expandedIds);
+            if (!AssetFilterActive || node.Nodes.Count > 0 || AssetSearchText.Length > 0
+                && SelectedAssetTagFilterId.Length == 0 && ContainsSearch(folder.Name, AssetSearchText)) nodes.Add(node);
+            if (expandedIds.Contains(folder.Id) || AssetFilterActive) node.Expand();
+        }
+        if (_activeAssetCategory == AssetCategory.Images) AddImageAssetNodes(nodes, folderId);
+        else AddExternalSvgAssetNodes(nodes, folderId);
+    }
+
+    private bool HostedAssetMatchesTags(IReadOnlyList<string> ids, string search)
+    {
+        if (SelectedAssetTagFilterId.Length > 0 && !ids.Contains(SelectedAssetTagFilterId)) return false;
+        return search.Length == 0 || _project?.AssetTags.Any(tag => ids.Contains(tag.Id) && ContainsSearch(tag.Name, search)) == true;
+    }
+
+    private void AddExternalSvgAssetNodes(TreeNodeCollection nodes, string folderId)
     {
         if (_project is null) return;
         foreach (var asset in _project.ExternalSvgAssets)
         {
+            if (asset.AssetFolderId != folderId) continue;
             if (!ExternalSvgAssetMatchesSearch(asset)) continue;
             var missing = ExternalSvgAssetIsMissing(asset);
             var displayPath = ExternalSvgAssetDisplayPath(asset);
@@ -283,10 +309,10 @@ internal sealed partial class LibraryVaultPanel
     private bool ExternalSvgAssetMatchesSearch(ExternalSvgAssetDefinition asset)
     {
         var search = AssetSearchText;
-        return search.Length == 0
+        return HostedAssetMatchesTags(asset.AssetTagIds, "") && (search.Length == 0
             || ContainsSearch(asset.Name, search)
             || ContainsSearch(asset.SourcePath, search)
-            || ContainsSearch(asset.ProjectRelativePath, search);
+            || ContainsSearch(asset.ProjectRelativePath, search) || HostedAssetMatchesTags(asset.AssetTagIds, search));
     }
 
     private static string ExternalSvgAssetDisplayPath(ExternalSvgAssetDefinition asset)
@@ -313,11 +339,12 @@ internal sealed partial class LibraryVaultPanel
     private static bool ExternalSvgRowCanBeUsed(VaultRow? row) =>
         row is { ExternalSvgAsset: not null, ExternalSvgMissing: false };
 
-    private void AddImageAssetNodes(TreeNodeCollection nodes)
+    private void AddImageAssetNodes(TreeNodeCollection nodes, string folderId)
     {
         if (_project is null) return;
         foreach (var asset in _project.ImageAssets)
         {
+            if (asset.AssetFolderId != folderId) continue;
             if (!ImageAssetMatchesSearch(asset)) continue;
             var missing = ImageAssetIsMissing(asset);
             var detail = missing
@@ -355,10 +382,10 @@ internal sealed partial class LibraryVaultPanel
     private bool ImageAssetMatchesSearch(ImageAssetDefinition asset)
     {
         var search = AssetSearchText;
-        return search.Length == 0
+        return HostedAssetMatchesTags(asset.AssetTagIds, "") && (search.Length == 0
             || ContainsSearch(asset.Name, search)
             || ContainsSearch(asset.SourcePath, search)
-            || ContainsSearch(asset.ProjectRelativePath, search);
+            || ContainsSearch(asset.ProjectRelativePath, search) || HostedAssetMatchesTags(asset.AssetTagIds, search));
     }
 
     private bool ImageAssetIsMissing(ImageAssetDefinition asset)
@@ -405,12 +432,8 @@ internal sealed partial class LibraryVaultPanel
         _updateImageAssetMenuItem.Click += (_, _) => RaiseSelectedImageAssetRequest(
             ImageAssetUpdateRequested,
             requireAvailable: false);
-        _duplicateImageAssetMenuItem.Click += (_, _) => RaiseSelectedImageAssetRequest(
-            ImageAssetDuplicateRequested,
-            requireAvailable: true);
-        _deleteImageAssetMenuItem.Click += (_, _) => RaiseSelectedImageAssetRequest(
-            ImageAssetDeleteRequested,
-            requireAvailable: false);
+        _duplicateImageAssetMenuItem.Click += (_, _) => { if (!RaiseBatchAction("Duplicate")) RaiseSelectedImageAssetRequest(ImageAssetDuplicateRequested, true); };
+        _deleteImageAssetMenuItem.Click += (_, _) => RequestSelectedDeletion();
         items.AddRange(new ToolStripItem[]
         {
             _useImageAssetMenuItem,
@@ -463,12 +486,8 @@ internal sealed partial class LibraryVaultPanel
         _updateExternalSvgAssetMenuItem.Click += (_, _) => RaiseSelectedExternalSvgAssetRequest(
             ExternalSvgAssetUpdateRequested,
             requireAvailable: false);
-        _duplicateExternalSvgAssetMenuItem.Click += (_, _) => RaiseSelectedExternalSvgAssetRequest(
-            ExternalSvgAssetDuplicateRequested,
-            requireAvailable: true);
-        _deleteExternalSvgAssetMenuItem.Click += (_, _) => RaiseSelectedExternalSvgAssetRequest(
-            ExternalSvgAssetDeleteRequested,
-            requireAvailable: false);
+        _duplicateExternalSvgAssetMenuItem.Click += (_, _) => { if (!RaiseBatchAction("Duplicate")) RaiseSelectedExternalSvgAssetRequest(ExternalSvgAssetDuplicateRequested, true); };
+        _deleteExternalSvgAssetMenuItem.Click += (_, _) => RequestSelectedDeletion();
         items.AddRange(new ToolStripItem[]
         {
             _useExternalSvgAssetMenuItem,

@@ -29,6 +29,7 @@ internal sealed partial class MainForm : Form
 
     private void UpdateInspectorContents(bool refreshLineEndpointStyles)
     {
+        _sceneEditorPanel.SetInstanceSource(ActiveDrawingObject() is { IsOpenCanvas: false } source ? source.Name : null);
         ApplyPendingObjectInspectorSelection();
         UpdateCanvasWorkspace();
         UpdateToolInspectorSummary();
@@ -104,7 +105,10 @@ internal sealed partial class MainForm : Form
                 selectedSceneInstanceStates.Any(state => Math.Abs(state.Alpha - sceneInstanceState.Alpha) > 0.0001f),
                 selectedSceneInstanceStates.Any(state => state.TintArgb != sceneInstanceState.TintArgb),
                 selectedSceneInstanceStates.Any(state => state.Filters != sceneInstanceState.Filters),
-                selectedSceneInstanceStates.Any(state => state.BlendMode != sceneInstanceState.BlendMode));
+                selectedSceneInstanceStates.Any(state => state.BlendMode != sceneInstanceState.BlendMode),
+                selectedSceneInstanceStates.Any(state => state.PlaybackFps != sceneInstanceState.PlaybackFps),
+                selectedSceneInstanceStates.Any(state => state.PlaybackMode != sceneInstanceState.PlaybackMode),
+                selectedSceneInstanceStates.Any(state => state.HoldFrame != sceneInstanceState.HoldFrame));
             var drawingLayer = Array.IndexOf(_scene.LayerIds, sceneInstance.SceneLayerId);
             var layerName = IsSceneCompositionContext()
                 ? ActiveScene()?.FindLayer(sceneInstance.SceneLayerId)?.Name
@@ -912,14 +916,7 @@ internal sealed partial class MainForm : Form
             HotReloadUiState.Failed => "Module Reload Failed",
             _ => "Module Reload On"
         };
-        _devReloadStatus.Text = $"{UiLocalization.T(text)} #{generation}";
-        _devReloadStatus.ForeColor = state switch
-        {
-            HotReloadUiState.Applied => Theme.SecondaryText,
-            HotReloadUiState.Failed => Theme.Danger,
-            HotReloadUiState.Recovering => Theme.Warning,
-            _ => Theme.SecondaryText
-        };
+        AppLog.Info($"Hot reload status: {text} #{generation}");
     }
 
     private void RefreshWorkspaceModulesAfterHotReload()
@@ -1042,6 +1039,7 @@ internal sealed partial class MainForm : Form
             _sceneEditPage.ResumeContentLayout(performLayout: sceneWorkspace);
             inspector?.ResumeLayout(performLayout: true);
             ResumeLayout(performLayout: true);
+            LayoutToolPalette();
             LayoutInspectorCategoryRail();
             if (animateInspector)
             {

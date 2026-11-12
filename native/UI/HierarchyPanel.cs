@@ -1,4 +1,4 @@
-namespace VectorAnimationEngine;
+﻿namespace VectorAnimationEngine;
 
 internal enum HierarchyNodeKind
 {
@@ -31,6 +31,12 @@ internal sealed class HierarchyPanel : UserControl
     private readonly Label _title = new();
     private readonly Label _summary = new();
     private readonly TreeView _tree = new();
+    private readonly ModernTextInput _search = new() { SearchAppearance = true, PlaceholderText = UiLocalization.T("Search layers or object types..."), Dock = DockStyle.Top };
+    private readonly Button _loadMore = new() { Text = UiLocalization.T("Load more layers and objects"), Dock = DockStyle.Bottom };
+    private readonly System.Windows.Forms.Timer _searchTimer = new() { Interval = 140 };
+    private int _layerNodeLimit = MaxLayerNodes;
+    private int _objectNodeLimit = MaxObjectNodes;
+    public Func<int, string>? ObjectNameResolver { get; set; }
     private VectorScene? _scene;
     private TreeNode? _sceneNode;
     private TreeNode? _layersRoot;
@@ -43,6 +49,7 @@ internal sealed class HierarchyPanel : UserControl
     private float[] _presentedLayerOpacity = [];
     private int[] _presentedLayerColors = [];
     private ushort[] _presentedObjectLayers = [];
+    private string[] _presentedObjectLabels = [];
 
     public HierarchyPanel()
     {
@@ -51,12 +58,11 @@ internal sealed class HierarchyPanel : UserControl
         MinimumSize = new Size(220, 220);
         Padding = new Padding(10);
 
-        _title.Text = "Hierarchy";
+        _title.Text = UiLocalization.T("Hierarchy");
         _title.Dock = DockStyle.Top;
         _title.Height = 28;
-        _title.ForeColor = Theme.Text;
+        InspectorModuleStyle.StylePageTitle(_title);
         _title.BackColor = Theme.Panel;
-        _title.Font = Theme.UiFont(10, FontStyle.Bold);
         _title.TextAlign = ContentAlignment.MiddleLeft;
         Controls.Add(_title);
 
@@ -78,6 +84,19 @@ internal sealed class HierarchyPanel : UserControl
         };
         Controls.Add(_tree);
 
+        Theme.StyleTextBox(_search);
+        Theme.StyleStandardButton(_loadMore);
+        _search.TextChanged += (_, _) => { _searchTimer.Stop(); _searchTimer.Start(); };
+        _searchTimer.Tick += (_, _) => { _searchTimer.Stop(); Rebuild(); };
+        _loadMore.Click += (_, _) =>
+        {
+            _layerNodeLimit = (int)Math.Min(int.MaxValue, (long)_layerNodeLimit + MaxLayerNodes);
+            _objectNodeLimit = (int)Math.Min(int.MaxValue, (long)_objectNodeLimit + MaxObjectNodes);
+            Rebuild();
+        };
+        Controls.Add(_search);
+        Controls.Add(_loadMore);
+
         _tree.BringToFront();
         RebuildPlaceholder();
     }
@@ -96,6 +115,8 @@ internal sealed class HierarchyPanel : UserControl
         }
 
         _scene = scene;
+        _layerNodeLimit = MaxLayerNodes;
+        _objectNodeLimit = MaxObjectNodes;
         InvalidatePresentationSnapshot();
         Rebuild();
     }
@@ -123,6 +144,7 @@ internal sealed class HierarchyPanel : UserControl
         }
 
         if (!force && PresentationSnapshotMatches()) return;
+        if (_search.Text.Trim().Length > 0) { Rebuild(); return; }
 
         _tree.BeginUpdate();
         try
@@ -130,30 +152,26 @@ internal sealed class HierarchyPanel : UserControl
             RefreshBranch(
                 _layersRoot,
                 _scene.LayerCount,
-                MaxLayerNodes,
-                index =>
-                {
-                    var visibility = _scene.LayerVisible[index] ? "Visible" : "Hidden";
-                    return $"{_scene.LayerNames[index]} - {visibility}, {_scene.LayerOpacity[index]:P0}";
-                },
+                _layerNodeLimit,
+                index => LayerNodeText(index),
                 HierarchyNodeKind.Layer,
                 "layers",
                 styleAt: (node, index) => node.BackColor = LayerNodeBackground(index));
             RefreshBranch(
                 _objectsRoot,
                 _scene.ObjectCount,
-                MaxObjectNodes,
+                _objectNodeLimit,
                 index =>
                 {
                     var layer = _scene.ObjectLayer.Length > index ? _scene.ObjectLayer[index] : 0;
-                    return $"Object {index:000000} - Layer {layer}";
+                    return ObjectLabel(index, layer);
                 },
                 HierarchyNodeKind.Object,
                 "objects",
                 index => _scene.ObjectLayer.Length > index ? _scene.ObjectLayer[index] : 0);
-            SetTextIfChanged(_layersRoot, $"Layers ({_scene.LayerCount})");
-            SetTextIfChanged(_objectsRoot, $"Objects ({_scene.ObjectCount})");
-            SetTextIfChanged(_summary, $"{_scene.LayerCount} layers, {_scene.ObjectCount} objects");
+            SetTextIfChanged(_layersRoot, $"{UiLocalization.T("Layers")} ({_scene.LayerCount})");
+            SetTextIfChanged(_objectsRoot, $"{UiLocalization.T("Objects")} ({_scene.ObjectCount})");
+            SetTextIfChanged(_summary, $"{_scene.LayerCount} {UiLocalization.T("layers")}, {_scene.ObjectCount} {UiLocalization.T("objects")}");
         }
         finally
         {
@@ -161,15 +179,26 @@ internal sealed class HierarchyPanel : UserControl
         }
 
         CapturePresentationSnapshot();
+        _loadMore.Visible = _scene.LayerCount > _layerNodeLimit || _scene.ObjectCount > _objectNodeLimit;
     }
 
     public void SelectLayer(int layerIndex)
     {
+        if (_scene is not null && layerIndex >= _layerNodeLimit && layerIndex < _scene.LayerCount)
+        {
+            _layerNodeLimit = layerIndex + 1;
+            Rebuild();
+        }
         SelectFirstNode(node => node.Tag is HierarchyNodeTag tag && tag.Kind == HierarchyNodeKind.Layer && tag.Index == layerIndex);
     }
 
     public void SelectObject(int objectIndex)
     {
+        if (_scene is not null && objectIndex >= _objectNodeLimit && objectIndex < _scene.ObjectCount)
+        {
+            _objectNodeLimit = objectIndex + 1;
+            Rebuild();
+        }
         SelectFirstNode(node => node.Tag is HierarchyNodeTag tag && tag.Kind == HierarchyNodeKind.Object && tag.Index == objectIndex);
     }
 
@@ -191,34 +220,39 @@ internal sealed class HierarchyPanel : UserControl
         _tree.BeginUpdate();
         _tree.Nodes.Clear();
 
-        var sceneNode = TaggedNode("Scene", HierarchyNodeKind.Scene, -1);
-        var layersRoot = TaggedNode($"Layers ({_scene.LayerCount})", HierarchyNodeKind.LayersRoot, -1);
-        var layerLimit = Math.Min(_scene.LayerCount, MaxLayerNodes);
-        for (var i = 0; i < layerLimit; i++)
+        var sceneNode = TaggedNode(UiLocalization.T("Scene"), HierarchyNodeKind.Scene, -1);
+        var layersRoot = TaggedNode($"{UiLocalization.T("Layers")} ({_scene.LayerCount})", HierarchyNodeKind.LayersRoot, -1);
+        var query = _search.Text.Trim();
+        var layerIndices = Enumerable.Range(0, _scene.LayerCount)
+            .Where(index => query.Length == 0 || _scene.LayerNames[index].Contains(query, StringComparison.CurrentCultureIgnoreCase))
+            .Take(_layerNodeLimit == int.MaxValue ? int.MaxValue : _layerNodeLimit + 1).ToArray();
+        var objectIndices = Enumerable.Range(0, _scene.ObjectCount)
+            .Where(index => query.Length == 0 || ObjectLabel(index, _scene.ObjectLayer[index]).Contains(query, StringComparison.CurrentCultureIgnoreCase))
+            .Take(_objectNodeLimit == int.MaxValue ? int.MaxValue : _objectNodeLimit + 1).ToArray();
+        var layerLimit = Math.Min(layerIndices.Length, _layerNodeLimit);
+        foreach (var i in layerIndices.Take(layerLimit))
         {
-            var visibility = _scene.LayerVisible[i] ? "Visible" : "Hidden";
-            var opacity = _scene.LayerOpacity[i];
-            var node = TaggedNode($"{_scene.LayerNames[i]} - {visibility}, {opacity:P0}", HierarchyNodeKind.Layer, i);
+            var node = TaggedNode(LayerNodeText(i), HierarchyNodeKind.Layer, i);
             node.BackColor = LayerNodeBackground(i);
             layersRoot.Nodes.Add(node);
         }
 
-        if (_scene.LayerCount > layerLimit)
+        if (layerIndices.Length > layerLimit)
         {
-            layersRoot.Nodes.Add(PlainNode($"+ {_scene.LayerCount - layerLimit} more layers"));
+            layersRoot.Nodes.Add(PlainNode(query.Length == 0 ? string.Format(UiLocalization.T("{0} more results — use Load more"), _scene.LayerCount - layerLimit) : UiLocalization.T("More results are available. Use Load more.")));
         }
 
-        var objectsRoot = TaggedNode($"Objects ({_scene.ObjectCount})", HierarchyNodeKind.ObjectsRoot, -1);
-        var objectLimit = Math.Min(_scene.ObjectCount, MaxObjectNodes);
-        for (var i = 0; i < objectLimit; i++)
+        var objectsRoot = TaggedNode($"{UiLocalization.T("Objects")} ({_scene.ObjectCount})", HierarchyNodeKind.ObjectsRoot, -1);
+        var objectLimit = Math.Min(objectIndices.Length, _objectNodeLimit);
+        foreach (var i in objectIndices.Take(objectLimit))
         {
             var layer = _scene.ObjectLayer.Length > i ? _scene.ObjectLayer[i] : 0;
-            objectsRoot.Nodes.Add(TaggedNode($"Object {i:000000} - Layer {layer}", HierarchyNodeKind.Object, i, layer));
+            objectsRoot.Nodes.Add(TaggedNode(ObjectLabel(i, layer), HierarchyNodeKind.Object, i, layer));
         }
 
-        if (_scene.ObjectCount > objectLimit)
+        if (objectIndices.Length > objectLimit)
         {
-            objectsRoot.Nodes.Add(PlainNode($"+ {_scene.ObjectCount - objectLimit} more objects"));
+            objectsRoot.Nodes.Add(PlainNode(query.Length == 0 ? string.Format(UiLocalization.T("{0} more results — use Load more"), _scene.ObjectCount - objectLimit) : UiLocalization.T("More results are available. Use Load more.")));
         }
 
         sceneNode.Nodes.Add(layersRoot);
@@ -234,6 +268,7 @@ internal sealed class HierarchyPanel : UserControl
 
         _summary.Text = $"{_scene.LayerCount} {UiLocalization.T("layers")}, {_scene.ObjectCount} {UiLocalization.T("objects")}";
         CapturePresentationSnapshot();
+        _loadMore.Visible = layerIndices.Length > layerLimit || objectIndices.Length > objectLimit;
     }
 
     private void RebuildPlaceholder()
@@ -244,17 +279,42 @@ internal sealed class HierarchyPanel : UserControl
         _objectsRoot = null;
         _tree.BeginUpdate();
         _tree.Nodes.Clear();
-        var sceneNode = TaggedNode("Scene", HierarchyNodeKind.Scene, -1);
-        var layersRoot = TaggedNode("Layers", HierarchyNodeKind.LayersRoot, -1);
-        layersRoot.Nodes.Add(TaggedNode("Layer 0000", HierarchyNodeKind.Layer, 0));
-        var objectsRoot = TaggedNode("Objects", HierarchyNodeKind.ObjectsRoot, -1);
-        objectsRoot.Nodes.Add(TaggedNode("Object placeholder", HierarchyNodeKind.Object, -1));
-        sceneNode.Nodes.Add(layersRoot);
-        sceneNode.Nodes.Add(objectsRoot);
+        var sceneNode = PlainNode(UiLocalization.T("No scene selected"));
         _tree.Nodes.Add(sceneNode);
         sceneNode.ExpandAll();
         _tree.EndUpdate();
-        _summary.Text = "Scene, layers and objects";
+        _summary.Text = UiLocalization.T("Select a scene to inspect its layers and objects.");
+        _loadMore.Visible = false;
+    }
+
+    private string LayerNodeText(int index)
+    {
+        if (_scene is null) return string.Empty;
+        var name = _scene.LayerNames[index];
+        var hidden = !_scene.LayerVisible[index];
+        var opacity = _scene.LayerOpacity[index];
+        var showOpacity = opacity < 0.999f;
+        if (!hidden && !showOpacity) return name;
+        var status = hidden && showOpacity
+            ? $"{UiLocalization.T("Hidden")}, {opacity:P0}"
+            : hidden
+                ? UiLocalization.T("Hidden")
+                : opacity.ToString("P0");
+        return $"{name} — {status}";
+    }
+
+    private string ObjectLabel(int index, int layer)
+    {
+        if (ObjectNameResolver?.Invoke(index) is { Length: > 0 } name) return name;
+        var kind = _scene is not null && index < _scene.ShapeKind.Length ? UiLocalization.T(_scene.ShapeKind[index].ToString()) : UiLocalization.T("Object");
+        var layerName = _scene is not null && layer < _scene.LayerNames.Length ? _scene.LayerNames[layer] : layer.ToString();
+        return $"{kind} {index:000000} · {layerName}";
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _searchTimer.Dispose();
+        base.Dispose(disposing);
     }
 
     private bool PresentationSnapshotMatches()
@@ -266,7 +326,7 @@ internal sealed class HierarchyPanel : UserControl
             return false;
         }
 
-        var layerCount = Math.Min(_scene.LayerCount, MaxLayerNodes);
+        var layerCount = Math.Min(_scene.LayerCount, _layerNodeLimit);
         if (_presentedLayerNames.Length != layerCount
             || _presentedLayerVisible.Length != layerCount
             || _presentedLayerOpacity.Length != layerCount
@@ -286,12 +346,12 @@ internal sealed class HierarchyPanel : UserControl
             }
         }
 
-        var objectCount = Math.Min(_scene.ObjectCount, MaxObjectNodes);
-        if (_presentedObjectLayers.Length != objectCount) return false;
+        var objectCount = Math.Min(_scene.ObjectCount, _objectNodeLimit);
+        if (_presentedObjectLayers.Length != objectCount || _presentedObjectLabels.Length != objectCount) return false;
         for (var index = 0; index < objectCount; index++)
         {
             var layer = _scene.ObjectLayer.Length > index ? _scene.ObjectLayer[index] : (ushort)0;
-            if (_presentedObjectLayers[index] != layer) return false;
+            if (_presentedObjectLayers[index] != layer || _presentedObjectLabels[index] != ObjectLabel(index, layer)) return false;
         }
 
         return true;
@@ -307,7 +367,7 @@ internal sealed class HierarchyPanel : UserControl
 
         _presentedLayerCount = _scene.LayerCount;
         _presentedObjectCount = _scene.ObjectCount;
-        var layerCount = Math.Min(_scene.LayerCount, MaxLayerNodes);
+        var layerCount = Math.Min(_scene.LayerCount, _layerNodeLimit);
         Array.Resize(ref _presentedLayerNames, layerCount);
         Array.Resize(ref _presentedLayerVisible, layerCount);
         Array.Resize(ref _presentedLayerOpacity, layerCount);
@@ -320,13 +380,15 @@ internal sealed class HierarchyPanel : UserControl
             _presentedLayerColors[index] = _scene.GetLayerColor(index).ToArgb();
         }
 
-        var objectCount = Math.Min(_scene.ObjectCount, MaxObjectNodes);
+        var objectCount = Math.Min(_scene.ObjectCount, _objectNodeLimit);
         Array.Resize(ref _presentedObjectLayers, objectCount);
+        Array.Resize(ref _presentedObjectLabels, objectCount);
         for (var index = 0; index < objectCount; index++)
         {
             _presentedObjectLayers[index] = _scene.ObjectLayer.Length > index
                 ? _scene.ObjectLayer[index]
                 : (ushort)0;
+            _presentedObjectLabels[index] = ObjectLabel(index, _presentedObjectLayers[index]);
         }
         _presentationSnapshotValid = true;
     }
@@ -369,7 +431,7 @@ internal sealed class HierarchyPanel : UserControl
                 SetTextIfChanged(node, textAt(index));
                 node.Tag = new HierarchyNodeTag(kind, index, detail);
             }
-            else if (detailAt is null)
+            else
             {
                 SetTextIfChanged(node, textAt(index));
             }

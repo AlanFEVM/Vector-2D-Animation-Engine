@@ -241,6 +241,7 @@ internal sealed partial class MainForm
         {
             _inspectorHost.Parent?.ResumeLayout(performLayout: true);
             ResumeLayout(performLayout: true);
+            LayoutToolPalette();
         }
     }
 

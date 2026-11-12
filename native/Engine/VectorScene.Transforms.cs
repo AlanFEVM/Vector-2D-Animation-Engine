@@ -655,8 +655,20 @@ internal sealed partial class VectorScene
             ? mappingContours
             : Array.Empty<PointF[]>();
         var shape = ShapeKind[objectIndex];
+        // A rotated primitive under nonuniform scaling can acquire shear, which
+        // Width/Height/Angle cannot represent. Preserve its actual affine outline.
+        if (shape is VectorAnimationEngine.ShapeKind.Rectangle
+                or VectorAnimationEngine.ShapeKind.Ellipse
+                or VectorAnimationEngine.ShapeKind.Triangle
+                or VectorAnimationEngine.ShapeKind.Polygon
+                or VectorAnimationEngine.ShapeKind.Star
+            && !CanRepresentParametricTransform(objectIndex, transform))
+        {
+            ConvertPrimitiveToTransformedPath(objectIndex, transform);
+            return;
+        }
         if (shape == VectorAnimationEngine.ShapeKind.Text
-            && !CanRepresentTextTransform(objectIndex, transform)
+            && !CanRepresentParametricTransform(objectIndex, transform)
             && TryConvertTextToTransformedPath(objectIndex, transform))
         {
             return;
@@ -842,7 +854,7 @@ internal sealed partial class VectorScene
         return true;
     }
 
-    private bool CanRepresentTextTransform(int objectIndex, Func<PointF, PointF> transform)
+    private bool CanRepresentParametricTransform(int objectIndex, Func<PointF, PointF> transform)
     {
         var center = new PointF(X[objectIndex], Y[objectIndex]);
         var xAxis = LocalToWorld(objectIndex, Width[objectIndex] * 0.5f, 0);

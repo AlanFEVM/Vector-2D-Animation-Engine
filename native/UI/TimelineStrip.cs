@@ -192,6 +192,10 @@ internal sealed partial class TimelineStrip : Control
     private const int SoloButtonWidth = 28;
     private const int AllButtonWidth = 28;
     private const int HeightResizeHandleHeight = 6;
+
+    /// <summary>Ceiling for the accelerated edge scroll that runs during a keyframe drag, per tick.</summary>
+    private const int MaximumFrameDragScrollFrames = 4;
+    private const int MaximumFrameDragScrollTracks = 2;
     private static readonly TimelineFrameTransformMode[] FrameTransformHandleModes =
     [
         TimelineFrameTransformMode.ScaleTopLeft,
@@ -259,6 +263,7 @@ internal sealed partial class TimelineStrip : Control
     private long _commandFeedbackStartedMilliseconds;
     private readonly System.Windows.Forms.Timer _layerFeedbackTimer = new() { Interval = 16 };
     private readonly System.Windows.Forms.Timer _layerDragAnimationTimer = new() { Interval = 16 };
+    private readonly System.Windows.Forms.Timer _layerDragScrollTimer = new() { Interval = 33 };
     private readonly System.Windows.Forms.Timer _editingHighlightTimer = new() { Interval = 33 };
     private long _editingHighlightTimestamp;
     private float _editingHighlightPhase;
@@ -539,6 +544,7 @@ internal sealed partial class TimelineStrip : Control
         _commandFeedbackTimer.Tick += (_, _) => TickCommandFeedback();
         _layerFeedbackTimer.Tick += (_, _) => TickLayerFeedback();
         _layerDragAnimationTimer.Tick += (_, _) => TickLayerDragAnimation();
+        _layerDragScrollTimer.Tick += (_, _) => TickLayerDragScroll();
         _editingHighlightTimer.Tick += (_, _) => TickEditingHighlight();
         _autoKeyframeToggle.CheckedChanged += (_, _) => AutoKeyframeChanged?.Invoke(this, EventArgs.Empty);
         _onionSkinToggle.CheckedChanged += (_, _) =>
@@ -1296,6 +1302,8 @@ internal sealed partial class TimelineStrip : Control
             _layerFeedbackTimer.Dispose();
             _layerDragAnimationTimer.Stop();
             _layerDragAnimationTimer.Dispose();
+            _layerDragScrollTimer.Stop();
+            _layerDragScrollTimer.Dispose();
             _editingHighlightTimer.Stop();
             _editingHighlightTimer.Dispose();
             _headerIconCache.Dispose();
@@ -1591,18 +1599,10 @@ internal sealed partial class TimelineStrip : Control
         {
             var pointerChanged = _layerDragPointerY != e.Y;
             _layerDragPointerY = e.Y;
-            var targetChanged = false;
-            if (TryGetTrackIndex(e.Location, layout, out var trackIndex))
-            {
-                var placement = LayerDropPlacementFor(trackIndex, e.Y, layout);
-                targetChanged = _layerDropTrack != trackIndex || _layerDropPlacement != placement;
-                if (targetChanged)
-                {
-                    _layerDropTrack = trackIndex;
-                    _layerDropPlacement = placement;
-                    RetargetLayerDragPreview();
-                }
-            }
+            var targetChanged = UpdateLayerDragTarget(layout);
+            var wantsScroll = e.Y < layout.RowTop || e.Y >= layout.RowBottom;
+            if (wantsScroll && !_layerDragScrollTimer.Enabled) _layerDragScrollTimer.Start();
+            else if (!wantsScroll) _layerDragScrollTimer.Stop();
             Cursor = Cursors.SizeAll;
             if (pointerChanged || targetChanged) InvalidateLayerDragRows(layout);
             return;
@@ -1612,11 +1612,11 @@ internal sealed partial class TimelineStrip : Control
         {
             if (e.X < layout.TrackLeft)
             {
-                SetFirstVisibleFrame(_firstVisibleFrame - 1);
+                SetFirstVisibleFrame(_firstVisibleFrame - PlayheadEdgeScrollFrames(layout.TrackLeft - e.X, layout));
             }
             else if (e.X >= layout.TrackRight)
             {
-                SetFirstVisibleFrame(_firstVisibleFrame + 1);
+                SetFirstVisibleFrame(_firstVisibleFrame + PlayheadEdgeScrollFrames(e.X - layout.TrackRight + 1, layout));
             }
 
             CurrentFrame = FrameFromX(e.X, layout);
@@ -2268,6 +2268,47 @@ internal sealed partial class TimelineStrip : Control
         SetFirstVisibleTrack((int)Math.Round(ratio * scroll.MaxValue));
     }
 
+    private bool UpdateLayerDragTarget(TimelineLayout layout)
+    {
+        if (layout.RowBottom <= layout.RowTop) return false;
+        var pointerY = Math.Clamp(_layerDragPointerY, layout.RowTop, layout.RowBottom - 1);
+        if (!TryGetTrackIndex(new Point(0, pointerY), layout, out var trackIndex)) return false;
+        var placement = LayerDropPlacementFor(trackIndex, pointerY, layout);
+        if (_layerDropTrack == trackIndex && _layerDropPlacement == placement) return false;
+        _layerDropTrack = trackIndex;
+        _layerDropPlacement = placement;
+        RetargetLayerDragPreview();
+        return true;
+    }
+
+    private void TickLayerDragScroll()
+    {
+        if (!_draggingLayer)
+        {
+            _layerDragScrollTimer.Stop();
+            return;
+        }
+
+        var layout = CreateLayout();
+        var delta = _layerDragPointerY < layout.RowTop ? -1
+            : _layerDragPointerY >= layout.RowBottom ? 1 : 0;
+        if (delta == 0)
+        {
+            _layerDragScrollTimer.Stop();
+            return;
+        }
+
+        var previousFirstVisibleTrack = _firstVisibleTrack;
+        SetFirstVisibleTrack(_firstVisibleTrack + delta, invalidate: false);
+        if (_firstVisibleTrack == previousFirstVisibleTrack)
+        {
+            _layerDragScrollTimer.Stop();
+            return;
+        }
+        UpdateLayerDragTarget(layout);
+        InvalidateLayerDragRows(layout);
+    }
+
     private void BeginLayerDrag(int trackIndex, int pointerY, TimelineLayout layout)
     {
         ClearLayerDragPreview();
@@ -2624,6 +2665,7 @@ internal sealed partial class TimelineStrip : Control
         _draggedLayerTrackId = null;
         _layerDropTrack = -1;
         _layerDropPlacement = TimelineLayerDropPlacement.Before;
+        _layerDragScrollTimer.Stop();
         ClearLayerDragPreview();
         if (layerDragWasActive)
         {
@@ -2708,8 +2750,8 @@ internal sealed partial class TimelineStrip : Control
     private bool AutoScrollFrameTransform(Point location)
     {
         var layout = CreateLayout();
-        var verticalDelta = ResolveFrameSelectionVerticalScrollDelta(location.Y, layout.GridBounds);
-        var horizontalDelta = ResolveFrameTransformHorizontalScrollDelta(location.X, layout.GridBounds);
+        var verticalDelta = FrameDragEdgeScrollTracks(location.Y, layout);
+        var horizontalDelta = FrameDragEdgeScrollFrames(location.X, layout);
         if (verticalDelta == 0 && horizontalDelta == 0) return false;
 
         var previousFirstVisibleTrack = _firstVisibleTrack;
@@ -2738,6 +2780,14 @@ internal sealed partial class TimelineStrip : Control
             location,
             layout,
             _frameTransformVisibleTrackIds.Length);
+        if (_frameTransformMode != TimelineFrameTransformMode.Move)
+        {
+            // Scale handles straddle the selection edge, so at grab time the cell under the pointer
+            // sits one past a right or bottom edge. Resolve the edge from the drag delta instead of
+            // the raw cell, otherwise a one-cell drag would extend the selection by two frames.
+            pointerFrame = ResolveFrameTransformHandleFrame(pointerFrame);
+            pointerTrackPosition = ResolveFrameTransformHandleTrack(pointerTrackPosition);
+        }
         var targetBounds = ResolveFrameTransformTargetBounds(
             _frameTransformOriginalBounds,
             _frameTransformMode,
@@ -2777,6 +2827,37 @@ internal sealed partial class TimelineStrip : Control
         var y = Math.Clamp(location.Y, layout.GridBounds.Top, layout.GridBounds.Bottom - 1);
         var offset = Math.Clamp((y - layout.RowTop) / _rowHeight, 0, Math.Max(0, VisibleTrackCapacity(layout) - 1));
         return Math.Clamp(_firstVisibleTrack + offset, 0, visibleTrackCount - 1);
+    }
+
+    private int ResolveFrameTransformHandleFrame(int pointerFrame)
+    {
+        var anchor = _frameTransformMode is TimelineFrameTransformMode.ScaleRight
+            or TimelineFrameTransformMode.ScaleTopRight
+            or TimelineFrameTransformMode.ScaleBottomRight
+            ? _frameTransformOriginalBounds.LastFrame
+            : _frameTransformOriginalBounds.FirstFrame;
+        return ClampInt(
+            (long)anchor + pointerFrame - _frameTransformStartFrame,
+            int.MinValue,
+            int.MaxValue);
+    }
+
+    private int ResolveFrameTransformHandleTrack(int pointerTrackPosition)
+    {
+        if (pointerTrackPosition < 0 || _frameTransformStartTrackPosition < 0)
+        {
+            return pointerTrackPosition;
+        }
+
+        var anchor = _frameTransformMode is TimelineFrameTransformMode.ScaleBottom
+            or TimelineFrameTransformMode.ScaleBottomRight
+            or TimelineFrameTransformMode.ScaleBottomLeft
+            ? _frameTransformOriginalBounds.LastTrackPosition
+            : _frameTransformOriginalBounds.FirstTrackPosition;
+        return ClampInt(
+            (long)anchor + pointerTrackPosition - _frameTransformStartTrackPosition,
+            int.MinValue,
+            int.MaxValue);
     }
 
     private void CommitFrameTransform()
@@ -3485,7 +3566,9 @@ internal sealed partial class TimelineStrip : Control
     private void HandleFrameSelectionPointerMove(Point location, TimelineLayout layout)
     {
         _frameSelectionPointer = location;
-        if (ResolveFrameSelectionVerticalScrollDelta(location.Y, layout.GridBounds) == 0)
+        var wantsAutoScroll = ResolveFrameSelectionVerticalScrollDelta(location.Y, layout.GridBounds) != 0
+            || ResolveFrameTransformHorizontalScrollDelta(location.X, layout.GridBounds) != 0;
+        if (!wantsAutoScroll)
         {
             _frameSelectionAutoScrollTimer.Stop();
         }
@@ -3508,15 +3591,32 @@ internal sealed partial class TimelineStrip : Control
         }
     }
 
+    /// <summary>
+    /// Cancels timeline drags that would otherwise keep capturing the mouse and commit into the
+    /// document after another command (playback) started.
+    /// </summary>
+    internal void CancelDragForPlayback()
+    {
+        if (!_draggingFrameTransform && !_draggingFrameSelection && !_draggingPlayhead && !_draggingLayer)
+        {
+            return;
+        }
+
+        EndMouseDrag(canceled: true);
+    }
+
     internal bool AutoScrollFrameSelection(Point location)
     {
         var layout = CreateLayout();
-        var delta = ResolveFrameSelectionVerticalScrollDelta(location.Y, layout.GridBounds);
-        if (delta == 0) return false;
+        var verticalDelta = FrameDragEdgeScrollTracks(location.Y, layout);
+        var horizontalDelta = FrameDragEdgeScrollFrames(location.X, layout);
+        if (verticalDelta == 0 && horizontalDelta == 0) return false;
 
         var previousFirstVisibleTrack = _firstVisibleTrack;
-        SetFirstVisibleTrack(_firstVisibleTrack + delta, invalidate: false);
-        if (_firstVisibleTrack == previousFirstVisibleTrack) return false;
+        var previousFirstVisibleFrame = _firstVisibleFrame;
+        if (verticalDelta != 0) SetFirstVisibleTrack(_firstVisibleTrack + verticalDelta, invalidate: false);
+        if (horizontalDelta != 0) SetFirstVisibleFrame(_firstVisibleFrame + horizontalDelta, invalidate: false);
+        if (_firstVisibleTrack == previousFirstVisibleTrack && _firstVisibleFrame == previousFirstVisibleFrame) return false;
 
         UpdateFrameSelectionFromPointer(location, layout);
         return true;
@@ -3527,6 +3627,36 @@ internal sealed partial class TimelineStrip : Control
         if (gridBounds.Height <= 0) return 0;
         if (pointerY < gridBounds.Top) return -1;
         return pointerY >= gridBounds.Bottom ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Converts how far the pointer sits outside the grid during a frame drag into a track step.
+    /// The step grows with the overshoot so a long vertical drag is not limited to one row per
+    /// timer tick, but it stays tightly capped because the timer only fires a few times a second.
+    /// </summary>
+    private int FrameDragEdgeScrollTracks(int pointerY, TimelineLayout layout)
+    {
+        var bounds = layout.GridBounds;
+        if (bounds.Height <= 0) return 0;
+        var overshoot = pointerY < bounds.Top
+            ? bounds.Top - pointerY
+            : pointerY >= bounds.Bottom ? pointerY - bounds.Bottom + 1 : 0;
+        if (overshoot <= 0) return 0;
+        var step = Math.Clamp(1 + overshoot / Math.Max(1, _rowHeight), 1, MaximumFrameDragScrollTracks);
+        return pointerY < bounds.Top ? -step : step;
+    }
+
+    /// <summary>Frame-count counterpart of <see cref="FrameDragEdgeScrollTracks"/>.</summary>
+    private int FrameDragEdgeScrollFrames(int pointerX, TimelineLayout layout)
+    {
+        var bounds = layout.GridBounds;
+        if (bounds.Width <= 0) return 0;
+        var overshoot = pointerX < bounds.Left
+            ? bounds.Left - pointerX
+            : pointerX >= bounds.Right ? pointerX - bounds.Right + 1 : 0;
+        if (overshoot <= 0) return 0;
+        var step = Math.Clamp(1 + overshoot / Math.Max(1, _frameCellWidth), 1, MaximumFrameDragScrollFrames);
+        return pointerX < bounds.Left ? -step : step;
     }
 
     internal void UpdateFrameSelectionFromPointer(Point location)
@@ -4772,6 +4902,18 @@ internal sealed partial class TimelineStrip : Control
         if (_firstVisibleFrame == next) return;
         _firstVisibleFrame = next;
         if (invalidate) InvalidateFrameViewport();
+    }
+
+    /// <summary>
+    /// Converts how far the pointer sits outside the track viewport into a frame step so a held
+    /// playhead drag keeps scrolling at a steady pace instead of one frame per mouse move.
+    /// The step grows with the overshoot but is capped at one visible span, so a fast flick
+    /// cannot jump the timeline to an unrelated region.
+    /// </summary>
+    private int PlayheadEdgeScrollFrames(int overshootPixels, TimelineLayout layout)
+    {
+        var cellWidth = Math.Max(1, _frameCellWidth);
+        return Math.Clamp(1 + overshootPixels / cellWidth, 1, Math.Max(1, VisibleFrameCapacity(layout)));
     }
 
     private void SetFirstVisibleTrack(int track, bool invalidate = true)

@@ -1171,7 +1171,7 @@ internal static partial class Benchmark
             (bool)getStyle.Invoke(canvas, [ControlStyles.AllPaintingInWmPaint])! &&
             (bool)getStyle.Invoke(canvas, [ControlStyles.Opaque])!,
             "The crop canvas exposes background clearing instead of presenting a buffered frame.");
-        var set = RequireMethod(type, "SetSelection", [typeof(Rectangle)]);
+        var set = RequireMethod(type, "SetSelection", [typeof(Rectangle), typeof(bool)]);
         var begin = RequireMethod(type, "BeginDrag", [typeof(object), typeof(MouseEventArgs)]);
         var move = RequireMethod(type, "ContinueDrag", [typeof(object), typeof(MouseEventArgs)]);
         var end = RequireMethod(type, "EndDrag", [typeof(bool)]);
@@ -1182,7 +1182,7 @@ internal static partial class Benchmark
             move.Invoke(editor, [canvas, new MouseEventArgs(MouseButtons.Left, 1, target.X, target.Y, 0)]);
             end.Invoke(editor, [cancel]);
         }
-        set.Invoke(editor, [new Rectangle(0, 0, 320, 180)]);
+        set.Invoke(editor, [new Rectangle(0, 0, 320, 180), false]);
         var frame = Frame();
         var imageBounds = (RectangleF)RequireField(type, "_imageBounds").GetValue(editor)!;
         var canvasSize = canvas.Size;
@@ -1209,14 +1209,14 @@ internal static partial class Benchmark
         Drag(Point.Round(new PointF(frame.Left, frame.Top)), new Point(10000, 10000));
         AssertTimeline(editor.Selection.Width > 0 && editor.Selection.Height > 0 && editor.Selection.Right <= 320 && editor.Selection.Bottom <= 180,
             "Dragging across the opposite corner inverted or escaped the crop.");
-        set.Invoke(editor, [new Rectangle(80, 45, 160, 90)]); frame = Frame();
+        set.Invoke(editor, [new Rectangle(80, 45, 160, 90), false]); frame = Frame();
         Drag(Point.Round(new PointF(frame.X + frame.Width / 2, frame.Y + frame.Height / 2)), new Point(10000, 10000));
         AssertTimeline(editor.Selection.Location == Point.Empty && editor.Selection.Size == new Size(160, 90),
             "Image panning exposed empty space or resized the crop. "
             + $"(selection={editor.Selection}, frame={frame}, imageBounds={(RectangleF)RequireField(type, "_imageBounds").GetValue(editor)!}, "
             + $"dragMode={RequireField(type, "_dragMode").GetValue(editor)}, canvas={canvas.Size}, dpi={canvas.DeviceDpi}).");
         var ratio = RequireMethod(type, "SetRatio", [typeof(int)]);
-        set.Invoke(editor, [new Rectangle(0, 0, 320, 180)]); ratio.Invoke(editor, [2]);
+        set.Invoke(editor, [new Rectangle(0, 0, 320, 180), false]); ratio.Invoke(editor, [2]);
         AssertTimeline(editor.Selection.Width == editor.Selection.Height, "Square ratio did not create a square crop.");
         frame = Frame();
         Drag(Point.Round(new PointF(frame.Right, frame.Top + frame.Height / 2)),
@@ -1228,11 +1228,23 @@ internal static partial class Benchmark
             "Zoom did not crop around the frame center or lost the ratio.");
         zoom.Invoke(editor, [0.00001f]);
         AssertTimeline(editor.Selection.Right <= 320 && editor.Selection.Bottom <= 180, "Zooming out exposed pixels outside the source.");
-        ratio.Invoke(editor, [0]); set.Invoke(editor, [new Rectangle(0, 0, 320, 180)]);
+        ratio.Invoke(editor, [0]); set.Invoke(editor, [new Rectangle(0, 0, 320, 180), false]);
         var values = (ModernNumericUpDown[])RequireField(type, "_values").GetValue(editor)!;
         values[0].Value = 300;
         AssertTimeline(editor.Selection == new Rectangle(300, 0, 20, 180), "Precise position input was blocked by the old crop width.");
         AssertTimeline(!((Control)RequireField(type, "_fields").GetValue(editor)!).Visible, "Precise fields should start collapsed.");
+        set.Invoke(editor, [new Rectangle(0, 0, 320, 180), false]);
+        ratio.Invoke(editor, [2]);
+        imageBounds = (RectangleF)RequireField(type, "_imageBounds").GetValue(editor)!;
+        values[2].Value = 100;
+        AssertTimeline(editor.Selection.Size == new Size(100, 100), "Precise width input lost the locked crop ratio.");
+        values[0].Value = 300;
+        AssertTimeline(editor.Selection == new Rectangle(300, 0, 20, 20),
+            "Precise horizontal position did not fit the locked crop into the remaining source area.");
+        values[1].Value = 170;
+        AssertTimeline(editor.Selection == new Rectangle(300, 170, 10, 10)
+            && (RectangleF)RequireField(type, "_imageBounds").GetValue(editor)! == imageBounds,
+            "Precise crop edits lost their aspect ratio or refitted the current image view.");
         Console.WriteLine("image_crop_interaction_regression=passed");
     }
 

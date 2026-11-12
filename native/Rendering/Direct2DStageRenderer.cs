@@ -945,6 +945,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
                 stage.Scene = editableScene;
                 var editableLimit = Math.Max(0, objectDrawLimit - underlayStats.DrawnObjects - onionSkinStats.DrawnObjects);
+                DrawSelectionMoveOrigins(stage);
                 stage.RecordEditableScenePass();
                 editableStats = DrawScene(
                     stage,
@@ -965,7 +966,6 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 }
             }
 
-            DrawSelectionMoveOrigins(stage);
             DrawCanvasFrame(stage);
             if (stage.DragPreviewScene is { } dragPreview)
             {

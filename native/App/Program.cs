@@ -16,7 +16,8 @@ internal static class Program
             ["--bench-render"] = new("Running stage renderer regression benchmark", Benchmark.RunStageRendererRegression),
             ["--bench-gpu-optics"] = new("Running GPU optical parity benchmark", Benchmark.RunGpuOpticsRegression),
             ["--bench-collision"] = new("Running collision-project performance benchmark", Benchmark.RunCollisionProjectPerformance),
-            ["--bench-selection-perf"] = new("Running large selection performance regression", Benchmark.RunLargeSelectionFrameRateRegression)
+            ["--bench-selection-perf"] = new("Running large selection performance regression", Benchmark.RunLargeSelectionFrameRateRegression),
+            ["--bench-realistic-interaction"] = new("Running realistic-scale interaction benchmark", Benchmark.RunRealisticInteractionBenchmark)
         };
 
     [STAThread]

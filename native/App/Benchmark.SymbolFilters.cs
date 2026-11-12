@@ -5,6 +5,80 @@ namespace VectorAnimationEngine;
 
 internal static partial class Benchmark
 {
+
+    private static SymbolFilterOrder RegressionReversedFilterOrder => new(Enum.GetValues<SymbolFilterKind>().Reverse().ToArray());
+    private static SymbolGradientStops RegressionFilterStops => new([
+        new(0, Color.FromArgb(0, 255, 0, 0).ToArgb()),
+        new(0.3f, Color.FromArgb(180, 0, 255, 0).ToArgb()),
+        new(0.6f, Color.FromArgb(90, 0, 0, 255).ToArgb()),
+        new(1, Color.White.ToArgb())]);
+
+    private static void RunCustomFilterOrderAndStopsModelRegression()
+    {
+        var order = Enum.GetValues<SymbolFilterKind>().Reverse().ToArray();
+        var value = new SymbolFilterOrder(order);
+        order[0] = SymbolFilterKind.Blur;
+        var exposed = value.Items;
+        exposed[0] = SymbolFilterKind.Blur;
+        AssertTimeline(value[0] == SymbolFilterKind.GradientGlow && value.Equals(RegressionReversedFilterOrder),
+            "Filter order exposed mutable storage or lost structural equality.");
+        var stops = RegressionFilterStops;
+        var array = stops.Items;
+        array[0] = new(0, Color.Magenta.ToArgb());
+        AssertTimeline(stops[0].ColorArgb != array[0].ColorArgb && stops.Equals(RegressionFilterStops),
+            "Gradient stops exposed mutable storage or lost structural equality.");
+        var transparentRedToBlue = new SymbolGradientStops([new(0, Color.FromArgb(0, 255, 0, 0).ToArgb()), new(1, Color.Blue.ToArgb())]).Sample(0.5f);
+        AssertTimeline(Math.Abs(transparentRedToBlue.W - 0.5f) < 0.00001f && transparentRedToBlue.Z < 0.00001f
+            && transparentRedToBlue.X > 0.999f, "Transparent red contaminated premultiplied gradient interpolation.");
+        var linearMidpoint = new SymbolGradientStops([new(0, Color.Black.ToArgb()), new(1, Color.White.ToArgb())]).Sample(0.5f);
+        AssertTimeline(linearMidpoint.X is > 0.735f and < 0.736f, "Filter stops did not interpolate in linear light.");
+        var filters = new SymbolFilters { Order = value, GradientGlow = SymbolEdgeFilter.Default with { GradientStops = stops } };
+        var json = System.Text.Json.JsonSerializer.Serialize(filters);
+        AssertTimeline(System.Text.Json.JsonSerializer.Deserialize<SymbolFilters>(json) == filters,
+            "Custom filter order or gradient stops failed JSON roundtrip.");
+        var legacy = System.Text.Json.JsonSerializer.Deserialize<SymbolFilters>("{}");
+        AssertTimeline(legacy.Order is null && legacy.GradientGlow.GradientStops is null,
+            "Legacy documents acquired an explicit filter order or gradient.");
+        var invalidOrder = false;
+        var invalidStops = false;
+        try { _ = new SymbolFilterOrder([SymbolFilterKind.Blur, SymbolFilterKind.Blur]); } catch (ArgumentException) { invalidOrder = true; }
+        try { _ = new SymbolGradientStops([new(float.NaN, 0), new(1, 0)]); } catch (ArgumentException) { invalidStops = true; }
+        var missingEndpointRejected = false;
+        try { _ = new SymbolGradientStops([new(0.2f, 0), new(0.8f, 0)]); }
+        catch (ArgumentException) { missingEndpointRejected = true; }
+        AssertTimeline(missingEndpointRejected, "A gradient without fixed endpoint stops could desynchronize editor indices.");
+        AssertTimeline(invalidOrder && invalidStops, "Invalid order/gradient stop data was accepted.");
+        Console.WriteLine("symbol_filter_order_stops_immutable_json_linear_premul=ok");
+    }
+
+    private static void RunCustomFilterOrderPixelRegression()
+    {
+        var filters = new SymbolFilters { Blur = SymbolBlurFilter.Default with { BlurX = 3, BlurY = 3 },
+            Glow = SymbolGlowFilter.Default with { Strength = 3, ColorArgb = Color.Lime.ToArgb() } };
+        using var legacy = Fixture();
+        using var explicitLegacy = Fixture();
+        using var reversed = Fixture();
+        SymbolFilterRasterizer.Apply(legacy, filters);
+        SymbolFilterRasterizer.Apply(explicitLegacy, filters with { Order = SymbolFilterOrder.Default });
+        SymbolFilterRasterizer.Apply(reversed, filters with { Order = RegressionReversedFilterOrder });
+        var differs = false;
+        for (int y = 0; y < 64; y++)
+        for (int x = 0; x < 64; x++)
+        {
+            AssertTimeline(legacy.GetPixel(x, y) == explicitLegacy.GetPixel(x, y), "Explicit default order changed legacy filter pixels.");
+            differs |= legacy.GetPixel(x, y) != reversed.GetPixel(x, y);
+        }
+        AssertTimeline(differs, "Changing the built-in order did not change noncommutative filter output.");
+        Console.WriteLine("symbol_filter_custom_order_pixels=ok");
+        static Bitmap Fixture()
+        {
+            var bitmap = new Bitmap(64, 64, PixelFormat.Format32bppPArgb);
+            using var graphics = Graphics.FromImage(bitmap);
+            graphics.FillRectangle(Brushes.Red, 24, 24, 16, 16);
+            return bitmap;
+        }
+    }
+
     private static SymbolFlashFilter RegressionFlashGlow => new()
     { Kind = SymbolFlashFilterKind.Glow, Enabled = true, BlurX = 5.5f, BlurY = 3, Quality = 2,
       ColorArgb = Color.Yellow.ToArgb(), Opacity = 0.75f, Strength = 1.5f };
@@ -262,6 +336,7 @@ internal static partial class Benchmark
     private static void RunSymbolFiltersModelRegression()
     {
         RunSymbolBlendModelRegression();
+        RunCustomFilterOrderAndStopsModelRegression();
         var filters = RegressionSymbolFilters with
         {
             ColorTransform = new SymbolFlashColorTransform { Enabled = true, AlphaMultiplier = 0.37f, RedMultiplier = 0.75f,
@@ -275,8 +350,9 @@ internal static partial class Benchmark
             Glow = RegressionSymbolFilters.Glow with { Quality = 2 },
             Shadow = RegressionSymbolFilters.Shadow with { Quality = 15 },
             Bevel = SymbolEdgeFilter.Default with { Quality = 4 },
-            GradientBevel = SymbolEdgeFilter.Default with { Quality = 5 },
-            GradientGlow = SymbolEdgeFilter.Default with { Quality = 6 }
+            GradientBevel = SymbolEdgeFilter.Default with { Quality = 5, GradientStops = RegressionFilterStops },
+            GradientGlow = SymbolEdgeFilter.Default with { Quality = 6 },
+            Order = RegressionReversedFilterOrder
         };
         var instance = new DrawingObjectInstanceDefinition { Filters = filters };
         var state = instance.EvaluateState(0);
@@ -435,6 +511,7 @@ internal static partial class Benchmark
 
     private static void RunSymbolFiltersRenderRegression()
     {
+        RunCustomFilterOrderPixelRegression();
         RunSymbolFilterQualityRegression();
         RunFlashBlurStackPixelRegression();
         RunFlashFilterOrderPixelRegression();
@@ -683,6 +760,10 @@ internal static partial class Benchmark
                 new SymbolFilters { GradientGlow = SymbolEdgeFilter.Default with { Quality = 15 } },
                 new SymbolFilters { GradientBevel = SymbolEdgeFilter.Default },
                 new SymbolFilters { GradientGlow = SymbolEdgeFilter.Default },
+                new SymbolFilters { GradientBevel = SymbolEdgeFilter.Default with { GradientStops = RegressionFilterStops } },
+                new SymbolFilters { GradientGlow = SymbolEdgeFilter.Default with { GradientStops = RegressionFilterStops } },
+                RegressionSymbolFilters with { Order = RegressionReversedFilterOrder,
+                    GradientGlow = SymbolEdgeFilter.Default with { GradientStops = RegressionFilterStops } },
                 new SymbolFilters { Bevel = SymbolEdgeFilter.Default with { BlurX = 0, BlurY = 0, Distance = 0 } },
                 RegressionSymbolFilters with { Bevel = SymbolEdgeFilter.Default, GradientBevel = SymbolEdgeFilter.Default, GradientGlow = SymbolEdgeFilter.Default },
                 new SymbolFilters { Blur = SymbolBlurFilter.Default },

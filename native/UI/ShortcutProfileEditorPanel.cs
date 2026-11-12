@@ -3,15 +3,16 @@ namespace VectorAnimationEngine;
 internal sealed class ShortcutProfileEditorPanel : UserControl
 {
     private readonly ComboBox _profileSelector = new();
-    private readonly Button _newProfile = new() { Text = "New" };
-    private readonly Button _renameProfile = new() { Text = "Rename" };
-    private readonly Button _deleteProfile = new() { Text = "Delete" };
+    private readonly Button _newProfile = new() { Text = UiLocalization.T("New") };
+    private readonly Button _renameProfile = new() { Text = UiLocalization.T("Rename") };
+    private readonly Button _deleteProfile = new() { Text = UiLocalization.T("Delete") };
     private readonly ThemedTableList _commandList = new();
     private readonly ThemedTableList _categoryList = new();
     private string _selectedCategoryId = "all";
-    private readonly Button _assignShortcut = new() { Text = "Assign" };
-    private readonly Button _clearShortcut = new() { Text = "Clear" };
+    private readonly Button _assignShortcut = new() { Text = UiLocalization.T("Assign") };
+    private readonly Button _clearShortcut = new() { Text = UiLocalization.T("Clear") };
     private readonly Label _feedback = new();
+    private readonly ModernTextInput _search = new() { PlaceholderText = UiLocalization.T("Search commands or shortcuts") };
     private readonly List<ShortcutProfileRecord> _customProfiles;
     private string _activeProfileId;
 
@@ -75,7 +76,7 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         profileRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         profileRow.Controls.Add(new Label
         {
-            Text = "Profile",
+            Text = UiLocalization.T("Profile"),
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ForeColor = Theme.Muted,
@@ -145,12 +146,20 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 2,
-            RowCount = 1,
+            RowCount = 2,
             Margin = Padding.Empty
         };
         browser.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         browser.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        browser.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         browser.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _search.Dock = DockStyle.Fill;
+        _search.Margin = new Padding(0, 0, 0, 8);
+        _search.AccessibleName = "Search commands or shortcuts";
+        Theme.StyleTextBox(_search);
+        _search.TextChanged += (_, _) => RefreshCommandList();
+        browser.Controls.Add(_search, 0, 0);
+        browser.SetColumnSpan(_search, 2);
 
         _categoryList.Dock = DockStyle.Fill;
         _categoryList.Margin = new Padding(0, 0, 14, 0);
@@ -179,8 +188,8 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
             SetFeedback("");
         };
 
-        browser.Controls.Add(_categoryList, 0, 0);
-        browser.Controls.Add(CreateCommandTable(), 1, 0);
+        browser.Controls.Add(_categoryList, 0, 1);
+        browser.Controls.Add(CreateCommandTable(), 1, 1);
         return browser;
     }
 
@@ -253,6 +262,7 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         private bool _draggingThumb;
         private int _dragAnchor;
         private int _columnCount = 1;
+        private readonly ToolTip _fullText = new();
 
         public ThemedTableList()
         {
@@ -394,7 +404,7 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
 
         protected override bool IsInputKey(Keys keyData) => (keyData & Keys.KeyCode) switch
         {
-            Keys.Up or Keys.Down or Keys.PageUp or Keys.PageDown or Keys.Home or Keys.End => true,
+            Keys.Up or Keys.Down or Keys.PageUp or Keys.PageDown or Keys.Home or Keys.End or Keys.Enter => true,
             _ => base.IsInputKey(keyData)
         };
 
@@ -402,6 +412,13 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         {
             base.OnKeyDown(e);
             if (_rows.Count == 0) return;
+            if (e.KeyCode == Keys.Enter)
+            {
+                RowActivate?.Invoke(this, EventArgs.Empty);
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                return;
+            }
             var current = Math.Max(0, _selectedIndex);
             var page = Math.Max(1, RowsViewHeight / RowHeight - 1);
             var index = e.KeyCode switch
@@ -434,6 +451,12 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
                     Capture = true;
                     Invalidate();
                 }
+                else
+                {
+                    _scrollOffset += e.Y < thumb.Top ? -RowsViewHeight : RowsViewHeight;
+                    ClampScroll();
+                    Invalidate();
+                }
                 return;
             }
             var index = RowIndexAt(e.Y);
@@ -459,6 +482,7 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
             if (index != _hoverIndex)
             {
                 _hoverIndex = index;
+                _fullText.SetToolTip(this, index >= 0 ? string.Join(" — ", _rows[index].Cells) : null);
                 Invalidate();
             }
         }
@@ -470,6 +494,20 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
             _draggingThumb = false;
             Capture = false;
             Invalidate();
+        }
+
+        protected override void OnMouseCaptureChanged(EventArgs e)
+        {
+            base.OnMouseCaptureChanged(e);
+            if (Capture || !_draggingThumb) return;
+            _draggingThumb = false;
+            Invalidate();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _fullText.Dispose();
+            base.Dispose(disposing);
         }
 
         protected override void OnMouseLeave(EventArgs e)
@@ -661,6 +699,9 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
             var binding = profile.Bindings.FirstOrDefault(candidate =>
                 string.Equals(candidate.CommandId, command.Id, StringComparison.Ordinal));
             var shortcut = ShortcutProfiles.FormatGestures(binding?.Gestures);
+            var query = _search.Text.Trim();
+            if (query.Length > 0 && !UiLocalization.T(command.DisplayName).Contains(query, StringComparison.CurrentCultureIgnoreCase)
+                && !shortcut.Contains(query, StringComparison.CurrentCultureIgnoreCase)) continue;
             rows.Add(new ThemedTableList.Row(command.Id, new[]
             {
                 UiLocalization.T(command.DisplayName),
@@ -680,6 +721,7 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         _deleteProfile.Enabled = editable;
         _assignShortcut.Enabled = editable && SelectedCommandId() is not null;
         _clearShortcut.Enabled = _assignShortcut.Enabled;
+        if (!editable) SetFeedback("Built-in profiles are read-only. Choose New to create an editable copy.", warning: true);
     }
 
     private void CreateProfile()
@@ -859,6 +901,11 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
 
     private void SetFeedback(string message, bool warning = false)
     {
+        if (message.Length == 0 && !ShortcutProfiles.IsCustomProfileId(_activeProfileId))
+        {
+            message = "Built-in profiles are read-only. Choose New to create an editable copy.";
+            warning = true;
+        }
         _feedback.Text = UiLocalization.T(message);
         _feedback.ForeColor = warning ? Theme.Warning : Theme.Danger;
         _feedback.AccessibleName = _feedback.Text;
@@ -879,7 +926,7 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         {
             DialogContent.Controls.Add(new Label
             {
-                Text = "Profile name",
+                Text = UiLocalization.T("Profile name"),
                 Dock = DockStyle.Top,
                 Height = 30,
                 BackColor = Theme.Panel,
@@ -968,6 +1015,7 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
             DialogContent.Controls.Add(_error);
             _error.BringToFront();
             _apply = AddDialogAction("Assign", DialogResult.OK, DialogActionStyle.Primary, () => Gesture is not null);
+            _apply.Enabled = false;
             var cancel = AddDialogAction("Cancel", DialogResult.Cancel);
             AcceptButton = _apply;
             CancelButton = cancel;
@@ -983,11 +1031,17 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         {
             if (!ShortcutProfiles.TryCreateGesture(keyData, out var gesture))
             {
+                Gesture = null;
+                _capture.Text = string.Empty;
+                _apply.Enabled = false;
                 SetError("Invalid shortcut");
                 return;
             }
             if (!ShortcutProfiles.IsGestureAllowed(_commandId, keyData))
             {
+                Gesture = null;
+                _capture.Text = string.Empty;
+                _apply.Enabled = false;
                 SetError("This shortcut is reserved by the application.");
                 return;
             }
@@ -997,6 +1051,7 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         private void SetGesture(ShortcutGestureRecord gesture)
         {
             Gesture = gesture;
+            _apply.Enabled = true;
             _capture.Text = ShortcutProfiles.FormatGesture(gesture);
             SetError("");
         }

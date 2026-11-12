@@ -619,6 +619,17 @@ internal static partial class Benchmark
                 && Sample(origin, PointF.Empty).A == 0,
                 "The origin reference moved, accumulated selection highlights or lost its plain translucent paint.");
         }
+        scene.X[moving] = -2200;
+        scene.Argb[moving] = Color.Blue.ToArgb();
+        stage.Invalidate();
+        using (var overlap = Capture("DrawGdiBase2D", stage.ClientRectangle, int.MaxValue))
+        {
+            using (var graphics = Graphics.FromImage(overlap))
+                RequireMethod(typeof(StageControl), "DrawGdiDynamic2D").Invoke(stage, [graphics, int.MaxValue]);
+            AssertTimeline(Sample(overlap, new PointF(-2400, 0)).ToArgb() == Color.Blue.ToArgb(),
+                "The origin reference painted over the moving object after the dynamic pass.");
+        }
+        scene.Argb[moving] = color;
         scene.X[moving] = 4000;
         stage.Invalidate();
         AssertTimeline(stage.GetSelectionMoveOcclusionContours(above, SceneRenderPass.Fill).Length == 0,

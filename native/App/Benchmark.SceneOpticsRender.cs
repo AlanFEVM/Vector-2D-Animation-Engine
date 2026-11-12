@@ -8,6 +8,17 @@ internal static partial class Benchmark
 {
     private static void RunSceneOpticsRenderRegression()
     {
+        var previous = Environment.GetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU");
+        try
+        {
+            Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", null);
+            RunSceneOpticsRenderRegressionCore();
+        }
+        finally { Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", previous); }
+    }
+
+    private static void RunSceneOpticsRenderRegressionCore()
+    {
         RunSceneLightingBrdfRegression();
         RunSceneLightingVisualRegression();
         RunSceneOpticsPanelLayoutRegression();
@@ -59,6 +70,7 @@ internal static partial class Benchmark
 
         using var stage = new StageControl(scene)
         {
+            ExperimentalSceneLightingEnabled = true,
             ClientSize = new Size(640, 480),
             WorldGridOpacity = 0
         };
@@ -213,6 +225,7 @@ internal static partial class Benchmark
             {
                 using var preparationStage = new StageControl(new VectorScene())
                 {
+                    ExperimentalSceneLightingEnabled = true,
                     ClientSize = stage.ClientSize
                 };
                 preparationStage.ConfigureReference3DPlaybackPreparation(
@@ -461,14 +474,12 @@ internal static partial class Benchmark
                 }
             }
 
-            var receiverBounds = Bounds(localReceivers.SelectMany(item =>
-                item.FragmentClip ?? item.Contours));
-            var footprintBounds = Bounds(localLayers.SelectMany(layer => layer.Contours));
-            var coversWholeReceiver = footprintBounds.Left <= receiverBounds.Left + 1f
-                && footprintBounds.Top <= receiverBounds.Top + 1f
-                && footprintBounds.Right >= receiverBounds.Right - 1f
-                && footprintBounds.Bottom >= receiverBounds.Bottom - 1f;
-            if (coversWholeReceiver)
+            // Overlapping circular area samples can span the receiver's bounding
+            // box while leaving its corners unlit. Check their actual coverage.
+            var unlitReceiver = new PathsD(localReceivers.SelectMany(VisibleSurfacePaths));
+            foreach (var layer in localLayers)
+                unlitReceiver = Clipper.Difference(unlitReceiver, Paths(layer.Contours), FillRule.EvenOdd, precision: 4);
+            if (Area(unlitReceiver) <= 0.01d)
             {
                 throw new InvalidOperationException(
                     $"The finite {kind} light still recolored the entire receiver surface.");
@@ -626,6 +637,7 @@ internal static partial class Benchmark
         {
             using var boundsStage = new StageControl(new VectorScene())
             {
+                ExperimentalSceneLightingEnabled = true,
                 ClientSize = new Size(1_000, 1_000)
             };
             var materialContour = ClosedContour(100, 100, 300, 250);
@@ -791,6 +803,7 @@ internal static partial class Benchmark
                 lightsWerePresent: true);
             using var largeStage = new StageControl(largeScene)
             {
+                ExperimentalSceneLightingEnabled = true,
                 ClientSize = new Size(2_897, 2_897),
                 WorldGridOpacity = 0
             };
@@ -896,6 +909,7 @@ internal static partial class Benchmark
                     lightsWerePresent: true);
                 using var retryStage = new StageControl(retryScene)
                 {
+                    ExperimentalSceneLightingEnabled = true,
                     ClientSize = new Size(360, 240),
                     WorldGridOpacity = 0
                 };
@@ -960,6 +974,7 @@ internal static partial class Benchmark
                     lightsWerePresent: true);
                 using var fallbackStage = new StageControl(fallbackScene)
                 {
+                    ExperimentalSceneLightingEnabled = true,
                     ClientSize = new Size(320, 240),
                     BackColor = Color.Black,
                     WorldGridOpacity = 0
@@ -1494,6 +1509,7 @@ internal static partial class Benchmark
                 0f);
             using var stage = new StageControl(crossingScene)
             {
+                ExperimentalSceneLightingEnabled = true,
                 ClientSize = new Size(640, 480),
                 WorldGridOpacity = 0
             };
@@ -1744,6 +1760,7 @@ internal static partial class Benchmark
                 [SpatialOpticalMaterial.Default]);
             using var dollyStage = new StageControl(dollyScene)
             {
+                ExperimentalSceneLightingEnabled = true,
                 ClientSize = new Size(640, 480),
                 WorldGridOpacity = 0
             };
@@ -2088,6 +2105,7 @@ internal static partial class Benchmark
                 [strokeMaterial]);
             using var strokeStage = new StageControl(strokeScene)
             {
+                ExperimentalSceneLightingEnabled = true,
                 ClientSize = new Size(640, 480),
                 BackColor = background,
                 WorldGridOpacity = 0
@@ -2344,6 +2362,7 @@ internal static partial class Benchmark
                 lightsWerePresent: true);
             using var thinStage = new StageControl(thinScene)
             {
+                ExperimentalSceneLightingEnabled = true,
                 ClientSize = new Size(640, 480),
                 BackColor = background,
                 WorldGridOpacity = 0
@@ -2538,6 +2557,7 @@ internal static partial class Benchmark
                 lightsWerePresent: true);
             using var gradientStage = new StageControl(gradientScene)
             {
+                ExperimentalSceneLightingEnabled = true,
                 ClientSize = new Size(640, 480),
                 BackColor = Color.FromArgb(255, 17, 21, 27),
                 WorldGridOpacity = 0
@@ -2750,6 +2770,7 @@ internal static partial class Benchmark
                     [material]);
                 using var unlitStage = new StageControl(unlitScene)
                 {
+                    ExperimentalSceneLightingEnabled = true,
                     ClientSize = new Size(320, 240),
                     BackColor = background,
                     WorldGridOpacity = 0
@@ -2899,6 +2920,7 @@ internal static partial class Benchmark
                 ]);
             using var sharedStage = new StageControl(sharedScene)
             {
+                ExperimentalSceneLightingEnabled = true,
                 ClientSize = new Size(640, 480),
                 BackColor = Color.FromArgb(255, 17, 21, 27),
                 WorldGridOpacity = 0
@@ -3197,16 +3219,6 @@ internal static partial class Benchmark
 
         static double Area(PathsD paths) => Math.Abs(paths.Sum(path => Clipper.Area(path)));
 
-        static RectangleF Bounds(IEnumerable<Reference3DProjectedContour> contours)
-        {
-            var points = contours.SelectMany(contour => contour.Points).ToArray();
-            if (points.Length == 0) return RectangleF.Empty;
-            return RectangleF.FromLTRB(
-                points.Min(point => point.X),
-                points.Min(point => point.Y),
-                points.Max(point => point.X),
-                points.Max(point => point.Y));
-        }
     }
 
     private static void RunSceneLightGizmoRegression(StageControl stage)
@@ -3467,6 +3479,7 @@ internal static partial class Benchmark
         source.CreateEmpty();
         using var bindingStage = new StageControl(source)
         {
+            ExperimentalSceneLightingEnabled = true,
             ClientSize = new Size(640, 480)
         };
         bindingStage.ConfigureReferenceView(
@@ -3542,7 +3555,7 @@ internal static partial class Benchmark
             Location = new Point(-30_000, -30_000),
             Size = new Size(1280, 800)
         };
-        ConfigureExperimental3DForRegression(form);
+        ConfigureExperimental3DForRegression(form, sceneLighting: true);
         var workspaceTabs = workspaceTabsField.GetValue(form) as WorkspaceTabs
             ?? throw new InvalidOperationException("Light-Gizmo regression lost workspace tabs.");
         var dimensionButton = dimensionButtonField.GetValue(form) as Button
@@ -4098,6 +4111,7 @@ internal static partial class Benchmark
         var definition = new SceneDefinition { Dimension = SceneDimension.ThreeD };
         using var stage = new StageControl(scene)
         {
+            ExperimentalSceneLightingEnabled = true,
             ClientSize = new Size(640, 480),
             WorldGridOpacity = 0
         };

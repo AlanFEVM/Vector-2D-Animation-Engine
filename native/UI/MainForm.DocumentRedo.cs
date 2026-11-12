@@ -56,6 +56,12 @@ internal sealed partial class MainForm
                 }).ToArray(), asset.TargetAssetId)
                 { SvgIds = asset.SvgIds!.ToHashSet(StringComparer.Ordinal), ImageIds = asset.ImageIds!.ToHashSet(StringComparer.Ordinal) };
         }
+        else if (before is SymbolDeletionHistory symbol)
+        {
+            scope = _project;
+            after = CaptureSymbolDeletionHistory(symbol.Symbol, symbol.Index, symbol.References.Select(item => item.Owner), symbol.Anchor is not null);
+        }
+        else if (before is PanelCommandHistory panel) { scope = _project; after = panel; }
         else if (before is CanvasSettingsUndo canvas) { scope = canvas.Scene; after = canvas; }
         else return;
         var definitions = _project.DrawingObjects.Select((definition, index) => (Definition: definition, Index: index))
@@ -65,6 +71,7 @@ internal sealed partial class MainForm
         var retained = _documentRedo.TakeWhile((entry, index) =>
         {
             if (entry.After is DrawingUndoEntry drawing) bytes += drawing.Snapshot.EstimateMemoryBytes();
+            if (entry.After is PanelCommandHistory panel) bytes += panel.MemoryBytes;
             if (entry.After is SceneTimelineUndoEntry timeline && timeline.LayerSnapshot is not null) bytes += 4096;
             return index == 0 || index < MaxUndoSnapshots && bytes <= MaxUndoSnapshotBytes;
         }).Reverse().ToArray();
@@ -77,7 +84,11 @@ internal sealed partial class MainForm
         _duplicateSelectionKey = null;
         var previous = _replayingDocumentHistory;
         _replayingDocumentHistory = true;
-        try { return UndoLastEditCore(); }
+        try
+        {
+            if (!ActivateLatestScenePanelHistory()) return false;
+            return UndoLastEditCore();
+        }
         finally { _replayingDocumentHistory = previous; }
     }
 
@@ -85,15 +96,21 @@ internal sealed partial class MainForm
     {
         if (HasActiveCanvasPointerInteraction() || !_documentRedo.TryPeek(out var redo)
             || !ReferenceEquals(redo.Project, _project)) return false;
-        if (redo.Before is DrawingUndoEntry && (IsSceneCompositionContext() || !ReferenceEquals(redo.Scope, _scene))) return false;
-        if (redo.Before is SceneTimelineUndoEntry or CanvasSettingsUndo && !ReferenceEquals(redo.Scope, ActiveScene())) return false;
         var previous = _replayingDocumentHistory;
         _replayingDocumentHistory = _applyingDocumentRedo = true;
         try
         {
+            if (!ActivatePanelRedoScope(redo.Scope)) return false;
+            if (redo.Before is DrawingUndoEntry && (IsSceneCompositionContext() || !ReferenceEquals(redo.Scope, _scene))) return false;
+            if (redo.Before is SceneTimelineUndoEntry or CanvasSettingsUndo && !ReferenceEquals(redo.Scope, ActiveScene())) return false;
             foreach (var (definition, index) in redo.CreatedDefinitions)
                 if (!_project.TryRestoreHistoryDrawingObject(definition, index)) return false;
-            if (redo.Before is CanvasSettingsUndo)
+            if (redo.Before is PanelCommandHistory panel)
+            {
+                panel.Redo();
+                PushPanelHistory(panel);
+            }
+            else if (redo.Before is CanvasSettingsUndo)
             {
                 if (!RedoCanvasSettings()) return false;
             }
@@ -116,6 +133,7 @@ internal sealed partial class MainForm
         if (entry is DrawingUndoEntry drawing) _undoStack.Push(drawing);
         else if (entry is SceneTimelineUndoEntry timeline) _sceneTimelineUndoStack.Push(timeline);
         else if (entry is SharedAssetUndoEntry asset) _sharedAssetUndoStack.Push(asset);
+        else if (entry is SymbolDeletionHistory symbol) { PushSymbolDeletionHistory(symbol); return; }
         RecordUndoSequence(entry);
     }
 }

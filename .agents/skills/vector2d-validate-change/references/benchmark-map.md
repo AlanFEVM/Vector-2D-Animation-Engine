@@ -8,6 +8,7 @@
 | `Benchmark.AppIntegration.cs` | `Render` | UI composition/refresh, inspector selection routing and manual navigation, object/tool isolation, bottom-ordered transforms, numeric undo/cancel, image preview/sampling, text defaults, instances and Auto Key; release-note loading and hot-reload routing |
 | `Benchmark.AssetLibraryCategories.cs` | `Timeline` | asset categories, external SVG persistence, spatial component assets |
 | `Benchmark.AssetTags.cs` | `Timeline` | asset tags and Vault previews |
+| `Benchmark.PanelUsability.cs` | `Timeline`, `Render` | numeric drafts, resource folder/tag round trips, batch history, canvas preservation, scene identity and cross-scene undo/redo ordering |
 | `Benchmark.BezierGeometry.cs` | `Freehand` | Bezier geometry/editing |
 | `Benchmark.BitmapTransforms.cs` | `Render` | bitmap affine transforms and free-transform pointer interaction |
 | `Benchmark.BrushSuite.cs` | `Pressure`, `Freehand`, `Render` | brush/pressure/eraser shared checks |
@@ -42,6 +43,7 @@
 | `Benchmark.PackageSaveSafety.cs`, `Benchmark.FolderSaveSafety.cs` | `Timeline` | package write failure preserves asset bindings; failed folder Save As preserves package target, dirty state and retry |
 | `Benchmark.FlashImport.cs` | `Timeline` | Flash / Animate XFL import, geometry and exposures, nested symbols, safe input rejection, legacy conversion bridge and V2D save/reopen |
 | `Benchmark.RandomFracture.cs` | `Freehand`, `Timeline` | fracture geometry, gradients and timeline commands |
+| `Benchmark.RealisticInteraction.cs` | `RealisticInteraction` | day-to-day 50/200/500/1,000 mixed-object scenes with one blurred and one Multiply layer; 1080p and 4K pan/zoom/selection-drag/playback frame statistics, render path and compositor rebuild counts |
 | `Benchmark.RegressionHelpers.cs` | shared | assertions, temporary fixtures, reflection, GC preparation, window/pixel sampling and native cursor capture onto an opaque GDI bitmap; no standalone entrypoint |
 | `Benchmark.SceneComponents.cs` | `Freehand` | spatial component shortcuts |
 | `Benchmark.SceneOpticsModel.cs` | `Timeline` | scene optical model and persistence |

@@ -5,7 +5,7 @@ internal sealed partial class LibraryVaultPanel
     private readonly ModernTextInput _assetSearchBox = new()
     {
         SearchAppearance = true,
-        PlaceholderText = "Search assets or tags...",
+        PlaceholderText = UiLocalization.T("Search assets or tags..."),
         AccessibleName = "Search project assets"
     };
     private readonly ComboBox _assetTagFilter = new()
@@ -31,7 +31,20 @@ internal sealed partial class LibraryVaultPanel
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(drawingObject);
-        using var dialog = new AssetTagDialog(project.AssetTags, drawingObject.AssetTagIds);
+        return TryEditAssetTags(owner, project, drawingObject.AssetTagIds, out tags, out assignedTagIds);
+    }
+
+    internal static bool TryEditAssetTags(
+        IWin32Window owner,
+        VectorProject project,
+        IReadOnlyList<string> initialAssignedTagIds,
+        out ProjectAssetTagData[] tags,
+        out string[] assignedTagIds,
+        int selectedAssetCount = 1)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        ArgumentNullException.ThrowIfNull(initialAssignedTagIds);
+        using var dialog = new AssetTagDialog(project.AssetTags, initialAssignedTagIds, selectedAssetCount);
         var accepted = dialog.ShowDialog(owner) == DialogResult.OK;
         tags = dialog.Tags;
         assignedTagIds = dialog.AssignedTagIds;
@@ -77,7 +90,7 @@ internal sealed partial class LibraryVaultPanel
         _manageTagsButton.Dock = DockStyle.Fill;
         _manageTagsButton.Margin = new Padding(0, 0, 0, 2);
         Theme.StyleToolbarButton(_manageTagsButton);
-        _manageTagsButton.Click += (_, _) => RaiseSelectedAssetTagsRequest();
+        _manageTagsButton.Click += (_, _) => { if (!RaiseBatchAction("ManageTags")) RaiseSelectedAssetTagsRequest(); };
         _toolTip.SetToolTip(_manageTagsButton, "Manage tags for selected asset");
         layout.Controls.Add(_manageTagsButton, 1, 1);
 
@@ -159,7 +172,7 @@ internal sealed partial class LibraryVaultPanel
     private string AssetSearchText => _assetSearchBox.Text.Trim();
 
     private bool AssetFilterActive => AssetSearchText.Length > 0
-        || _activeAssetCategory != AssetCategory.ExternalSvg && SelectedAssetTagFilterId.Length > 0;
+        || SelectedAssetTagFilterId.Length > 0;
 
     private bool AssetMatchesFilter(DrawingObjectDefinition drawingObject)
     {
@@ -345,8 +358,7 @@ internal sealed partial class LibraryVaultPanel
 
     private void UpdateAssetTagActions(bool projectAssetSelected)
     {
-        _manageTagsButton.Enabled = _activeAssetCategory != AssetCategory.ExternalSvg
-            && projectAssetSelected;
+        _manageTagsButton.Enabled = projectAssetSelected;
     }
 
     private static bool ContainsSearch(string? value, string search) =>
@@ -379,12 +391,13 @@ internal sealed partial class LibraryVaultPanel
 
         public AssetTagDialog(
             IReadOnlyList<ProjectAssetTag> tags,
-            IReadOnlyList<string> assignedTagIds)
+            IReadOnlyList<string> assignedTagIds,
+            int selectedAssetCount = 1)
             : base("Asset Tags", new Size(520, 540))
         {
             _tags = tags.Select(tag => new ProjectAssetTagData(tag.Id, tag.Name, tag.ColorArgb)).ToList();
             _assignedTagIds = assignedTagIds.ToHashSet(StringComparer.Ordinal);
-            BuildUi();
+            BuildUi(selectedAssetCount);
             RefreshRows();
             var apply = AddDialogAction("Apply", DialogResult.OK, DialogActionStyle.Primary);
             var cancel = AddDialogAction("Cancel", DialogResult.Cancel);
@@ -399,7 +412,7 @@ internal sealed partial class LibraryVaultPanel
             .Select(tag => tag.Id)
             .ToArray();
 
-        private void BuildUi()
+        private void BuildUi(int selectedAssetCount)
         {
             var layout = new TableLayoutPanel
             {
@@ -418,7 +431,9 @@ internal sealed partial class LibraryVaultPanel
 
             layout.Controls.Add(new Label
             {
-                Text = "Assign tags to this asset or manage project tag colors.",
+                Text = selectedAssetCount > 1
+                    ? string.Format(UiLocalization.T("Checked tags replace assignments on all {0} selected assets."), selectedAssetCount)
+                    : UiLocalization.T("Assign tags to this asset or manage project tag colors."),
                 Dock = DockStyle.Fill,
                 ForeColor = Theme.Muted,
                 BackColor = Theme.Panel,

@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace VectorAnimationEngine;
 
 internal sealed record CameraParallaxLayer(string Id, string Name, int ColorArgb, float Depth, bool Enabled);
@@ -10,32 +12,36 @@ internal sealed class CameraParallaxLayerEventArgs(string layerId, float depth, 
 
 internal sealed class CameraParallaxPanel : UserControl
 {
-    private readonly SvgIconButton _disclosure = new(SvgIconKind.ChevronDown)
-        { Text = "2D parallax", IsDisclosureHeader = true };
-    private readonly CheckBox _enabled = new ParallaxCheckBox { Text = "Enabled", AccessibleName = "Enable parallax", AutoSize = false };
+    private readonly Label _heading = InspectorModuleStyle.CreateTextLabel();
+    private readonly ShotDirectorPanel.CameraSectionToggle _disclosure = new("2D parallax", expanded: false);
+    private readonly Label _enabledCaption = InspectorModuleStyle.CreateFieldLabel("Enabled");
+    private readonly ModernToggleSwitch _enabled = new() { AccessibleName = "Enable parallax", AutoSize = false };
     private readonly ModernNumericUpDown _strength = Number("Parallax strength", 0, 200, true);
     private readonly ModernNumericUpDown _cameraZ = Number("Camera Z");
     private readonly ModernNumericUpDown _referenceZ = Number("Reference plane Z");
-    private readonly CheckBox _keepSize = new ParallaxCheckBox { Text = "Keep size", AutoSize = false };
+    private readonly Label _keepSizeCaption = InspectorModuleStyle.CreateFieldLabel("Keep size");
+    private readonly ModernToggleSwitch _keepSize = new() { AccessibleName = "Keep size", AutoSize = false };
     private readonly Label _layerTitle = new() { Text = "Layer depth", AutoEllipsis = true };
     private readonly Label _layerDirection = new() { Text = "Near − / Far +", AutoEllipsis = true, TextAlign = ContentAlignment.MiddleRight };
+    private readonly Label _layerScope = new() { Text = "Layer depths are shared by every camera in this scene." };
+    private readonly Label _constraintHint = new();
+    private readonly ToolTip _help = new();
     private readonly Label _emptyLayers = new() { Text = "No layers yet", AutoEllipsis = true, TextAlign = ContentAlignment.MiddleCenter };
-    private readonly ThemedScrollPanel _layers = new() { ShowScrollBar = true };
+    private readonly Panel _layers = new() { TabStop = false };
     private readonly CameraDepthDiagram _diagram = new();
     private readonly Button _closer = new() { Text = "Move closer" };
     private readonly Button _farther = new() { Text = "Move farther" };
-    private readonly SvgIconButton _advanced = new(SvgIconKind.ChevronRight)
-        { Text = "Advanced response", IsDisclosureHeader = true };
+    private readonly Label _responseHeading = InspectorModuleStyle.CreateTextLabel();
+    private readonly ShotDirectorPanel.CameraSectionToggle _advanced = new("Parallax response", expanded: false);
     private readonly ModernNumericUpDown _horizontal = Number("Horizontal response", 0, 200, true);
     private readonly ModernNumericUpDown _vertical = Number("Vertical response", 0, 200, true);
-    private readonly CheckBox _dolly = new ParallaxCheckBox { Text = "Dolly depth scaling", AutoSize = false };
-    private readonly Label _hint = new() { Text = "Drag depth lines · Shift: precise · Esc: cancel", AutoEllipsis = true };
+    private readonly Label _dollyCaption = InspectorModuleStyle.CreateFieldLabel("Dolly scaling");
+    private readonly ModernToggleSwitch _dolly = new() { AccessibleName = "Dolly depth scaling", AutoSize = false };
+    private readonly Label _hint = new() { Text = "Drag: change depth · Shift: precise · Esc: cancel. Click overlapping lines again to cycle; Left/Right selects a layer." };
     private readonly List<LayerRow> _rows = [];
     private SceneShotSettings _settings = SceneShotSettings.Default;
     private CameraParallaxLayer[] _layerState = [];
     private bool _updating;
-    private bool _expanded = true;
-    private bool _advancedExpanded;
     private bool _arranging;
     private string _cameraId = "";
     private int _frame = -1;
@@ -51,14 +57,45 @@ internal sealed class CameraParallaxPanel : UserControl
         AutoScaleMode = AutoScaleMode.None;
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         BackColor = Theme.Panel;
-        Controls.AddRange([_disclosure, _enabled, _keepSize, _layerTitle, _layerDirection, _emptyLayers, _layers, _diagram,
-            _closer, _farther, _advanced, _dolly, _hint]);
+        Controls.AddRange([_heading, _disclosure, _enabledCaption, _enabled, _keepSizeCaption, _keepSize, _layerTitle, _layerDirection, _layerScope, _constraintHint, _emptyLayers, _layers, _diagram,
+            _closer, _farther, _responseHeading, _advanced, _dollyCaption, _dolly, _hint]);
+        Theme.StyleToolTip(_help);
+        _constraintHint.Text = NormalDepthHint();
+        var keepSizeHelp = UiLocalization.T("Preserve layer size at the current camera depth. Dolly scaling can still change size as the camera moves.");
+        _help.SetToolTip(_keepSize, keepSizeHelp);
+        _help.SetToolTip(_keepSizeCaption, keepSizeHelp);
+        _help.SetToolTip(_layerTitle, UiLocalization.T("Layer depths are shared by every camera in this scene."));
         foreach (var control in new Control[] { _disclosure, _advanced, _closer, _farther })
             Theme.StyleButton((Button)control);
-        foreach (var control in new Control[] { _enabled, _keepSize, _dolly, _layerTitle, _layerDirection, _emptyLayers, _hint })
+        _heading.Text = "2D parallax";
+        _heading.Font = Theme.UiFont(Theme.InspectorSectionFontSize);
+        _responseHeading.Text = "Parallax response";
+        _responseHeading.Font = _heading.Font;
+        _responseHeading.Cursor = Cursors.Hand;
+        _responseHeading.Click += (_, _) =>
+        {
+            _advanced.Focus();
+            _advanced.PerformClick();
+        };
+        _heading.Cursor = Cursors.Hand;
+        _heading.Click += (_, _) =>
+        {
+            _disclosure.Focus();
+            _disclosure.PerformClick();
+        };
+        _disclosure.Click += (_, _) =>
+        {
+            _diagram.CancelGesture();
+            PerformLayout();
+        };
+        _enabledCaption.Dock = DockStyle.None;
+        _keepSizeCaption.Dock = DockStyle.None;
+        _dollyCaption.Dock = DockStyle.None;
+        foreach (var control in new Control[] { _enabled, _keepSize, _dolly, _layerTitle, _layerDirection, _layerScope, _constraintHint, _emptyLayers, _hint })
         {
             control.Font = Theme.UiFont();
-            control.ForeColor = control == _hint || control == _layerTitle || control == _layerDirection || control == _emptyLayers ? Theme.PanelSecondaryText : Theme.Text;
+            control.ForeColor = control == _constraintHint ? Theme.PanelSecondaryText
+                : control == _hint || control == _layerTitle || control == _layerDirection || control == _layerScope || control == _emptyLayers ? Theme.PanelSecondaryText : Theme.Text;
             control.BackColor = Theme.Panel;
         }
         AddField(_strength, "Parallax strength");
@@ -66,19 +103,7 @@ internal sealed class CameraParallaxPanel : UserControl
         AddField(_referenceZ, "Reference plane Z");
         AddField(_horizontal, "Horizontal response");
         AddField(_vertical, "Vertical response");
-        _disclosure.Click += (_, _) =>
-        {
-            _diagram.CancelGesture();
-            _expanded = !_expanded;
-            _disclosure.Icon = _expanded ? SvgIconKind.ChevronDown : SvgIconKind.ChevronRight;
-            PerformLayout();
-        };
-        _advanced.Click += (_, _) =>
-        {
-            _advancedExpanded = !_advancedExpanded;
-            _advanced.Icon = _advancedExpanded ? SvgIconKind.ChevronDown : SvgIconKind.ChevronRight;
-            PerformLayout();
-        };
+        _advanced.Click += (_, _) => PerformLayout();
         _enabled.CheckedChanged += (_, _) => Discrete(() => CommitSettings(captureAnchor: _enabled.Checked));
         _keepSize.CheckedChanged += (_, _) => Discrete(() => CommitSettings(captureAnchor: _keepSize.Checked));
         _dolly.CheckedChanged += (_, _) => Discrete(() => CommitSettings());
@@ -96,7 +121,12 @@ internal sealed class CameraParallaxPanel : UserControl
 
     internal void Bind(string cameraId, int frame, SceneShotSettings settings, CameraParallaxLayer[] layers)
     {
-        if (_cameraId != cameraId || _frame != frame) _diagram.CancelGesture();
+        if (_cameraId != cameraId || _frame != frame)
+        {
+            _diagram.CancelGesture();
+            _constraintHint.Text = NormalDepthHint();
+            _constraintHint.ForeColor = Theme.PanelSecondaryText;
+        }
         _cameraId = cameraId;
         _frame = frame;
         _settings = settings;
@@ -125,6 +155,8 @@ internal sealed class CameraParallaxPanel : UserControl
                 var layer = layers[index];
                 var row = _rows[index];
                 row.Name.Text = layer.Name;
+                _help.SetToolTip(row.Name, layer.Name);
+                _help.SetToolTip(row.Toggle, layer.Name);
                 row.Toggle.AccessibleName = layer.Name;
                 row.Toggle.ForeColor = Theme.Text;
                 row.Toggle.Checked = layer.Enabled;
@@ -150,8 +182,9 @@ internal sealed class CameraParallaxPanel : UserControl
         var name = new Label { AutoEllipsis = true, Font = Theme.UiFont(), ForeColor = Theme.Text,
             TextAlign = ContentAlignment.MiddleLeft };
         var depth = Number("Layer depth Z");
+        depth.MouseWheelChangesValue = false;
         container.Controls.AddRange([swatch, toggle, name, depth]);
-        _layers.Content.Controls.Add(container);
+        _layers.Controls.Add(container);
         var row = new LayerRow(layer.Id, container, swatch, toggle, name, depth);
         _rows.Add(row);
         container.Paint += (_, eventArgs) => InspectorModuleStyle.DrawDivider(container, eventArgs.Graphics, container.Height - 1);
@@ -200,12 +233,14 @@ internal sealed class CameraParallaxPanel : UserControl
             VerticalResponse = (float)_vertical.Value / 100, DollyScaling = _dolly.Checked,
             SizeAnchorZ = captureAnchor ? (float)_cameraZ.Value : _settings.Parallax.SizeAnchorZ
         };
-        var cameraZ = (float)_cameraZ.Value;
+        var requestedCameraZ = (float)_cameraZ.Value;
+        var cameraZ = requestedCameraZ;
         if (parallax.Enabled) cameraZ = Math.Max(-SceneShotSettings.MaximumPosition,
             Math.Min(cameraZ, MinimumDepth(parallax.ReferenceZ) - SceneShotParallaxSettings.NearDistance));
         if (captureAnchor) parallax = parallax with { SizeAnchorZ = cameraZ };
         SettingsChanged?.Invoke(this, new ShotDirectorFramingEventArgs(_cameraId,
             _settings with { Z = cameraZ, Parallax = parallax }));
+        ShowDepthConstraint(requestedCameraZ, cameraZ);
     }
 
     private float MinimumDepth(float referenceZ) => _layerState.Where(layer => layer.Enabled)
@@ -222,6 +257,7 @@ internal sealed class CameraParallaxPanel : UserControl
                 : SceneShotSettings.MaximumPosition;
             _cameraZ.Value = (decimal)Math.Clamp(depth, -SceneShotSettings.MaximumPosition,
                 maximum);
+            ShowDepthConstraint(depth, (float)_cameraZ.Value);
             return;
         }
         if (_layerState.FirstOrDefault(layer => layer.Id == layerId) is not { } selected) return;
@@ -229,9 +265,28 @@ internal sealed class CameraParallaxPanel : UserControl
         var minimum = participates && _settings.Parallax.Enabled
             ? Math.Min(SceneShotSettings.MaximumPosition, _settings.Z + SceneShotParallaxSettings.NearDistance)
             : -SceneShotSettings.MaximumPosition;
+        var requested = depth;
         depth = Math.Clamp(depth, Math.Max(-SceneShotSettings.MaximumPosition, minimum), SceneShotSettings.MaximumPosition);
         LayerChanged?.Invoke(this, new CameraParallaxLayerEventArgs(layerId, depth, participates));
+        ShowDepthConstraint(requested, depth);
     }
+
+    private void ShowDepthConstraint(float requested, float actual)
+    {
+        var limited = Math.Abs(requested - actual) > 0.001f;
+        var text = limited
+            ? string.Format(CultureInfo.CurrentCulture,
+                UiLocalization.T("Depth limited to {0:0.#}. Keep at least {1:0.#} units between the camera and enabled layers or the reference plane."),
+                actual, SceneShotParallaxSettings.NearDistance) : NormalDepthHint();
+        if (_constraintHint.Text == text) return;
+        _constraintHint.Text = text;
+        _constraintHint.ForeColor = limited ? Theme.Danger : Theme.PanelSecondaryText;
+        _help.SetToolTip(_constraintHint, text);
+    }
+
+    private static string NormalDepthHint() => string.Format(CultureInfo.CurrentCulture,
+        UiLocalization.T("When parallax is enabled, keep at least {0:0.#} units between the camera and layers or the reference plane."),
+        SceneShotParallaxSettings.NearDistance);
 
     private void StepDepth(int direction)
     {
@@ -270,21 +325,33 @@ internal sealed class CameraParallaxPanel : UserControl
         int Scale(int value) => Math.Max(1, (int)Math.Round(value * DeviceDpi / 96f));
         var width = ClientSize.Width;
         var rowHeight = Scale(Theme.ControlHeight);
-        var enabledWidth = Math.Min(width / 2, Math.Max(Scale(72), TextRenderer.MeasureText(_enabled.Text, _enabled.Font).Width + Scale(28)));
-        _disclosure.SetBounds(0, 0, Math.Max(1, width - enabledWidth), rowHeight);
-        _enabled.SetBounds(Math.Max(0, width - enabledWidth), 0, enabledWidth, rowHeight);
+        _heading.SetBounds(0, 0, Math.Max(1, width - Scale(36)), rowHeight);
+        _disclosure.SetBounds(Math.Max(0, width - Scale(28)), 0, Scale(28), Scale(28));
         _disclosure.TabIndex = 0;
+        void Toggle(ModernToggleSwitch editor, Label label, int top)
+        {
+            var split = (int)Math.Floor(width * 0.48f);
+            var labelHeight = Math.Min(rowHeight, label.Font.Height + Scale(4));
+            label.SetBounds(0, top + (rowHeight - labelHeight) / 2, Math.Max(1, split - Scale(8)), labelHeight);
+            editor.SetBounds(split, top, Math.Max(1, width - split), rowHeight);
+        }
+        Toggle(_enabled, _enabledCaption, Scale(40));
         _enabled.TabIndex = 1;
         foreach (Control control in Controls)
         {
-            if (control == _disclosure || control == _enabled) continue;
+            if (control == _heading || control == _disclosure) continue;
             var advanced = control == _horizontal || ReferenceEquals(control, _horizontal.Tag)
-                || control == _vertical || ReferenceEquals(control, _vertical.Tag) || control == _dolly;
-            control.Visible = _expanded && (!advanced || _advancedExpanded)
+                || control == _vertical || ReferenceEquals(control, _vertical.Tag) || control == _dolly || control == _dollyCaption;
+            control.Visible = _disclosure.Expanded && (!advanced || _advanced.Expanded)
                 && (control != _layers || _rows.Count > 0)
                 && (control != _emptyLayers || _rows.Count == 0);
         }
-        var cursorY = Scale(42);
+        if (!_disclosure.Expanded)
+        {
+            if (Height != rowHeight) Height = rowHeight;
+            return;
+        }
+        var cursorY = Scale(80);
         var tabIndex = 2;
         void Field(ModernNumericUpDown editor)
         {
@@ -296,69 +363,72 @@ internal sealed class CameraParallaxPanel : UserControl
             editor.TabIndex = tabIndex++;
             cursorY += Scale(40);
         }
-        if (_expanded)
+        Field(_strength);
+        Field(_cameraZ);
+        Field(_referenceZ);
+        Toggle(_keepSize, _keepSizeCaption, cursorY);
+        _keepSize.TabIndex = tabIndex++;
+        cursorY += Scale(48);
+        _constraintHint.SetBounds(0, cursorY, width, Scale(64));
+        cursorY += Scale(72);
+        _responseHeading.SetBounds(0, cursorY, Math.Max(1, width - Scale(36)), Scale(28));
+        _advanced.SetBounds(Math.Max(0, width - Scale(28)), cursorY, Scale(28), Scale(28));
+        _advanced.TabIndex = tabIndex++;
+        cursorY += Scale(36);
+        if (_advanced.Expanded)
         {
-            Field(_strength);
-            Field(_cameraZ);
-            Field(_referenceZ);
-            _keepSize.SetBounds(0, cursorY, width, rowHeight);
-            _keepSize.TabIndex = tabIndex++;
-            cursorY += Scale(48);
-            var directionWidth = Math.Min(width / 2, Scale(114));
-            _layerTitle.SetBounds(0, cursorY, Math.Max(1, width - directionWidth - Scale(8)), Scale(28));
-            _layerDirection.SetBounds(width - directionWidth, cursorY, directionWidth, Scale(28));
-            cursorY += Scale(34);
-            _layers.SetBounds(0, cursorY, width, Scale(Math.Clamp(_rows.Count, 1, 5) * 40));
-            _layers.TabIndex = tabIndex++;
-            _emptyLayers.SetBounds(0, cursorY, width, Scale(40));
-            for (var index = 0; index < _rows.Count; index++)
-            {
-                var row = _rows[index];
-                var available = Math.Max(1, _layers.Content.ClientSize.Width);
-                var inputWidth = Math.Min(available / 2, Scale(104));
-                var split = available - inputWidth;
-                row.Container.SetBounds(0, index * Scale(40), available, Scale(40));
-                row.Container.TabIndex = index;
-                row.Swatch.SetBounds(Scale(24), Scale(14), Scale(8), Scale(8));
-                row.Toggle.SetBounds(0, 0, Scale(20), rowHeight);
-                row.Toggle.TabIndex = 0;
-                row.Name.SetBounds(Scale(40), 0, Math.Max(1, split - Scale(48)), rowHeight);
-                row.Depth.SetBounds(split, 0, inputWidth, rowHeight);
-                row.Depth.TabIndex = 1;
-            }
-            _layers.Content.PerformLayout();
-            cursorY += _layers.Height + Scale(12);
-            _diagram.SetBounds(0, cursorY, width, Scale(width >= Scale(300) ? 240 : 200));
-            _diagram.TabIndex = tabIndex++;
-            cursorY += _diagram.Height + Scale(10);
-            var half = Math.Max(1, (width - Scale(8)) / 2);
-            _closer.SetBounds(0, cursorY, half, rowHeight);
-            _farther.SetBounds(half + Scale(8), cursorY, Math.Max(1, width - half - Scale(8)), rowHeight);
-            _closer.TabIndex = tabIndex++;
-            _farther.TabIndex = tabIndex++;
-            cursorY += Scale(38);
-            _hint.SetBounds(0, cursorY, width, Scale(34));
-            cursorY += Scale(48);
-            _advanced.SetBounds(0, cursorY, width, rowHeight);
-            _advanced.TabIndex = tabIndex++;
+            Field(_horizontal);
+            Field(_vertical);
+            Toggle(_dolly, _dollyCaption, cursorY);
+            _dolly.TabIndex = tabIndex++;
             cursorY += Scale(40);
-            if (_advancedExpanded)
-            {
-                Field(_horizontal);
-                Field(_vertical);
-                _dolly.SetBounds(0, cursorY, width, rowHeight);
-                _dolly.TabIndex = tabIndex++;
-                cursorY += Scale(40);
-            }
         }
-        var height = _expanded ? cursorY : rowHeight;
-        if (Height != height) Height = height;
+        cursorY += Scale(8);
+        var directionWidth = Math.Min(width / 2, Scale(114));
+        _layerTitle.SetBounds(0, cursorY, Math.Max(1, width - directionWidth - Scale(8)), Scale(28));
+        _layerDirection.SetBounds(width - directionWidth, cursorY, directionWidth, Scale(28));
+        cursorY += Scale(34);
+        _layerScope.SetBounds(0, cursorY, width, Scale(40));
+        cursorY += Scale(48);
+        _layers.SetBounds(0, cursorY, width, Scale(Math.Max(1, _rows.Count) * 40));
+        _layers.TabIndex = tabIndex++;
+        _emptyLayers.SetBounds(0, cursorY, width, Scale(40));
+        for (var index = 0; index < _rows.Count; index++)
+        {
+            var row = _rows[index];
+            var available = Math.Max(1, _layers.ClientSize.Width);
+            var inputWidth = Math.Min(available / 2, Scale(104));
+            var split = available - inputWidth;
+            row.Container.SetBounds(0, index * Scale(40), available, Scale(40));
+            row.Container.TabIndex = index;
+            row.Swatch.SetBounds(Scale(24), Scale(14), Scale(8), Scale(8));
+            row.Toggle.SetBounds(0, 0, Scale(20), rowHeight);
+            row.Toggle.TabIndex = 0;
+            row.Name.SetBounds(Scale(40), 0, Math.Max(1, split - Scale(48)), rowHeight);
+            row.Depth.SetBounds(split, 0, inputWidth, rowHeight);
+            row.Depth.TabIndex = 1;
+        }
+        _layers.PerformLayout();
+        cursorY += _layers.Height + Scale(12);
+        _diagram.SetBounds(0, cursorY, width, Scale(width >= Scale(300) ? 240 : 200));
+        _diagram.TabIndex = tabIndex++;
+        cursorY += _diagram.Height + Scale(10);
+        var half = Math.Max(1, (width - Scale(8)) / 2);
+        _closer.SetBounds(0, cursorY, half, rowHeight);
+        _farther.SetBounds(half + Scale(8), cursorY, Math.Max(1, width - half - Scale(8)), rowHeight);
+        _closer.TabIndex = tabIndex++;
+        _farther.TabIndex = tabIndex++;
+        cursorY += Scale(38);
+        _hint.SetBounds(0, cursorY, width, Scale(64));
+        cursorY += Scale(72);
+        if (Height != cursorY) Height = cursorY;
     }
 
     protected override void OnPaint(PaintEventArgs eventArgs)
     {
         base.OnPaint(eventArgs);
-        if (_expanded) InspectorModuleStyle.DrawDivider(this, eventArgs.Graphics, _advanced.Top - (int)Math.Round(8 * DeviceDpi / 96f));
+        if (_disclosure.Expanded)
+            InspectorModuleStyle.DrawDivider(this, eventArgs.Graphics, _responseHeading.Top - (int)Math.Round(8 * DeviceDpi / 96f));
     }
 
     private static ModernNumericUpDown Number(string name, decimal? minimum = null, decimal? maximum = null, bool percent = false)
@@ -416,4 +486,10 @@ internal sealed class CameraParallaxPanel : UserControl
     }
 
     private sealed record LayerRow(string Id, Panel Container, Panel Swatch, CheckBox Toggle, Label Name, ModernNumericUpDown Depth);
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _help.Dispose();
+        base.Dispose(disposing);
+    }
 }

@@ -82,7 +82,8 @@ internal sealed class ObjectAppearancePanel : UserControl
     public event EventHandler? InteractionCanceled;
     public int PreferredHeight => ScaleMetric(_strokeAvailable ? 232 : 192);
 
-    public void SetMaterial(MaterialEditorPanel editor, bool fillAvailable, bool strokeAvailable, bool mixed)
+    public void SetMaterial(MaterialEditorPanel editor, bool fillAvailable, bool strokeAvailable, bool mixed,
+        bool? strokeWidthMixed = null, bool? opacityMixed = null)
     {
         _updating = true;
         try
@@ -105,6 +106,8 @@ internal sealed class ObjectAppearancePanel : UserControl
             {
                 _width.Value = Math.Clamp((decimal)editor.StrokeWidth, _width.Minimum, _width.Maximum);
                 _opacity.Value = Math.Clamp((decimal)(editor.Opacity * 100f), _opacity.Minimum, _opacity.Maximum);
+                _width.MixedValue = strokeWidthMixed ?? mixed;
+                _opacity.MixedValue = opacityMixed ?? mixed;
             }
         }
         finally { _updating = false; }

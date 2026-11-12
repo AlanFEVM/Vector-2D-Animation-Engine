@@ -5,6 +5,7 @@ internal sealed class OperationPreferencesDialog : ModernDialogForm
     private readonly Button _leftToolbar = new SegmentedButton { Text = "Left" };
     private readonly Button _topToolbar = new SegmentedButton { Text = "Top" };
     public ToolbarPosition SelectedToolbarPosition { get; private set; }
+    internal Func<bool>? ApplyRequested { get; set; }
     private readonly ModernToggleSwitch _freeTransformShiftProportional = new()
     {
         Text = "Use Shift for proportional scaling",
@@ -85,14 +86,15 @@ internal sealed class OperationPreferencesDialog : ModernDialogForm
         }, 0, 3);
         layout.Controls.Add(new Label
         {
-            Text = "Confirm changes here, then save in Settings.",
+            Text = "Apply saves these preferences immediately. Cancel leaves them unchanged.",
             Dock = DockStyle.Fill,
             ForeColor = Theme.Muted,
             BackColor = Theme.Panel,
             TextAlign = ContentAlignment.MiddleLeft,
             Margin = Padding.Empty
         }, 0, 4);
-        AcceptButton = AddDialogAction("OK", DialogResult.OK, DialogActionStyle.Primary);
+        AcceptButton = AddDialogAction("Apply", DialogResult.OK, DialogActionStyle.Primary,
+            () => ApplyRequested?.Invoke() ?? true);
         CancelButton = AddDialogAction("Cancel", DialogResult.Cancel);
         UiLocalization.Watch(this);
     }

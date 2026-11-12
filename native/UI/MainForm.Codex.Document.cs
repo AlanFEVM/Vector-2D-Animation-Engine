@@ -456,19 +456,11 @@ internal sealed partial class MainForm
         var index = CodexDocumentDrawingObjectIndex(symbolId);
         if (_drawingObjects.Count <= 1) throw new InvalidOperationException("A project must retain at least one symbol.");
         CodexDocumentPrepareWrite();
-        if (IsSymbolEditing) ExitSceneSymbolEditing();
-        var wasSceneBuildingContext = IsSceneBuildingContext();
-        if (!_project.TryRemoveDrawingObject(symbolId, out _))
+        if (!CommitDrawingObjectDeletion(symbolId))
         {
             throw new InvalidOperationException("The symbol could not be removed.");
         }
 
-        if (_activeDrawingObjectIndex > index) _activeDrawingObjectIndex--;
-        else if (_activeDrawingObjectIndex == index) _activeDrawingObjectIndex = Math.Min(index, _drawingObjects.Count - 1);
-        ResetEditHistory();
-        if (wasSceneBuildingContext) BindSceneEditStage(resetView: false);
-        else BindActiveDrawingObjectScene(resetView: false);
-        BuildDrawingObjectTabs();
         UpdateInspector();
         UpdateStatusBar();
         return new { changed = true, symbolId, symbols = CodexDocumentGetSymbols() };

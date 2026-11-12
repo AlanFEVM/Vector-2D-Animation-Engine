@@ -11,6 +11,7 @@ internal sealed class CameraDepthDiagram : Control
     private float _dragMaximum;
     private float _dragValue;
     private int _lastY;
+    private readonly ToolTip _help = new();
     internal string SelectedLayerId { get; private set; } = "";
     internal event EventHandler? EditStarted;
     internal event EventHandler? EditCompleted;
@@ -27,8 +28,9 @@ internal sealed class CameraDepthDiagram : Control
         Font = Theme.UiFont();
         TabStop = true;
         AccessibleName = "Layer depth diagram";
-        AccessibleDescription = "Drag depth lines · Shift: precise · Esc: cancel";
+        AccessibleDescription = "Drag depth lines · Shift: precise · Esc: cancel. Click overlapping lines again to cycle; Left/Right selects a layer.";
         Cursor = Cursors.SizeNS;
+        Theme.StyleToolTip(_help);
     }
 
     internal void Bind(float cameraZ, CameraParallaxLayer[] layers)
@@ -126,11 +128,10 @@ internal sealed class CameraDepthDiagram : Control
         base.OnMouseDown(eventArgs);
         if (eventArgs.Button != MouseButtons.Left || !Enabled) return;
         Focus();
-        var hits = _layers.Select(layer => (layer.Id, Distance: Math.Abs(DepthY(layer.Depth) - eventArgs.Y)))
-            .Append((Id: "", Distance: Math.Abs(DepthY(_cameraZ) - eventArgs.Y)))
-            .OrderBy(hit => hit.Item2).ThenBy(hit => hit.Id != SelectedLayerId).ToArray();
-        if (hits.Length == 0 || hits[0].Item2 > 12 * DeviceDpi / 96f) return;
-        SelectLayer(hits[0].Id);
+        var hits = HitCandidates(eventArgs.Y);
+        if (hits.Length == 0) return;
+        var current = Array.IndexOf(hits, SelectedLayerId);
+        SelectLayer(hits[(current + 1) % hits.Length]);
         (_dragMinimum, _dragMaximum) = DepthRange();
         _dragValue = SelectedLayerId.Length == 0 ? _cameraZ : _layers.First(layer => layer.Id == SelectedLayerId).Depth;
         _lastY = eventArgs.Y;
@@ -142,7 +143,15 @@ internal sealed class CameraDepthDiagram : Control
     protected override void OnMouseMove(MouseEventArgs eventArgs)
     {
         base.OnMouseMove(eventArgs);
-        if (!_dragging) return;
+        if (!_dragging)
+        {
+            var names = HitCandidates(eventArgs.Y).Select(id => id.Length == 0 ? UiLocalization.T("Camera")
+                : _layers.First(layer => layer.Id == id).Name).ToArray();
+            var text = string.Join(Environment.NewLine, names);
+            if (names.Length > 1) text += Environment.NewLine + UiLocalization.T("Click again to select the next overlapping line.");
+            if (_help.GetToolTip(this) != text) _help.SetToolTip(this, text);
+            return;
+        }
         var precision = (ModifierKeys & Keys.Shift) != 0 ? 0.1f : 1f;
         _dragValue += (eventArgs.Y - _lastY) * (_dragMaximum - _dragMinimum) / PlotHeight * precision;
         _lastY = eventArgs.Y;
@@ -182,12 +191,23 @@ internal sealed class CameraDepthDiagram : Control
         base.OnLostFocus(eventArgs);
     }
 
-    protected override bool IsInputKey(Keys keyData) => (keyData & Keys.KeyCode) is Keys.Up or Keys.Down || base.IsInputKey(keyData);
+    private string[] HitCandidates(int y)
+    {
+        var hits = _layers.Select(layer => (layer.Id, Distance: Math.Abs(DepthY(layer.Depth) - y)))
+            .Append((Id: "", Distance: Math.Abs(DepthY(_cameraZ) - y)))
+            .OrderBy(hit => hit.Distance).ToArray();
+        var dpi = DeviceDpi / 96f;
+        if (hits.Length == 0 || hits[0].Distance > 12 * dpi) return [];
+        var nearest = hits[0].Distance;
+        return hits.Where(hit => hit.Distance <= nearest + 2 * dpi).Select(hit => hit.Id).ToArray();
+    }
+
+    protected override bool IsInputKey(Keys keyData) => (keyData & Keys.KeyCode) is Keys.Up or Keys.Down or Keys.Left or Keys.Right || base.IsInputKey(keyData);
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
         if ((keyData & Keys.KeyCode) == Keys.Escape && _dragging) { CancelGesture(); return true; }
-        if ((keyData & Keys.KeyCode) is Keys.Up or Keys.Down)
+        if ((keyData & Keys.KeyCode) is Keys.Up or Keys.Down or Keys.Left or Keys.Right)
         {
             if (!_dragging) OnKeyDown(new KeyEventArgs(keyData));
             return true;
@@ -198,6 +218,15 @@ internal sealed class CameraDepthDiagram : Control
     protected override void OnKeyDown(KeyEventArgs eventArgs)
     {
         base.OnKeyDown(eventArgs);
+        if (Enabled && !_dragging && eventArgs.KeyCode is Keys.Left or Keys.Right)
+        {
+            var choices = _layers.Select(layer => layer.Id).Prepend("").ToArray();
+            var index = Array.IndexOf(choices, SelectedLayerId);
+            SelectLayer(choices[(index + (eventArgs.KeyCode == Keys.Right ? 1 : choices.Length - 1)) % choices.Length]);
+            eventArgs.Handled = true;
+            eventArgs.SuppressKeyPress = true;
+            return;
+        }
         if (!Enabled || eventArgs.KeyCode is not (Keys.Up or Keys.Down) || _dragging) return;
         var value = SelectedLayerId.Length == 0 ? _cameraZ : _layers.FirstOrDefault(layer => layer.Id == SelectedLayerId)?.Depth ?? 0;
         EditStarted?.Invoke(this, EventArgs.Empty);
@@ -210,7 +239,11 @@ internal sealed class CameraDepthDiagram : Control
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) CancelGesture();
+        if (disposing)
+        {
+            CancelGesture();
+            _help.Dispose();
+        }
         base.Dispose(disposing);
     }
 }

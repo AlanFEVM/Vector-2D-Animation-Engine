@@ -395,6 +395,7 @@ internal sealed class ImageImportSettingsDialog : ModernDialogForm
 
     private void SetAdvancedExpanded(bool expanded)
     {
+        var scrollPosition = _scroll.ScrollPosition;
         _advancedExpanded = expanded;
         _settingsLayout.SuspendLayout();
         try
@@ -407,6 +408,7 @@ internal sealed class ImageImportSettingsDialog : ModernDialogForm
         }
         finally { _settingsLayout.ResumeLayout(true); }
         FitWindowToContent();
+        _scroll.RestoreScrollPosition(scrollPosition);
     }
 
     /// <summary>Fits the window height to the actual content instead of a fixed height.</summary>

@@ -868,6 +868,25 @@ internal sealed partial class TimelineStrip : Control
             graphics.DrawLine(layerDragEdge, 3, y + _rowHeight - 2, layout.TrackRight - 2, y + _rowHeight - 2);
         }
 
+        if (_draggingLayer)
+        {
+            using var originVeil = new SolidBrush(Color.FromArgb(191,
+                SystemInformation.HighContrast ? SystemColors.Window : Theme.Panel));
+            for (var visibleRow = firstPaintRow; visibleRow < lastPaintRowExclusive; visibleRow++)
+            {
+                var trackIndex = visibleTracks[_firstVisibleTrack + visibleRow];
+                if (!IsLayerDragGhost(trackIndex)) continue;
+                var state = graphics.Save();
+                try
+                {
+                    graphics.TranslateTransform(0, -LayerDragOffset(trackIndex));
+                    DrawRow(visibleRow, dragGhost: false);
+                    graphics.FillRectangle(originVeil, new Rectangle(0,
+                        layout.RowTop + visibleRow * _rowHeight + LayerDragOffset(trackIndex), layout.TrackRight, _rowHeight));
+                }
+                finally { graphics.Restore(state); }
+            }
+        }
         for (var visibleRow = firstPaintRow; visibleRow < lastPaintRowExclusive; visibleRow++)
         {
             var trackIndex = visibleTracks[_firstVisibleTrack + visibleRow];
@@ -1172,7 +1191,7 @@ internal sealed partial class TimelineStrip : Control
         var transformBounds = GetFrameSelectionTransformBounds(layout, selection);
         var visualBounds = Rectangle.Inflate(transformBounds, ScaleTimelineMetric(6), ScaleTimelineMetric(6));
         _editingSelectionVisualBounds = visualBounds;
-        if (!graphics.IsVisible(visualBounds)) return;
+        if (!graphics.IsVisible(visualBounds) && !_draggingFrameTransform) return;
 
         IReadOnlySet<TimelineFrameCell> previewCellSet = hasTransformPreview
             ? _frameTransformPreviewCells.ToHashSet()
@@ -1250,9 +1269,11 @@ internal sealed partial class TimelineStrip : Control
 
         if (_draggingFrameTransform)
         {
-            using var sourceGhostBrush = new SolidBrush(Color.FromArgb(28, Theme.Accent));
+            using var sourceGhostBrush = new SolidBrush(Color.FromArgb(191,
+                SystemInformation.HighContrast ? SystemColors.Window : Theme.Panel));
             using var sourceGhostPen = new Pen(Color.FromArgb(150, Theme.Muted), 1f) { DashStyle = DashStyle.Dash };
-            DrawCells(_selectedFrameCells, sourceGhostBrush, sourceGhostPen);
+            var originCells = _selectedFrameCells.Except(previewCellSet).ToHashSet();
+            DrawCells(originCells, sourceGhostBrush, sourceGhostPen);
         }
         DrawCells(previewCellSet, selectionBrush, selectionPen);
 

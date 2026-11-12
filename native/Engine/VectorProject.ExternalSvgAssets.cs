@@ -38,6 +38,7 @@ internal sealed partial class VectorProject
             id = Guid.NewGuid().ToString("N");
         }
         while (FindDrawingObject(id) is not null
+               || FindImageAsset(id) is not null
                || _externalSvgAssets.Any(candidate => string.Equals(candidate.Id, id, StringComparison.Ordinal)));
 
         var originalSourcePath = normalizedSourcePath;
@@ -118,6 +119,7 @@ internal sealed partial class VectorProject
     {
         return _externalSvgAssets.Select(asset => new ExternalSvgAssetRestartSnapshot
         {
+            AssetFolderId = asset.AssetFolderId, AssetTagIds = asset.AssetTagIds.ToArray(),
             Id = asset.Id,
             Name = asset.Name,
             OriginalSourcePath = asset.OriginalSourcePath,
@@ -139,6 +141,7 @@ internal sealed partial class VectorProject
                 || restored.Count >= MaxExternalSvgAssetCount
                 || !IsValidRestartId(snapshot.Id)
                 || FindDrawingObject(snapshot.Id) is not null
+                || FindImageAsset(snapshot.Id) is not null
                 || !ids.Add(snapshot.Id)
                 || !TryNormalizeExternalSvgAssetName(snapshot.Name, out var normalizedName)
                 || !TryNormalizeExternalSvgSourcePath(snapshot.SourcePath, out var normalizedSourcePath)
@@ -150,6 +153,7 @@ internal sealed partial class VectorProject
 
             restored.Add(new ExternalSvgAssetDefinition
             {
+                AssetFolderId = snapshot.AssetFolderId, AssetTagIds = ValidateLibraryAssetMetadata(snapshot.AssetFolderId, snapshot.AssetTagIds),
                 Id = snapshot.Id,
                 Name = normalizedName,
                 OriginalSourcePath = snapshot.OriginalSourcePath,

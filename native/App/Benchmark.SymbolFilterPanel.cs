@@ -2,6 +2,50 @@ namespace VectorAnimationEngine;
 
 internal static partial class Benchmark
 {
+
+    private static void RunSymbolFilterOrderGradientPanelRegression()
+    {
+        using var panel = new SymbolFiltersPanel();
+        var filters = new SymbolFilters { GradientGlow = SymbolEdgeFilter.Default };
+        var initial = filters;
+        int started = 0, completed = 0, canceled = 0;
+        panel.InteractionStarted += (_, _) => { initial = filters; started++; };
+        panel.InteractionCompleted += (_, _) => completed++;
+        panel.InteractionCanceled += (_, _) => { filters = initial; canceled++; panel.SetFilters(filters); };
+        panel.FiltersChanged += (_, e) => { filters = e.Update(filters); panel.SetFilters(filters); };
+        panel.SetFilters(filters);
+        var selector = (ComboBox)RequireField(typeof(SymbolFiltersPanel), "_selector").GetValue(panel)!;
+        var list = (ListBox)RequireField(typeof(SymbolFiltersPanel), "_effectOrder").GetValue(panel)!;
+        var up = (Button)RequireField(typeof(SymbolFiltersPanel), "_moveEffectUp").GetValue(panel)!;
+        selector.SelectedIndex = 5;
+        AssertTimeline(list.Items.Count == 6, "Disabled filters disappeared from the editable order.");
+        up.PerformClick();
+        AssertTimeline(filters.Order is not null && filters.Order[4] == SymbolFilterKind.GradientGlow
+            && !filters.Blur.Enabled && started == 1 && completed == 1, "Moving a filter changed enablement or failed to form one undo gesture.");
+        var add = (Button)RequireField(typeof(SymbolFiltersPanel), "_addStop").GetValue(panel)!;
+        add.PerformClick();
+        AssertTimeline(filters.GradientGlow.GradientStops?.Count == 3 && completed == 2,
+            "Adding a gradient stop failed to persist a third color stop in one gesture.");
+        var alpha = (ModernNumericUpDown)RequireField(typeof(SymbolFiltersPanel), "_stopAlpha").GetValue(panel)!;
+        alpha.Value = 25;
+        AssertTimeline(((uint)filters.GradientGlow.GradientStops![1].ColorArgb >> 24) == 64 && completed == 3,
+            "Gradient stop alpha did not update independently.");
+        var beforeDrag = filters;
+        var begin = RequireMethod(typeof(ModernNumericUpDown), "BeginStepperInteraction");
+        var end = RequireMethod(typeof(ModernNumericUpDown), "EndStepperInteraction", [typeof(bool)]);
+        begin.Invoke(alpha, null);
+        alpha.Value = 50;
+        alpha.Value = 75;
+        end.Invoke(alpha, [true]);
+        AssertTimeline(filters == beforeDrag && canceled == 1 && completed == 3,
+            "Canceling a stop edit failed to restore the gradient or produced an extra undo gesture.");
+        var remove = (Button)RequireField(typeof(SymbolFiltersPanel), "_removeStop").GetValue(panel)!;
+        remove.PerformClick();
+        AssertTimeline(filters.GradientGlow.GradientStops!.Count == 2 && completed == 4,
+            "Removing the selected interior stop failed or changed the transaction count.");
+        Console.WriteLine("symbol_filter_order_gradient_panel_transactions=ok");
+    }
+
     private static void RunSymbolFilterQualityPanelRegression()
     {
         using var panel = new SymbolFiltersPanel();
@@ -55,6 +99,7 @@ internal static partial class Benchmark
 
     private static void RunSymbolFiltersPanelRegression()
     {
+        RunSymbolFilterOrderGradientPanelRegression();
         RunSymbolFilterQualityPanelRegression();
         using var panel = new SymbolFiltersPanel();
         var blur = (ModernToggleSwitch)RequireField(typeof(SymbolFiltersPanel), "_blur").GetValue(panel)!;
@@ -242,7 +287,7 @@ internal static partial class Benchmark
             AssertTimeline(blend.SelectedIndex == Array.FindIndex(LayerBlendModePanel.BlendModes, item => item.Mode == LayerBlendMode.Multiply)
                 && changes.Count == 0, "Binding a symbol blend mode changed the model or selected the wrong mode.");
             Bind(mixed: true);
-            AssertTimeline(blend.SelectedIndex == -1 && changes.Count == 0
+            AssertTimeline(blend.SelectedItem is string mixedText && mixedText == UiLocalization.T("Mixed") && changes.Count == 0
                 && blend.AccessibleDescription == UiLocalization.T("Mixed"),
                 "Mixed symbol blend binding selected a concrete mode or emitted an edit.");
             blend.SelectedIndex = Array.FindIndex(LayerBlendModePanel.BlendModes, item => item.Mode == LayerBlendMode.Screen);
@@ -254,7 +299,7 @@ internal static partial class Benchmark
                 "A disabled symbol inspector left its blend editor enabled or emitted an edit during refresh.");
             panel.Enabled = true;
             Bind(mixed: true);
-            AssertTimeline(blend.Enabled && blend.SelectedIndex == -1 && changes.Count == 1,
+            AssertTimeline(blend.Enabled && blend.SelectedItem is string mixedLabel && mixedLabel == UiLocalization.T("Mixed") && changes.Count == 1,
                 "Re-enabling and refreshing the symbol blend inspector changed the selection model.");
         }
 
@@ -344,7 +389,8 @@ internal static partial class Benchmark
             select.Invoke(form, [Second(), true]);
             var beforeMixedRefresh = refreshEvents;
             updateInspector.Invoke(form, [true]);
-            AssertTimeline(combo.SelectedIndex == -1 && refreshEvents == beforeMixedRefresh,
+            AssertTimeline(combo.SelectedItem is string mixed && mixed == UiLocalization.T("Mixed")
+                && refreshEvents == beforeMixedRefresh,
                 "A mixed multi-instance blend selection emitted an edit or displayed one concrete mode.");
             var beforeMultiEdit = UndoCount();
             Choose(LayerBlendMode.Multiply);
@@ -481,13 +527,23 @@ internal static partial class Benchmark
                 var resized = transform;
                 Instance().SetStateAtFrame(0, resized);
                 SelectAtHeldFrame();
-                AssertTimeline(restoreSize.Enabled, "Restore original size was disabled for a resized symbol.");
                 var beforeRestore = UndoCount();
+                var scaleChanged = resized.ScaleX != 1 || resized.ScaleY != 1 || resized.ScaleZ != 1;
+                AssertTimeline(restoreSize.Enabled == scaleChanged,
+                    "Restore original size availability did not depend exclusively on scale.");
+                if (!scaleChanged)
+                {
+                    restoreSize.PerformClick();
+                    RequireMethod(typeof(MainForm), "RestoreSelectedDrawingObjectOriginalSize").Invoke(form, null);
+                    AssertTimeline(Instance().EvaluateState(4) == resized && Instance().EvaluateState(0) == resized
+                        && UndoCount() == beforeRestore && !scene.Timeline.EvaluateExposure(trackId, 4).IsKeyframe,
+                        "A rotation/skew-only size reset changed the model, created a keyframe or added undo.");
+                    continue;
+                }
                 restoreSize.PerformClick();
                 var restored = resized with
                 {
-                    ScaleX = 1, ScaleY = 1, ScaleZ = 1,
-                    RotationX = 0, RotationY = 0, RotationZ = 0, SkewX = 0, SkewY = 0
+                    ScaleX = 1, ScaleY = 1, ScaleZ = 1
                 };
                 AssertTimeline(Instance().EvaluateState(4) == restored,
                     $"Restore original size click failed at a held frame (Auto Key={autoKey}).");

@@ -40,7 +40,12 @@ internal sealed class SpatialMaterialOverrideChangedEventArgs(
 
 internal sealed class SpatialMaterialPanel : UserControl
 {
-    private const int PanelHeight = 368;
+    private const int PanelHeight = 648;
+    private readonly TableLayoutPanel _root = new();
+    private readonly ShotDirectorPanel.CameraSectionToggle _surfaceSection = new("3D Surface");
+    private readonly ShotDirectorPanel.CameraSectionToggle _shadowSection = new("Shadows");
+    private static readonly int[] LogicalRows = [96, 26, 36, 80, 80, 80, 80, 40, 36, 40, 40];
+    private int _preferredLogicalHeight = PanelHeight;
 
     private readonly ModernToggleSwitch _useOverride = new();
     private readonly ComboBox _preset = new() { DropDownStyle = ComboBoxStyle.DropDownList };
@@ -49,10 +54,10 @@ internal sealed class SpatialMaterialPanel : UserControl
     private readonly ModernSlider _reflectivity = PercentSlider("Material reflectivity");
     private readonly ModernSlider _metallic = PercentSlider("Material metallic amount");
     private readonly ModernSlider _roughness = PercentSlider("Material roughness");
-    private readonly Label _transmissionValue = ValueLabel("Transmission value");
-    private readonly Label _reflectivityValue = ValueLabel("Reflectivity value");
-    private readonly Label _metallicValue = ValueLabel("Metallic value");
-    private readonly Label _roughnessValue = ValueLabel("Roughness value");
+    private readonly ModernNumericUpDown _transmissionValue = ValueInput("Transmission value");
+    private readonly ModernNumericUpDown _reflectivityValue = ValueInput("Reflectivity value");
+    private readonly ModernNumericUpDown _metallicValue = ValueInput("Metallic value");
+    private readonly ModernNumericUpDown _roughnessValue = ValueInput("Roughness value");
     private readonly ModernNumericUpDown _indexOfRefraction = new()
     {
         Minimum = 1m,
@@ -71,6 +76,7 @@ internal sealed class SpatialMaterialPanel : UserControl
     private int _interactionDepth;
     private bool _hasSelection;
     private bool _mixedOverride;
+    private SpatialOpticalMaterial _currentMaterial = SpatialOpticalMaterial.Default;
 
     public SpatialMaterialPanel()
     {
@@ -78,7 +84,7 @@ internal sealed class SpatialMaterialPanel : UserControl
         BackColor = Theme.Panel;
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
-        Padding = new Padding(8, 6, 8, 8);
+        Padding = new Padding(16, 6, 16, 8);
         Height = PanelHeight;
         MinimumSize = new Size(224, PanelHeight);
         AccessibleName = "3D surface material";
@@ -92,7 +98,7 @@ internal sealed class SpatialMaterialPanel : UserControl
         SetMaterials([], enabled: false);
     }
 
-    public int PreferredPanelHeight => PanelHeight;
+    public int PreferredPanelHeight => (int)Math.Round(_preferredLogicalHeight * DeviceDpi / 96f);
 
     public event EventHandler<SpatialMaterialChangedEventArgs>? MaterialChanged;
     public event EventHandler<SpatialMaterialOverrideChangedEventArgs>? OverrideChanged;
@@ -116,6 +122,7 @@ internal sealed class SpatialMaterialPanel : UserControl
 
             var effective = materials.Select(material => (material ?? SpatialOpticalMaterial.Default).Normalize()).ToArray();
             var first = effective.FirstOrDefault(SpatialOpticalMaterial.Default);
+            _currentMaterial = first;
             _mixedFields.Clear();
             if (effective.Length > 1)
             {
@@ -134,7 +141,9 @@ internal sealed class SpatialMaterialPanel : UserControl
             _reflectivity.Value = Percent(first.Reflectivity);
             _metallic.Value = Percent(first.Metallic);
             _roughness.Value = Percent(first.Roughness);
+            SetExactValues(first);
             _indexOfRefraction.Value = Math.Clamp((decimal)first.IndexOfRefraction, _indexOfRefraction.Minimum, _indexOfRefraction.Maximum);
+            _indexOfRefraction.MixedValue = _mixedFields.Contains(SpatialMaterialChangedFields.IndexOfRefraction);
             _castsShadows.ThreeState = _mixedFields.Contains(SpatialMaterialChangedFields.CastsShadows);
             _castsShadows.CheckState = _mixedFields.Contains(SpatialMaterialChangedFields.CastsShadows)
                 ? CheckState.Indeterminate
@@ -143,7 +152,7 @@ internal sealed class SpatialMaterialPanel : UserControl
             _receivesShadows.CheckState = _mixedFields.Contains(SpatialMaterialChangedFields.ReceivesShadows)
                 ? CheckState.Indeterminate
                 : first.ReceivesShadows ? CheckState.Checked : CheckState.Unchecked;
-            _preset.SelectedIndex = -1;
+            SelectCurrentPreset(first, _mixedOverride || _mixedFields.Count > 0);
             UpdatePresentation();
         }
         finally
@@ -154,9 +163,9 @@ internal sealed class SpatialMaterialPanel : UserControl
 
     public void RefreshText()
     {
-        _useOverride.Text = UiLocalization.T("Override");
-        _castsShadows.Text = UiLocalization.T("Cast shadows");
-        _receivesShadows.Text = UiLocalization.T("Receive shadows");
+        _useOverride.Text = string.Empty;
+        _castsShadows.Text = string.Empty;
+        _receivesShadows.Text = string.Empty;
         _toolTip.SetToolTip(_useOverride, UiLocalization.T("Use a material override on the selected instances"));
         _toolTip.SetToolTip(_preset, UiLocalization.T("Apply an optical material preset"));
         RefreshPresetItems();
@@ -172,21 +181,14 @@ internal sealed class SpatialMaterialPanel : UserControl
 
     private void BuildUi()
     {
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 1,
-            RowCount = 9,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
-        for (var index = 0; index < 4; index++) root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeightComfortable));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        var root = _root;
+        root.Dock = DockStyle.Fill;
+        root.BackColor = Theme.Panel;
+        root.ColumnCount = 1;
+        root.RowCount = LogicalRows.Length;
+        root.Margin = Padding.Empty;
+        root.Padding = Padding.Empty;
+        foreach (var height in LogicalRows) root.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         Controls.Add(root);
 
         root.Controls.Add(BuildHeader(), 0, 0);
@@ -198,17 +200,62 @@ internal sealed class SpatialMaterialPanel : UserControl
         _mixedStatus.AutoEllipsis = true;
         _mixedStatus.AccessibleRole = AccessibleRole.StaticText;
         root.Controls.Add(_mixedStatus, 0, 1);
-        root.Controls.Add(SliderRow("Transmission", _transmission, _transmissionValue), 0, 2);
-        root.Controls.Add(SliderRow("Reflectivity", _reflectivity, _reflectivityValue), 0, 3);
-        root.Controls.Add(SliderRow("Metallic", _metallic, _metallicValue), 0, 4);
-        root.Controls.Add(SliderRow("Roughness", _roughness, _roughnessValue), 0, 5);
-        root.Controls.Add(IorRow(), 0, 6);
+        root.Controls.Add(InspectorModuleStyle.CreateSectionHeader("3D Surface", _surfaceSection, LayoutSections), 0, 2);
+        root.Controls.Add(SliderRow("Transmission", _transmission, _transmissionValue), 0, 3);
+        root.Controls.Add(SliderRow("Reflectivity", _reflectivity, _reflectivityValue), 0, 4);
+        root.Controls.Add(SliderRow("Metallic", _metallic, _metallicValue), 0, 5);
+        root.Controls.Add(SliderRow("Roughness", _roughness, _roughnessValue), 0, 6);
+        root.Controls.Add(IorRow(), 0, 7);
+        root.Controls.Add(InspectorModuleStyle.CreateSectionHeader("Shadows", _shadowSection, LayoutSections), 0, 8);
         _castsShadows.Dock = DockStyle.Fill;
         _castsShadows.AccessibleName = "Material casts shadows";
         _receivesShadows.Dock = DockStyle.Fill;
         _receivesShadows.AccessibleName = "Material receives shadows";
-        root.Controls.Add(_castsShadows, 0, 7);
-        root.Controls.Add(_receivesShadows, 0, 8);
+        root.Controls.Add(ToggleRow("Cast shadows", _castsShadows), 0, 9);
+        root.Controls.Add(ToggleRow("Receive shadows", _receivesShadows), 0, 10);
+        LayoutSections();
+    }
+
+    private void LayoutSections()
+    {
+        _root.SuspendLayout();
+        try
+        {
+            var logicalHeight = 14;
+            for (var index = 0; index < LogicalRows.Length; index++)
+            {
+                var visible = index is >= 3 and <= 7 ? _surfaceSection.Expanded
+                    : index >= 9 ? _shadowSection.Expanded : true;
+                _root.RowStyles[index].Height = visible ? LogicalRows[index] * DeviceDpi / 96f : 0;
+                foreach (Control child in _root.Controls)
+                    if (_root.GetRow(child) == index) child.Visible = visible;
+                if (visible) logicalHeight += LogicalRows[index];
+            }
+            _preferredLogicalHeight = logicalHeight;
+            MinimumSize = new Size((int)Math.Round(224 * DeviceDpi / 96f), PreferredPanelHeight);
+            Height = PreferredPanelHeight;
+        }
+        finally { _root.ResumeLayout(true); }
+    }
+
+    protected override void OnDpiChangedAfterParent(EventArgs e)
+    {
+        base.OnDpiChangedAfterParent(e);
+        LayoutSections();
+    }
+
+    private static Control ToggleRow(string text, ModernToggleSwitch toggle)
+    {
+        var row = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, ColumnCount = 2, Margin = Padding.Empty, Padding = Padding.Empty
+        };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
+        row.Controls.Add(FieldLabel(text), 0, 0);
+        InspectorModuleStyle.StyleField(toggle);
+        row.Controls.Add(toggle, 1, 0);
+        return row;
     }
 
     private Control BuildHeader()
@@ -237,33 +284,36 @@ internal sealed class SpatialMaterialPanel : UserControl
         _useOverride.Dock = DockStyle.Fill;
         _useOverride.Margin = new Padding(2, 1, 0, 1);
         _useOverride.AccessibleName = "Use material override";
-        row.Controls.Add(_useOverride, 0, 1);
-        row.SetColumnSpan(_useOverride, 2);
+        row.Controls.Add(FieldLabel("Override"), 0, 1);
+        row.Controls.Add(_useOverride, 1, 1);
         row.Controls.Add(FieldLabel("Preset"), 0, 2);
         row.Controls.Add(_preset, 1, 2);
         return row;
     }
 
-    private static Control SliderRow(string label, ModernSlider slider, Label value)
+    private static Control SliderRow(string label, ModernSlider slider, ModernNumericUpDown value)
     {
         var row = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
-            ColumnCount = 3,
+            ColumnCount = 2,
+            RowCount = 2,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 46));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
+        row.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        row.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         row.Controls.Add(FieldLabel(label), 0, 0);
         slider.Dock = DockStyle.Fill;
-        slider.Margin = new Padding(2, 3, 2, 3);
+        slider.Margin = new Padding(0, 4, 0, 4);
         value.Dock = DockStyle.Fill;
-        value.Margin = new Padding(2, 2, 0, 2);
-        row.Controls.Add(slider, 1, 0);
-        row.Controls.Add(value, 2, 0);
+        value.Margin = new Padding(0, 4, 0, 4);
+        row.Controls.Add(slider, 0, 1);
+        row.SetColumnSpan(slider, 2);
+        row.Controls.Add(value, 1, 0);
         return row;
     }
 
@@ -291,10 +341,14 @@ internal sealed class SpatialMaterialPanel : UserControl
     {
         _useOverride.CheckStateChanged += (_, _) => ChangeOverride();
         _preset.SelectedIndexChanged += (_, _) => ApplyPreset();
-        HookSlider(_transmission, SpatialMaterialChangedFields.Transmission);
-        HookSlider(_reflectivity, SpatialMaterialChangedFields.Reflectivity);
-        HookSlider(_metallic, SpatialMaterialChangedFields.Metallic);
-        HookSlider(_roughness, SpatialMaterialChangedFields.Roughness);
+        HookSlider(_transmission, _transmissionValue, SpatialMaterialChangedFields.Transmission);
+        HookSlider(_reflectivity, _reflectivityValue, SpatialMaterialChangedFields.Reflectivity);
+        HookSlider(_metallic, _metallicValue, SpatialMaterialChangedFields.Metallic);
+        HookSlider(_roughness, _roughnessValue, SpatialMaterialChangedFields.Roughness);
+        HookExactValue(_transmissionValue, _transmission, SpatialMaterialChangedFields.Transmission);
+        HookExactValue(_reflectivityValue, _reflectivity, SpatialMaterialChangedFields.Reflectivity);
+        HookExactValue(_metallicValue, _metallic, SpatialMaterialChangedFields.Metallic);
+        HookExactValue(_roughnessValue, _roughness, SpatialMaterialChangedFields.Roughness);
         _indexOfRefraction.ValueChanged += (_, _) => RaiseMaterialChanged(SpatialMaterialChangedFields.IndexOfRefraction);
         _indexOfRefraction.InteractionStarted += (_, _) => BeginInteraction();
         _indexOfRefraction.InteractionCompleted += (_, _) => CompleteInteraction();
@@ -303,12 +357,34 @@ internal sealed class SpatialMaterialPanel : UserControl
         _receivesShadows.CheckStateChanged += (_, _) => ChangeShadowToggle(SpatialMaterialChangedFields.ReceivesShadows);
     }
 
-    private void HookSlider(ModernSlider slider, SpatialMaterialChangedFields field)
+    private void HookSlider(ModernSlider slider, ModernNumericUpDown input, SpatialMaterialChangedFields field)
     {
-        slider.ValueChanged += (_, _) => RaiseMaterialChanged(field);
+        slider.ValueChanged += (_, _) =>
+        {
+            if (_updating || !CanEdit) return;
+            _updating = true;
+            try { input.Value = slider.Value / 10m; }
+            finally { _updating = false; }
+            RaiseMaterialChanged(field);
+        };
         slider.InteractionStarted += (_, _) => BeginInteraction();
         slider.InteractionCompleted += (_, _) => CompleteInteraction();
         slider.InteractionCanceled += (_, _) => CancelInteraction();
+    }
+
+    private void HookExactValue(ModernNumericUpDown input, ModernSlider slider, SpatialMaterialChangedFields field)
+    {
+        input.InteractionStarted += (_, _) => BeginInteraction();
+        input.InteractionCompleted += (_, _) => CompleteInteraction();
+        input.InteractionCanceled += (_, _) => CancelInteraction();
+        input.ValueChanged += (_, _) =>
+        {
+            if (_updating || !CanEdit) return;
+            _updating = true;
+            try { slider.Value = (int)Math.Round(input.Value * 10); }
+            finally { _updating = false; }
+            RaiseMaterialChanged(field);
+        };
     }
 
     private void ChangeOverride()
@@ -345,6 +421,7 @@ internal sealed class SpatialMaterialPanel : UserControl
     {
         if (_updating || !CanEdit || _preset.SelectedItem is not PresetItem item) return;
         var material = PresetMaterial(item.Preset);
+        _currentMaterial = material;
         _updating = true;
         try
         {
@@ -353,6 +430,7 @@ internal sealed class SpatialMaterialPanel : UserControl
             _reflectivity.Value = Percent(material.Reflectivity);
             _metallic.Value = Percent(material.Metallic);
             _roughness.Value = Percent(material.Roughness);
+            SetExactValues(material);
             _indexOfRefraction.Value = (decimal)material.IndexOfRefraction;
             _castsShadows.ThreeState = false;
             _castsShadows.Checked = material.CastsShadows;
@@ -371,18 +449,23 @@ internal sealed class SpatialMaterialPanel : UserControl
     {
         if (_updating || !CanEdit) return;
         _mixedFields.Remove(field);
+        _currentMaterial = field switch
+        {
+            SpatialMaterialChangedFields.Transmission => _currentMaterial with { Transmission = (float)(_transmissionValue.Value / 100m) },
+            SpatialMaterialChangedFields.Reflectivity => _currentMaterial with { Reflectivity = (float)(_reflectivityValue.Value / 100m) },
+            SpatialMaterialChangedFields.Metallic => _currentMaterial with { Metallic = (float)(_metallicValue.Value / 100m) },
+            SpatialMaterialChangedFields.Roughness => _currentMaterial with { Roughness = (float)(_roughnessValue.Value / 100m) },
+            SpatialMaterialChangedFields.IndexOfRefraction => _currentMaterial with { IndexOfRefraction = (float)_indexOfRefraction.Value },
+            SpatialMaterialChangedFields.CastsShadows => _currentMaterial with { CastsShadows = _castsShadows.CheckState != CheckState.Unchecked },
+            SpatialMaterialChangedFields.ReceivesShadows => _currentMaterial with { ReceivesShadows = _receivesShadows.CheckState != CheckState.Unchecked },
+            _ => _currentMaterial
+        };
         UpdateValueLabels();
+        SelectCurrentPreset(CurrentMaterial(), _mixedOverride || _mixedFields.Count > 0);
         MaterialChanged?.Invoke(this, new SpatialMaterialChangedEventArgs(CurrentMaterial(), field));
     }
 
-    private SpatialOpticalMaterial CurrentMaterial() => new SpatialOpticalMaterial(
-        _transmission.Value / 1000f,
-        _reflectivity.Value / 1000f,
-        _metallic.Value / 1000f,
-        _roughness.Value / 1000f,
-        (float)_indexOfRefraction.Value,
-        _castsShadows.CheckState != CheckState.Unchecked,
-        _receivesShadows.CheckState != CheckState.Unchecked).Normalize();
+    private SpatialOpticalMaterial CurrentMaterial() => _currentMaterial;
 
     private void UpdatePresentation()
     {
@@ -393,6 +476,8 @@ internal sealed class SpatialMaterialPanel : UserControl
         _reflectivity.Enabled = useOverride;
         _metallic.Enabled = useOverride;
         _roughness.Enabled = useOverride;
+        foreach (var input in new[] { _transmissionValue, _reflectivityValue, _metallicValue, _roughnessValue })
+            input.Enabled = useOverride;
         _indexOfRefraction.Enabled = useOverride;
         _castsShadows.Enabled = useOverride;
         _receivesShadows.Enabled = useOverride;
@@ -408,15 +493,34 @@ internal sealed class SpatialMaterialPanel : UserControl
 
     private void UpdateValueLabels()
     {
-        SetValueLabel(_transmissionValue, _transmission.Value, SpatialMaterialChangedFields.Transmission);
-        SetValueLabel(_reflectivityValue, _reflectivity.Value, SpatialMaterialChangedFields.Reflectivity);
-        SetValueLabel(_metallicValue, _metallic.Value, SpatialMaterialChangedFields.Metallic);
-        SetValueLabel(_roughnessValue, _roughness.Value, SpatialMaterialChangedFields.Roughness);
+        _transmissionValue.MixedValue = _mixedFields.Contains(SpatialMaterialChangedFields.Transmission);
+        _reflectivityValue.MixedValue = _mixedFields.Contains(SpatialMaterialChangedFields.Reflectivity);
+        _metallicValue.MixedValue = _mixedFields.Contains(SpatialMaterialChangedFields.Metallic);
+        _roughnessValue.MixedValue = _mixedFields.Contains(SpatialMaterialChangedFields.Roughness);
     }
 
-    private void SetValueLabel(Label label, int value, SpatialMaterialChangedFields field)
+    private void SetExactValues(SpatialOpticalMaterial material)
     {
-        label.Text = _mixedFields.Contains(field) ? UiLocalization.T("Mixed") : $"{value / 10f:0.#}%";
+        _transmissionValue.Value = (decimal)material.Transmission * 100m;
+        _reflectivityValue.Value = (decimal)material.Reflectivity * 100m;
+        _metallicValue.Value = (decimal)material.Metallic * 100m;
+        _roughnessValue.Value = (decimal)material.Roughness * 100m;
+    }
+
+    private void SelectCurrentPreset(SpatialOpticalMaterial material, bool mixed)
+    {
+        var previous = _updating;
+        _updating = true;
+        try
+        {
+            for (var index = _preset.Items.Count - 1; index >= 0; index--)
+                if (_preset.Items[index] is not PresetItem) _preset.Items.RemoveAt(index);
+            var match = mixed ? -1 : Array.FindIndex(Enum.GetValues<SpatialMaterialPreset>(),
+                preset => PresetMaterial(preset).Normalize() == material.Normalize());
+            if (match >= 0) _preset.SelectedIndex = match;
+            else _preset.SelectedIndex = _preset.Items.Add(UiLocalization.T(mixed ? "Mixed" : "Custom"));
+        }
+        finally { _updating = previous; }
     }
 
     private void RefreshPresetItems()
@@ -431,6 +535,7 @@ internal sealed class SpatialMaterialPanel : UserControl
             {
                 _preset.SelectedIndex = Array.IndexOf(Enum.GetValues<SpatialMaterialPreset>(), value);
             }
+            else SelectCurrentPreset(CurrentMaterial(), _mixedOverride || _mixedFields.Count > 0);
         }
         finally
         {
@@ -481,17 +586,16 @@ internal sealed class SpatialMaterialPanel : UserControl
         AccessibleDescription = $"{accessibleName}, zero to one hundred percent"
     };
 
-    private static Label ValueLabel(string accessibleName) => new()
+    private static ModernNumericUpDown ValueInput(string accessibleName)
     {
-        Text = "0%",
-        ForeColor = Theme.Text,
-        BackColor = Color.Transparent,
-        Font = Theme.UiFont(8.5f),
-        TextAlign = ContentAlignment.MiddleRight,
-        AutoEllipsis = true,
-        AccessibleName = accessibleName,
-        AccessibleRole = AccessibleRole.StaticText
-    };
+        var input = new ModernNumericUpDown
+        {
+            Minimum = 0, Maximum = 100, DecimalPlaces = 4, Increment = 0.1m,
+            Suffix = "%", ShowSuffix = true, AccessibleName = accessibleName, Dock = DockStyle.Fill
+        };
+        InspectorModuleStyle.StyleField(input);
+        return input;
+    }
 
     private static Label FieldLabel(string text) => InspectorModuleStyle.CreateFieldLabel(text);
 

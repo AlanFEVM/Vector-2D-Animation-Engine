@@ -9,11 +9,17 @@ internal sealed partial class MainForm
         var scale = tools.DeviceDpi / 96f;
         var gap = Math.Max(2, (int)Math.Round(4 * scale));
         _stageMetrics.Height = (int)Math.Round(34 * scale);
-        var tabRight = _drawingObjectTabs.Controls.Cast<Control>().Where(control => control.Visible)
-            .Select(control => body.PointToClient(control.PointToScreen(new Point(control.Width, 0))).X + control.Margin.Right)
-            .DefaultIfEmpty(0).Max();
+        var drawingRowVisible = _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing || IsSymbolEditing;
+        var tabRight = drawingRowVisible
+            ? _drawingObjectTabs.Controls.Cast<Control>().Where(control => control.Visible)
+                .Select(control => body.PointToClient(control.PointToScreen(new Point(control.Width, 0))).X + control.Margin.Right)
+                .DefaultIfEmpty(0).Max()
+            : 0;
         var left = Math.Max(tabRight + gap, Math.Min((int)Math.Round(280 * scale), stagePanel.Width / 5));
-        var right = body.PointToClient(_drawSnappingStrip.PointToScreen(Point.Empty)).X - gap;
+        // Hidden row children retain stale bounds and must not constrain the scene toolbar.
+        var right = drawingRowVisible
+            ? body.PointToClient(_drawSnappingStrip.PointToScreen(Point.Empty)).X - gap
+            : stagePanel.Right - gap;
         var visibleCount = Math.Max(1, tools.Controls.Cast<Control>().Count(control => control.Visible));
         var compact = right - left < (int)Math.Round(240 * scale);
         var top = body.PointToClient(_workspaceTabs.PointToScreen(new Point(0, _workspaceTabs.Height))).Y + gap;

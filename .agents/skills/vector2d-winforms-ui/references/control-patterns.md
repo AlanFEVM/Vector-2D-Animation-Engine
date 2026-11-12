@@ -11,6 +11,7 @@
 | Continuous numeric input | `ModernSlider.cs`, `ModernNumericUpDown.cs` |
 | Binary input | `ModernToggleSwitch.cs` |
 | Dense inspector example | `MaterialEditorPanel.cs` |
+| Columns and independent disclosures | `ShotDirectorPanel.DesignLayout.cs`, `ShotDirectorPanel.MicroMotion.cs`, `CameraParallaxPanel.cs` |
 | Bound workspace panel example | `SceneEditorPanel.cs`, `LibraryVaultPanel.cs` |
 | Large owner-drawn surface example | `TimelineStrip.cs` |
 | Dense dock/workspace example | `DashDock.cs`, `WorkspaceTabs.cs` |
@@ -20,6 +21,12 @@
 ## Layout
 
 Read [inspector layout contracts](../../../../docs/UI_COMPOSITION.md#检查器输入框与留白契约) before changing inspector fields, including conditional tool/selection panels. The architecture document is the source of truth for half-column sizing, 32px standard field height, separate numeric/text typography, closed-selector versus popup styling, disclosure headers, color-section spacing, host gutter compensation, and screenshot acceptance. Do not enlarge fields to reference-image absolute sizes or reintroduce the former 156px harmony selector limit.
+
+Read [columns and independent disclosures](../../../../docs/UI_COMPOSITION.md#面板分栏与独立折叠契约) when composing a panel. Use `panel → content column → multiple independent disclosure sections → property rows`; a column is not limited to one disclosure, and wide screenshots do not imply a mandatory multi-column layout. Keep the metric table and numeric/personalization rules in that architecture section as the single source of truth.
+
+- Separate the section's expanded state from its Enabled property. Put effect toggles on their own property rows and preserve nested expansion state across parent collapse, rebind and camera changes.
+- Use `ModernNumericUpDown`, `ModernToggleSwitch`, `ModernTextInput`, Theme and InspectorModuleStyle instead of approximating them with local controls. Personalization changes theme/corners and focus presentation, not numeric range, precision, units or gesture semantics.
+- Let the content column own scrolling. Expand ordinary property lists inline; for depth fields use `MouseWheelChangesValue = false` so the wheel forwards to the surrounding `ThemedScrollPanel`. Preserve existing wheel-edit behavior elsewhere unless the task calls for changing it.
 
 - Build UI in constructors or a `BuildUi` method with programmatic docking and layout panels.
 - Prefer `Theme.ControlHeightCompact`, `ControlHeight`, `IconButtonSize`, and gap constants.

@@ -33,6 +33,7 @@ internal class ModernDialogForm : Form
         DoubleBuffered = true;
         Font = Theme.UiFont();
         FormBorderStyle = FormBorderStyle.None;
+        MinimumSize = new Size(Math.Min(clientSize.Width, 440), Math.Min(clientSize.Height, 240));
         MaximizeBox = false;
         MinimizeBox = false;
         ShowIcon = false;
@@ -166,11 +167,27 @@ internal class ModernDialogForm : Form
         StyleDialogAction(button, style);
         button.Click += (_, _) =>
         {
+            if (result is DialogResult.OK or DialogResult.Yes && !CommitNumericDrafts(DialogContent)) return;
             if (canClose?.Invoke() == false) return;
             RequestDialogResult(result);
         };
         DialogActions.Controls.Add(button);
         return button;
+    }
+
+    private static bool CommitNumericDrafts(Control parent)
+    {
+        foreach (Control child in parent.Controls)
+        {
+            if (!child.Visible || !child.Enabled) continue;
+            if (child is ModernNumericUpDown numeric && !numeric.TryCommitInput())
+            {
+                numeric.SelectNextControl(null, true, true, true, false);
+                return false;
+            }
+            if (!CommitNumericDrafts(child)) return false;
+        }
+        return true;
     }
 
     internal bool RefreshDialogActionTheme(Button button)
@@ -212,6 +229,11 @@ internal class ModernDialogForm : Form
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+        var area = Screen.FromControl(this).WorkingArea;
+        MinimumSize = new Size(Math.Min(MinimumSize.Width, area.Width), Math.Min(MinimumSize.Height, area.Height));
+        Size = new Size(Math.Min(Width, area.Width), Math.Min(Height, area.Height));
+        Location = new Point(Math.Clamp(Left, area.Left, Math.Max(area.Left, area.Right - Width)),
+            Math.Clamp(Top, area.Top, Math.Max(area.Top, area.Bottom - Height)));
         _settledLocation = Location;
         if (!UiMotion.AnimationsEnabled)
         {
@@ -290,6 +312,27 @@ internal class ModernDialogForm : Form
         SendMessage(Handle, 0x00A1, new IntPtr(2), IntPtr.Zero);
     }
 
+    protected override void WndProc(ref Message message)
+    {
+        base.WndProc(ref message);
+        if (message.Msg != 0x0084 || WindowState != FormWindowState.Normal) return;
+        var packed = message.LParam.ToInt64();
+        var point = PointToClient(new Point((short)(packed & 0xffff), (short)((packed >> 16) & 0xffff)));
+        var grip = Math.Max(5, (int)Math.Round(6 * DeviceDpi / 96f));
+        var left = point.X < grip;
+        var right = point.X >= ClientSize.Width - grip;
+        var top = point.Y < grip;
+        var bottom = point.Y >= ClientSize.Height - grip;
+        if (left && top) message.Result = (IntPtr)13;
+        else if (right && top) message.Result = (IntPtr)14;
+        else if (left && bottom) message.Result = (IntPtr)16;
+        else if (right && bottom) message.Result = (IntPtr)17;
+        else if (left) message.Result = (IntPtr)10;
+        else if (right) message.Result = (IntPtr)11;
+        else if (top) message.Result = (IntPtr)12;
+        else if (bottom) message.Result = (IntPtr)15;
+    }
+
     [DllImport("user32.dll")]
     private static extern bool ReleaseCapture();
 
@@ -300,7 +343,8 @@ internal class ModernDialogForm : Form
 
 internal sealed class ModernMessageDialog : ModernDialogForm
 {
-    private readonly Label _message = new();
+    private readonly TextBox _message = new() { ReadOnly = true, Multiline = true,
+        WordWrap = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None };
     private readonly Panel _glyph = new();
     private readonly SvgIconKind _glyphKind;
     private readonly Color _glyphColor;
@@ -337,17 +381,23 @@ internal sealed class ModernMessageDialog : ModernDialogForm
         _glyph.Paint += (_, e) => SvgIcons.Draw(e.Graphics, _glyphKind, new Rectangle(0, 0, 44, 44), _glyphColor);
         layout.Controls.Add(_glyph, 0, 0);
 
-        _message.Text = message;
+        _message.Text = UiLocalization.T(message);
         _message.Dock = DockStyle.Fill;
         _message.ForeColor = Theme.Text;
         _message.BackColor = Theme.Panel;
         _message.Font = Theme.UiFont(9.7f);
-        _message.TextAlign = ContentAlignment.MiddleLeft;
-        _message.AutoEllipsis = false;
-        _message.Padding = new Padding(4, 0, 0, 0);
+        _message.TabStop = true;
+        _message.AccessibleName = UiLocalization.T("Message details");
         layout.Controls.Add(_message, 1, 0);
 
         ConfigureButtons(buttons, icon, defaultButton);
+        var copy = AddDialogAction("Copy details", DialogResult.None, canClose: () =>
+        {
+            try { if (_message.Text.Length > 0) Clipboard.SetText(_message.Text); }
+            catch (ExternalException) { _message.Focus(); _message.SelectAll(); }
+            return false;
+        });
+        copy.AutoSize = true;
         UiLocalization.Watch(this);
     }
 

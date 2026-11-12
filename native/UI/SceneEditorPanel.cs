@@ -14,6 +14,11 @@ internal sealed class DrawingObjectOpenRequestedEventArgs : EventArgs
     public string DrawingObjectId { get; }
 }
 
+internal sealed class SceneInstanceSelectedEventArgs(string instanceId) : EventArgs
+{
+    public string InstanceId { get; } = instanceId;
+}
+
 internal sealed class DrawingObjectAssetRequestedEventArgs(string drawingObjectId) : EventArgs
 {
     public string DrawingObjectId { get; } = drawingObjectId;
@@ -38,8 +43,8 @@ internal sealed class SceneEditorPanel : UserControl
     private readonly Label _sceneName = InfoLabel();
     private readonly ComboBox _cameraProjection = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Label _projectionLabel = InspectorModuleStyle.CreateFieldLabel("Camera projection");
-    private readonly ListBox _scenes = new();
-    private readonly ListBox _instances = new();
+    private readonly ListBox _scenes = new InlineListBox();
+    private readonly ListBox _instances = new InlineListBox();
     private readonly Button _addScene = new SvgIconButton(SvgIconKind.Add) { Text = "Scene", AccessibleName = "+ Scene", Width = 82, Height = 28 };
     private readonly Button _addInstance = new SvgIconButton(SvgIconKind.Add) { Text = "Instance", AccessibleName = "+ Instance", Width = 104, Height = 28 };
     private IReadOnlyList<SceneDefinition> _sceneDefinitions = [];
@@ -54,6 +59,18 @@ internal sealed class SceneEditorPanel : UserControl
     private readonly Label _emptyTitle = InfoLabel();
     private readonly Label _emptyHint = InfoLabel();
     private readonly Button _emptyAdd = new SvgIconButton(SvgIconKind.Add) { Text = "Add instance" };
+    private readonly Label _instanceSource = InfoLabel();
+    private readonly AnimatedContextMenuStrip _sceneMenu = new();
+    private readonly ToolTip _help = new();
+
+    public void SetInstanceSource(string? name)
+    {
+        _instanceSource.Text = string.IsNullOrWhiteSpace(name)
+            ? UiLocalization.T("Choose a symbol in the library first.")
+            : string.Format(UiLocalization.T("Source: {0}"), name);
+        _help.SetToolTip(_instanceSource, _instanceSource.Text);
+        _addInstance.Enabled = _emptyAdd.Enabled = !string.IsNullOrWhiteSpace(name);
+    }
 
     internal void SetExperimental3DEnabled(bool enabled)
     {
@@ -86,8 +103,12 @@ internal sealed class SceneEditorPanel : UserControl
     public event EventHandler<SceneSettingsChangedEventArgs>? SceneSettingsChanged;
     public event EventHandler<SceneSelectionChangedEventArgs>? SceneSelectionChanged;
     public event EventHandler<DrawingObjectOpenRequestedEventArgs>? DrawingObjectOpenRequested;
+    public event EventHandler<SceneSelectionChangedEventArgs>? SceneRenameRequested;
+    public event EventHandler<SceneSelectionChangedEventArgs>? SceneDeleteRequested;
+    public event EventHandler<SceneInstanceSelectedEventArgs>? SceneInstanceSelected;
 
-    public int PreferredPanelHeight => ScaleMetric(376 + Math.Clamp(_sceneDefinitions.Count, 1, 3) * 54
+    public int PreferredPanelHeight => ScaleMetric(232 + Math.Max(1, _sceneDefinitions.Count) * 54
+        + Math.Max(180, (ActiveSceneDefinition()?.Instances.Count ?? 0) * 32)
         + (_experimental3DEnabled ? 40 : 0));
 
     public void BindProject(
@@ -115,6 +136,36 @@ internal sealed class SceneEditorPanel : UserControl
     {
         ConfigureList(_scenes);
         ConfigureList(_instances);
+        Theme.StyleToolTip(_help);
+        _help.SetToolTip(_instances, UiLocalization.T("Click to select the placed instance. Double-click to edit its shared source symbol."));
+        var renameScene = new ToolStripMenuItem("Rename Scene...");
+        var deleteScene = new ToolStripMenuItem("Delete Scene...");
+        renameScene.Click += (_, _) => { if (_scenes.SelectedIndex >= 0) SceneRenameRequested?.Invoke(this, new(_scenes.SelectedIndex)); };
+        deleteScene.Click += (_, _) => { if (_scenes.SelectedIndex >= 0) SceneDeleteRequested?.Invoke(this, new(_scenes.SelectedIndex)); };
+        _sceneMenu.Items.AddRange([renameScene, deleteScene]);
+        _sceneMenu.Opening += (_, _) =>
+        {
+            renameScene.Enabled = _scenes.SelectedIndex >= 0;
+            deleteScene.Enabled = _scenes.SelectedIndex >= 0 && _sceneDefinitions.Count > 1;
+        };
+        _scenes.ContextMenuStrip = _sceneMenu;
+        _scenes.MouseDown += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Right) return;
+            var index = _scenes.IndexFromPoint(e.Location);
+            if (index >= 0) _scenes.SelectedIndex = index;
+        };
+        _scenes.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.F2 && _scenes.SelectedIndex >= 0) renameScene.PerformClick();
+            else if (e.KeyCode == Keys.Delete && _sceneDefinitions.Count > 1) deleteScene.PerformClick();
+            else return;
+            e.Handled = e.SuppressKeyPress = true;
+        };
+        _instances.SelectedIndexChanged += (_, _) =>
+        {
+            if (!_updating && SelectedInstanceId() is { } id) SceneInstanceSelected?.Invoke(this, new(id));
+        };
         _scenes.Dock = _instances.Dock = DockStyle.None;
         _scenes.DrawItem += DrawSceneItem;
         _scenes.AccessibleName = "Scenes";
@@ -140,7 +191,7 @@ internal sealed class SceneEditorPanel : UserControl
         Theme.StyleStandardButton(_emptyAdd, active: true);
         _emptyAdd.Click += (_, _) => AddSceneInstanceRequested?.Invoke(this, EventArgs.Empty);
         Controls.AddRange([_pageTitle, _sceneHeading, _instanceHeading, _scenes, _instances,
-            _addScene, _addInstance, _emptyInstances, _projectionLabel, _cameraProjection]);
+            _addScene, _addInstance, _emptyInstances, _projectionLabel, _cameraProjection, _instanceSource]);
         UiLocalization.Watch(this);
 
         _addScene.Click += (_, _) => AddSceneRequested?.Invoke(this, EventArgs.Empty);
@@ -174,7 +225,7 @@ internal sealed class SceneEditorPanel : UserControl
         _sceneHeading.SetBounds(inset, ScaleMetric(70), Math.Max(1, width - ScaleMetric(112)), ScaleMetric(28));
         _addScene.SetBounds(Width - inset - ScaleMetric(104), ScaleMetric(68), ScaleMetric(104), ScaleMetric(Theme.ControlHeight));
         _scenes.ItemHeight = ScaleMetric(54);
-        _scenes.SetBounds(inset, ScaleMetric(108), width, ScaleMetric(Math.Clamp(_sceneDefinitions.Count, 1, 3) * 54));
+        _scenes.SetBounds(inset, ScaleMetric(108), width, ScaleMetric(Math.Max(1, _sceneDefinitions.Count) * 54));
         var top = _scenes.Bottom + ScaleMetric(12);
         _cameraProjection.Visible = _experimental3DEnabled;
         _projectionLabel.Visible = _experimental3DEnabled;
@@ -189,7 +240,10 @@ internal sealed class SceneEditorPanel : UserControl
         _instanceHeading.SetBounds(inset, top, Math.Max(1, width - ScaleMetric(112)), ScaleMetric(28));
         _addInstance.SetBounds(Width - inset - ScaleMetric(104), top, ScaleMetric(104), ScaleMetric(Theme.ControlHeight));
         top += ScaleMetric(42);
-        _instances.SetBounds(inset, top, width, ScaleMetric(180));
+        _instanceSource.SetBounds(inset, top, width, ScaleMetric(24));
+        top += ScaleMetric(30);
+        _instances.ItemHeight = ScaleMetric(32);
+        _instances.SetBounds(inset, top, width, ScaleMetric(Math.Max(180, (ActiveSceneDefinition()?.Instances.Count ?? 0) * 32)));
         _emptyInstances.Bounds = _instances.Bounds;
         _emptyTitle.SetBounds(ScaleMetric(8), ScaleMetric(56), Math.Max(1, width - ScaleMetric(16)), ScaleMetric(28));
         _emptyHint.SetBounds(ScaleMetric(8), ScaleMetric(86), Math.Max(1, width - ScaleMetric(16)), ScaleMetric(40));
@@ -374,5 +428,30 @@ internal sealed class SceneEditorPanel : UserControl
         label.BackColor = Theme.Panel;
         label.Margin = new Padding(0, 3, 0, 3);
         return label;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) { _sceneMenu.Dispose(); _help.Dispose(); }
+        base.Dispose(disposing);
+    }
+
+    private sealed class InlineListBox : ListBox
+    {
+        protected override void WndProc(ref Message message)
+        {
+            const int mouseWheel = 0x020A;
+            if (message.Msg == mouseWheel)
+            {
+                for (Control? owner = Parent; owner is not null; owner = owner.Parent)
+                {
+                    if (owner is not ThemedScrollPanel scroll) continue;
+                    scroll.ScrollWheel(unchecked((short)(message.WParam.ToInt64() >> 16)));
+                    message.Result = IntPtr.Zero;
+                    return;
+                }
+            }
+            base.WndProc(ref message);
+        }
     }
 }

@@ -12,6 +12,7 @@
 | Stage interaction, Direct2D/GDI, LOD, underlay, renderer caches, reference 3D/cameras, hot-reload render routing | `Render` |
 | Explicit GPU optical shading, pixel comparison, swap-chain resize/presentation | `GpuOptics` plus affected `Render` checks |
 | Focused large-selection frame-time and spike budgets | `SelectionPerf` (also reached by `Render`) |
+| Realistic-scale (50–1,000 mixed objects with layer effects) pan/zoom/drag/playback frame-time data at 1080p and 4K | `RealisticInteraction` |
 | Source launcher, dotnet watch, restart-token or development-launcher behavior | `Launcher` |
 | `release-manager/`, release manifest/version sources, distribution bootstrap, or publishing scripts | `Release` |
 | Non-Stage panel/control layout | affected build suite plus UI screenshot/manual matrix |
@@ -30,8 +31,9 @@
 | `Render` | `--bench-render` | shared geometry, Stage interaction, hot reload, Direct2D/GDI, cache/LOD, reference views |
 | `GpuOptics` | `--bench-gpu-optics` | hardware GPU/CPU optical comparison, alpha, resize/presentation; requires a hardware Direct3D device |
 | `SelectionPerf` | `--bench-selection-perf` | focused large-selection frame-time and spike budgets |
+| `RealisticInteraction` | `--bench-realistic-interaction` | diagnostic frame-time table for 50/200/500/1,000 objects at 1080p and 4K across pan, zoom, selection drag and playback |
 
-`All` includes `GpuOptics`; unsupported hardware is a failure, not a skipped pass. `SelectionPerf` is available separately but is not repeated by `All`, because `Render` already calls it. `--bench-collision` remains an external-fixture manual probe.
+`All` includes `GpuOptics`; unsupported hardware is a failure, not a skipped pass. `SelectionPerf` is available separately but is not repeated by `All`, because `Render` already calls it. `RealisticInteraction` is a measurement entry point and does not fail on an over-budget tier; it prints `budget_met` per action for comparison. `--bench-collision` remains an external-fixture manual probe.
 
 `GpuOptics` rejects `VECTOR_BENCH_SCENE_PERFORMANCE=1`: that variable replaces the optical checks with a separate manual scene benchmark. The GPU colour delta is currently diagnostic; only its existing assertions are enforced. A successful suite does not establish a new colour-error tolerance.
 

@@ -17,7 +17,10 @@ internal static partial class Benchmark
         var poses = new[] { new SceneCompositionObjectPose(
             System.Numerics.Matrix4x4.Identity, new System.Numerics.Vector3(0, 0, .5f)) };
         using var form = new Form { ClientSize = new Size(320, 240), ShowInTaskbar = false };
-        using var stage = new StageControl(scene) { Dock = DockStyle.Fill, WorldGridOpacity = 0 };
+        using var stage = new StageControl(scene)
+        {
+            Dock = DockStyle.Fill, WorldGridOpacity = 0, ExperimentalSceneLightingEnabled = true
+        };
         form.Controls.Add(stage);
         stage.ConfigureReferenceView(definition, SceneDimension.TwoD);
         stage.SetSceneCompositionResult(new SceneCompositionResult(owners, poses));
@@ -39,7 +42,9 @@ internal static partial class Benchmark
             [SpatialOpticalMaterial.Default with { Transmission = .5f }]));
         if (!stage.GetReference3DSceneRenderItems().Any(item =>
                 item.Kind == Reference3DRenderKind.FrontFill && item.MaterialOpacity < .6f))
-            throw new InvalidOperationException("The unlit optical fast path discarded material transmission.");
+            throw new InvalidOperationException("The unlit optical fast path discarded material transmission: "
+                + string.Join("; ", stage.GetReference3DSceneRenderItems().Select(item =>
+                    $"{item.Kind} object={item.ObjectIndex} opacity={item.MaterialOpacity} gpu={item.GpuOpticalSurface is not null} cpu={item.OpticalSurface is not null}")));
         definition.RestoreLights([SceneLightDefinition.CreateDefaultDirectional()], lightsWerePresent: true);
         if (!stage.GetReference3DLayerRenderItems([0]).Any(item => item.Kind == Reference3DRenderKind.Side))
             throw new InvalidOperationException("The front-view optimization removed potential shadow casters.");
@@ -312,6 +317,8 @@ internal static partial class Benchmark
             }
 
             projectedScene.LayerOpacity[opacityLayer] = 0f;
+            // Direct array edits must notify the stage just as workbench edits do.
+            projectedStage.Invalidate();
             if (projectedStage.GetReference3DSceneRenderItems().Any(item =>
                     item.ObjectIndex == projectedSourceObject))
             {
@@ -635,6 +642,17 @@ internal static partial class Benchmark
 
     private static void RunSpatialFrontProjectionRegression()
     {
+        var previous = Environment.GetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU");
+        try
+        {
+            Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", null);
+            RunSpatialFrontProjectionRegressionCore();
+        }
+        finally { Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", previous); }
+    }
+
+    private static void RunSpatialFrontProjectionRegressionCore()
+    {
         const int stageWidth = 360;
         const int stageHeight = 260;
         var background = Color.FromArgb(255, 17, 19, 21);
@@ -814,6 +832,7 @@ internal static partial class Benchmark
             }
 
             gdiCacheScene.LayerBlendModes[0] = LayerBlendMode.Dissolve;
+            gdiCacheStage.Invalidate();
             drawBufferedGdi.Invoke(gdiCacheStage, [gdiCacheGraphics]);
             var dissolvePlanBuilds = gdiCacheStage.Reference3DRenderPlanBuildCount;
             if (gdiCacheStage.LastGdiBaseFrameCacheBuilds != 1
@@ -6838,6 +6857,7 @@ internal static partial class Benchmark
             };
             using var direct2DStage = new StageControl(materialScene)
             {
+                ExperimentalSceneLightingEnabled = true,
                 Dock = DockStyle.Fill,
                 BackColor = background,
                 WorldGridOpacity = 0
@@ -6902,14 +6922,26 @@ internal static partial class Benchmark
                     "A Direct2D light-Gizmo overlay rebuilt the stable base frame or had no screen geometry.");
             }
             using var lightGizmoCapture = materialCapture is not null
-                ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia, capture => HasPixelNearColor(
-                    capture, CapturePoint(form, direct2DStage, direct2DLightGizmoGeometry.IntensityHandle),
-                    StageControl.SceneLightGizmoIntensityColor, radius: 5, tolerance: 18))
+                ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia, capture =>
+                {
+                    var found = HasPixelNearColor(capture,
+                        CapturePoint(form, direct2DStage, direct2DLightGizmoGeometry.IntensityHandle),
+                        StageControl.SceneLightGizmoIntensityColor, radius: 5, tolerance: 18);
+                    if (!found)
+                    {
+                        var directory = Path.Combine(Directory.GetCurrentDirectory(), "artifacts", "validation");
+                        Directory.CreateDirectory(directory);
+                        capture.Save(Path.Combine(directory, "light-gizmo-capture-failure.png"));
+                    }
+                    return found;
+                })
                 : null;
             if (materialCapture is not null && lightGizmoCapture is null)
             {
                 throw new InvalidOperationException(
-                    "The visible Direct2D window could not capture the light-Gizmo overlay.");
+                    "The visible Direct2D window could not capture the light-Gizmo overlay: "
+                    + $"handle={direct2DLightGizmoGeometry.IntensityHandle}, stage={direct2DStage.ClientSize}, "
+                    + $"dpi={direct2DStage.DeviceDpi}, dimension={direct2DStage.ReferenceDimension}.");
             }
             if (lightGizmoCapture is not null
                 && !HasPixelNearColor(
@@ -8354,6 +8386,7 @@ internal static partial class Benchmark
         {
             var result = new StageControl(source)
             {
+                ExperimentalSceneLightingEnabled = true,
                 ClientSize = new Size(stageWidth, stageHeight),
                 BackColor = background,
                 WorldGridOpacity = 0
@@ -8403,6 +8436,29 @@ internal static partial class Benchmark
                     continue;
                 }
 
+                // PrintWindow can copy the WinForms border while returning a
+                // completely black Direct2D swap chain. Try the visible HWND
+                // before treating that desktop as unavailable for pixel checks.
+                if (!HasStagePixels(capture))
+                {
+                    try
+                    {
+                        using var graphics = Graphics.FromImage(capture);
+                        graphics.CopyFromScreen(form.PointToScreen(Point.Empty), Point.Empty, capture.Size);
+                    }
+                    catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
+                        or System.Runtime.InteropServices.ExternalException or ArgumentException)
+                    {
+                        capture.Dispose();
+                        continue;
+                    }
+                    if (!HasStagePixels(capture))
+                    {
+                        capture.Dispose();
+                        continue;
+                    }
+                }
+
                 var sentinelPoints = new[]
                 {
                     new Point(2, 2),
@@ -8418,6 +8474,17 @@ internal static partial class Benchmark
                 capture.Dispose();
             }
             return null;
+
+            bool HasStagePixels(Bitmap capture)
+            {
+                var origin = Point.Round(CapturePoint(form, source, PointF.Empty));
+                var bounds = Rectangle.Intersect(new Rectangle(Point.Empty, capture.Size),
+                    new Rectangle(origin, source.ClientSize));
+                for (var y = bounds.Top; y < bounds.Bottom; y += Math.Max(1, bounds.Height / 12))
+                    for (var x = bounds.Left; x < bounds.Right; x += Math.Max(1, bounds.Width / 12))
+                        if ((capture.GetPixel(x, y).ToArgb() & 0x00ffffff) != 0) return true;
+                return false;
+            }
         }
 
         static PointF CapturePoint(Form form, StageControl source, PointF clientPoint)
@@ -8507,7 +8574,6 @@ internal static partial class Benchmark
         RunMultiLayerSelectionRegression();
         RunUiRefreshStabilityRegression();
         RunCrashDiagnosticsRegression();
-        RunSymbolFiltersRenderRegression();
         RunSymbolFiltersPanelRegression();
         RunGpuPlaybackTargetLifetimeRegression();
         RunLayerBlendRegression();
@@ -8521,7 +8587,7 @@ internal static partial class Benchmark
         RunSnapPointOverlayRegression();
         RunImportedSvgRasterizerRegression();
         RunBitmapObjectRegression();
-        RunReferenceSvgRasterExtentRegression();
+        RunExplicitGpuRegression(RunReferenceSvgRasterExtentRegression);
         RunProjectiveSvgClippingRegression();
         RunImportedSvgBreakApartRegression();
         RunSelectionHighlightStyleRegression();
@@ -8559,11 +8625,14 @@ internal static partial class Benchmark
         RunSoftBrushRegression();
         RunBrushFrequencyRegression();
         RunPressureBrushRegression();
-        RunMixingBrushDirect2DRegression();
+        RunExplicitGpuRegression(RunMixingBrushDirect2DRegression);
         RunBrushWorldScaleRegression();
         RunBrushEraserRegression();
 
         RunStageRendererFrameCacheRegression();
+        // Keep the lengthy hardware/CPU pixel matrix after functional checks,
+        // so a failing interaction or render fixture reports promptly.
+        RunSymbolFiltersRenderRegression();
     }
 
     private static void RunStageRendererFrameCacheRegression()

@@ -24,6 +24,8 @@ Capture at least:
 
 Inspect images for clipping, overlap, blank regions, low contrast, inconsistent spacing, text overflow, and unexpected layout shifts.
 
+For column/disclosure changes, follow the [composition contract](../../../../docs/UI_COMPOSITION.md#面板分栏与独立折叠契约). Capture multiple sections expanded together, each collapsed independently, and a parent reopened with its child's state preserved. Check real 48%/52% field boundaries, 32px controls, 40px row pitch and 8px gaps after DPI scaling; also inspect enabled/disabled, long numeric values with units and current corner/theme preferences. For inline lists, inspect one and multiple rows and verify that wheel input over a depth editor moves only the owning column without changing its value. These focused UI checks do not authorize product regression suites; follow the repository's regression rules.
+
 For inspector alignment, follow the [architecture acceptance contract](../../../../docs/UI_COMPOSITION.md#截图验收). Capture the real preferred panel height without a minimum screenshot-height override or bottom crop. Reproduce the actual scroll-page padding and mounting hierarchy, compare field Bounds in a shared host coordinate system, and inspect label/input vertical centers. Expand the color editor and trigger affected conditional panels. Build must finish before loading the capture assembly. Report simulated scaling separately from real high-DPI validation, and do not claim popup appearance was verified from a closed-selector screenshot.
 
 ## Bound Panels

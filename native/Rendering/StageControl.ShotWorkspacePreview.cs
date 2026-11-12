@@ -311,7 +311,17 @@ internal sealed partial class StageControl
 
     protected override void OnMouseWheel(MouseEventArgs e)
     {
-        if (!ShotWorkspacePreviewActive) base.OnMouseWheel(e);
+        if (ShotWorkspacePreviewActive) return;
+        BeginInteractiveInput(pointerDown: false);
+        try
+        {
+            base.OnMouseWheel(e);
+        }
+        finally
+        {
+            // 滚轮是连续输入：与其他拖拽共用帧预算，避免每个滚动事件都同步整帧渲染。
+            EndInteractiveInput(pointerDown: false, forceFinalFrame: false);
+        }
     }
 
     protected override void OnMouseDoubleClick(MouseEventArgs e)

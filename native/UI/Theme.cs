@@ -433,6 +433,7 @@ internal static partial class Theme
         if (color.IsEmpty || color.A == 0) return color;
         if (SameRgb(color, from.Text)) return WithAlpha(to.Text, color.A);
         if (SameRgb(color, PanelSecondaryTextFor(from))) return WithAlpha(PanelSecondaryTextFor(to), color.A);
+        if (SameRgb(color, PanelValueTextFor(from))) return WithAlpha(PanelValueTextFor(to), color.A);
         if (SameRgb(color, from.Muted)) return WithAlpha(to.Muted, color.A);
         if (SameRgb(color, from.DisabledText)) return WithAlpha(to.DisabledText, color.A);
         if (SameRgb(color, from.Accent)) return WithAlpha(to.Accent, color.A);
@@ -704,6 +705,12 @@ internal static partial class Theme
 
     internal static Color PanelSecondaryText => SystemInformation.HighContrast
         ? SystemColors.ControlText : PanelSecondaryTextFor(_palette);
+
+    internal static Color PanelValueText => SystemInformation.HighContrast
+        ? SystemColors.ControlText : PanelValueTextFor(_palette);
+
+    private static Color PanelValueTextFor(ThemePalette palette) =>
+        ReadableText(palette.Panel, Mix(palette.Panel, palette.Text, 0.84f));
 
     private static Color PanelSecondaryTextFor(ThemePalette palette) =>
         ReadableText(palette.Panel, Mix(palette.Panel, palette.Text, 0.64f));

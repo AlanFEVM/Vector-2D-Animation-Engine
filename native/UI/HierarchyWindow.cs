@@ -11,8 +11,8 @@ internal sealed class HierarchyWindow : Form
     public HierarchyWindow(HierarchyPanel panel, WorkbenchCommandHandler handleWorkbenchCommand)
     {
         _handleWorkbenchCommand = handleWorkbenchCommand;
-        Text = "Hierarchy";
-        AccessibleName = "Hierarchy";
+        Text = UiLocalization.T("Hierarchy");
+        AccessibleName = UiLocalization.T("Hierarchy");
         AutoScaleMode = AutoScaleMode.Dpi;
         BackColor = Theme.Panel;
         ForeColor = Theme.Text;

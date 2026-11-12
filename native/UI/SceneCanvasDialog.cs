@@ -7,15 +7,15 @@ namespace VectorAnimationEngine;
 internal sealed class SceneCanvasDialog : ModernDialogForm
 {
     private const float MaximumImageOffset = 5_000_000f;
-    private readonly ModernTextInput _width = NumberInput("Canvas width in pixels");
-    private readonly ModernTextInput _height = NumberInput("Canvas height in pixels");
-    private readonly ModernTextInput _colorOpacity = NumberInput("Color opacity percentage");
-    private readonly ModernTextInput _imageScale = NumberInput("Uniform image scale percentage");
-    private readonly ModernTextInput _offsetX = NumberInput("Image X offset in pixels");
-    private readonly ModernTextInput _offsetY = NumberInput("Image Y offset in pixels");
-    private readonly ModernTextInput _imageOpacity = NumberInput("Image opacity percentage");
-    private readonly ModernTextInput _displayWidth = NumberInput("Displayed image width in pixels");
-    private readonly ModernTextInput _displayHeight = NumberInput("Displayed image height in pixels");
+    private readonly ModernNumericUpDown _width = NumberInput("Canvas width in pixels");
+    private readonly ModernNumericUpDown _height = NumberInput("Canvas height in pixels");
+    private readonly ModernNumericUpDown _colorOpacity = NumberInput("Color opacity percentage");
+    private readonly ModernNumericUpDown _imageScale = NumberInput("Uniform image scale percentage");
+    private readonly ModernNumericUpDown _offsetX = NumberInput("Image X offset in pixels");
+    private readonly ModernNumericUpDown _offsetY = NumberInput("Image Y offset in pixels");
+    private readonly ModernNumericUpDown _imageOpacity = NumberInput("Image opacity percentage");
+    private readonly ModernNumericUpDown _displayWidth = NumberInput("Displayed image width in pixels");
+    private readonly ModernNumericUpDown _displayHeight = NumberInput("Displayed image height in pixels");
     private readonly ComboBox _background = Selector("Background");
     private readonly ComboBox _projectImage = Selector("Project image");
     private readonly ComboBox _imageFit = Selector("Image fit");
@@ -52,7 +52,9 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
     private bool _updating;
     private bool _advancedExpanded;
     private bool _displaySizeInvalid;
-    private ModernTextInput? _displayEditSource;
+    private ModernNumericUpDown? _displayEditSource;
+    private CancellationTokenSource? _imageLoadCancellation;
+    private int _imageLoadVersion;
     private double _aspectRatio;
 
     public SceneCanvasDialog(
@@ -187,7 +189,7 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         scroll.Content.Controls.Add(fields);
 
         AddWideRow(fields, Heading("Canvas size"), 28);
-        AddRow(fields, "Width × height (px)", Pair(_width, _height));
+        AddRow(fields, "Width × height", Pair(_width, _height));
         var swap = ActionButton("Swap dimensions");
         swap.Click += (_, _) =>
         {
@@ -213,11 +215,11 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
             Theme.StyleToolbarButton(_advancedToggle, _advancedExpanded);
             UpdateSettingsVisibility();
         };
-        AddConditionalRow(fields, "Color opacity (%)", _colorOpacity, SettingVisibility.AdvancedBackground);
-        AddImageRow(fields, "Uniform scale (%)", _imageScale, advanced: true);
-        AddImageRow(fields, "Display W × H (px)", Pair(_displayWidth, _displayHeight), advanced: true);
-        AddImageRow(fields, "Offset X / Y (px)", Pair(_offsetX, _offsetY), advanced: true);
-        AddImageRow(fields, "Image opacity (%)", _imageOpacity, advanced: true);
+        AddConditionalRow(fields, "Color opacity", _colorOpacity, SettingVisibility.AdvancedBackground);
+        AddImageRow(fields, "Uniform scale", _imageScale, advanced: true);
+        AddImageRow(fields, "Display W × H", Pair(_displayWidth, _displayHeight), advanced: true);
+        AddImageRow(fields, "Offset X / Y", Pair(_offsetX, _offsetY), advanced: true);
+        AddImageRow(fields, "Image opacity", _imageOpacity, advanced: true);
         AddImageRow(fields, "Image alignment", CreateImageAlignment(), 120, advanced: true);
         var placement = Pair(_centerButton, _matchButton);
         AddConditionalWideRow(fields, placement, SettingVisibility.AdvancedImage);
@@ -267,7 +269,7 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
                 try
                 {
                     _color = color;
-                    _colorOpacity.Text = FormatNumber(color.A * 100d / 255);
+                    SetNumber(_colorOpacity, FormatNumber(color.A * 100d / 255));
                     if (_background.SelectedItem is not Choice<SceneBackgroundKind> { Value: SceneBackgroundKind.Image })
                         _background.SelectedIndex = FindChoice(_background, SceneBackgroundKind.Solid);
                 }
@@ -324,8 +326,8 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         _updating = true;
         try
         {
-            _offsetX.Text = FormatNumber(offsetX);
-            _offsetY.Text = FormatNumber(offsetY);
+            SetNumber(_offsetX, FormatNumber(offsetX));
+            SetNumber(_offsetY, FormatNumber(offsetY));
         }
         finally { _updating = false; }
         UpdateDraft();
@@ -356,7 +358,7 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         UpdateDraft();
     }
 
-    private void DisplayDimensionChanged(ModernTextInput input, bool widthChanged)
+    private void DisplayDimensionChanged(ModernNumericUpDown input, bool widthChanged)
     {
         if (_updating) return;
         _displayEditSource = input;
@@ -371,7 +373,7 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
                 {
                     _displaySizeInvalid = false;
                     _updating = true;
-                    try { _imageScale.Text = FormatNumber(scale * 100d); }
+                    try { SetNumber(_imageScale, FormatNumber(scale * 100d)); }
                     finally { _updating = false; }
                 }
             }
@@ -396,9 +398,9 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         try
         {
             if (_displayEditSource != _displayWidth)
-                _displayWidth.Text = available ? FormatNumber(bounds.Width) : string.Empty;
+                SetNumber(_displayWidth, available ? FormatNumber(bounds.Width) : string.Empty);
             if (_displayEditSource != _displayHeight)
-                _displayHeight.Text = available ? FormatNumber(bounds.Height) : string.Empty;
+                SetNumber(_displayHeight, available ? FormatNumber(bounds.Height) : string.Empty);
         }
         finally { _updating = false; }
     }
@@ -408,14 +410,14 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         _updating = true;
         try
         {
-            _width.Text = Settings.Width.ToString(CultureInfo.CurrentCulture);
-            _height.Text = Settings.Height.ToString(CultureInfo.CurrentCulture);
+            SetNumber(_width, Settings.Width.ToString(CultureInfo.CurrentCulture));
+            SetNumber(_height, Settings.Height.ToString(CultureInfo.CurrentCulture));
             _aspectRatio = Settings.Height > 0 ? Settings.Width / (double)Settings.Height : 16d / 9;
-            _colorOpacity.Text = FormatNumber(_color.A * 100d / 255);
-            _imageScale.Text = FormatNumber(Settings.ImageScale * 100d);
-            _offsetX.Text = FormatNumber(Settings.ImageOffsetX);
-            _offsetY.Text = FormatNumber(Settings.ImageOffsetY);
-            _imageOpacity.Text = FormatNumber(Settings.ImageOpacity * 100d);
+            SetNumber(_colorOpacity, FormatNumber(_color.A * 100d / 255));
+            SetNumber(_imageScale, FormatNumber(Settings.ImageScale * 100d));
+            SetNumber(_offsetX, FormatNumber(Settings.ImageOffsetX));
+            SetNumber(_offsetY, FormatNumber(Settings.ImageOffsetY));
+            SetNumber(_imageOpacity, FormatNumber(Settings.ImageOpacity * 100d));
             _dimOutside.Checked = Settings.DimOutside;
             _background.SelectedIndex = FindChoice(_background, Settings.BackgroundKind);
             _imageFit.SelectedIndex = FindChoice(_imageFit, Settings.ImageFit);
@@ -441,20 +443,20 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
 
     private void WireEvents()
     {
-        _width.TextChanged += (_, _) => DimensionChanged(widthChanged: true);
-        _height.TextChanged += (_, _) => DimensionChanged(widthChanged: false);
+        _width.ValueChanged += (_, _) => DimensionChanged(widthChanged: true);
+        _height.ValueChanged += (_, _) => DimensionChanged(widthChanged: false);
         _lockAspect.CheckedChanged += (_, _) =>
         {
             if (TryDimension(_width, out var width) && TryDimension(_height, out var height))
                 _aspectRatio = width / (double)height;
         };
-        ModernTextInput[] inputs = [_colorOpacity, _offsetX, _offsetY, _imageOpacity];
-        foreach (var input in inputs) input.TextChanged += (_, _) => UpdateDraft();
-        _imageScale.TextChanged += (_, _) => ResetDisplaySizeAndUpdate();
+        ModernNumericUpDown[] inputs = [_colorOpacity, _offsetX, _offsetY, _imageOpacity];
+        foreach (var input in inputs) input.ValueChanged += (_, _) => UpdateDraft();
+        _imageScale.ValueChanged += (_, _) => ResetDisplaySizeAndUpdate();
         _background.SelectedIndexChanged += (_, _) => ResetDisplaySizeAndUpdate();
         _imageFit.SelectedIndexChanged += (_, _) => ResetDisplaySizeAndUpdate();
-        _displayWidth.TextChanged += (_, _) => DisplayDimensionChanged(_displayWidth, widthChanged: true);
-        _displayHeight.TextChanged += (_, _) => DisplayDimensionChanged(_displayHeight, widthChanged: false);
+        _displayWidth.ValueChanged += (_, _) => DisplayDimensionChanged(_displayWidth, widthChanged: true);
+        _displayHeight.ValueChanged += (_, _) => DisplayDimensionChanged(_displayHeight, widthChanged: false);
         _dimOutside.CheckedChanged += (_, _) => UpdateDraft();
         _projectImage.SelectedIndexChanged += (_, _) =>
         {
@@ -467,7 +469,7 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         _centerButton.Click += (_, _) =>
         {
             _updating = true;
-            try { _offsetX.Text = "0"; _offsetY.Text = "0"; }
+            try { SetNumber(_offsetX, "0"); SetNumber(_offsetY, "0"); }
             finally { _updating = false; }
             UpdateDraft();
         };
@@ -475,7 +477,7 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         {
             if (_imagePixelSize.IsEmpty) return;
             _updating = true;
-            try { _imageScale.Text = "100"; _offsetX.Text = "0"; _offsetY.Text = "0"; }
+            try { SetNumber(_imageScale, "100"); SetNumber(_offsetX, "0"); SetNumber(_offsetY, "0"); }
             finally { _updating = false; }
             SetCanvasSize(_imagePixelSize.Width, _imagePixelSize.Height);
         };
@@ -503,8 +505,8 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
             _updating = true;
             try
             {
-                (widthChanged ? _height : _width).Text = other is >= 1 and <= 32768
-                    ? other.ToString("0", CultureInfo.CurrentCulture) : string.Empty;
+                SetNumber(widthChanged ? _height : _width, other is >= 1 and <= 32768
+                    ? other.ToString("0", CultureInfo.CurrentCulture) : string.Empty);
             }
             finally { _updating = false; }
         }
@@ -517,8 +519,8 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         _updating = true;
         try
         {
-            _width.Text = width.ToString(CultureInfo.CurrentCulture);
-            _height.Text = height.ToString(CultureInfo.CurrentCulture);
+            SetNumber(_width, width.ToString(CultureInfo.CurrentCulture));
+            SetNumber(_height, height.ToString(CultureInfo.CurrentCulture));
             _aspectRatio = width / (double)height;
         }
         finally { _updating = false; }
@@ -542,74 +544,88 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         UpdateDraft();
     }
 
-    private void LoadSelectedImage()
+    protected override void OnShown(EventArgs e)
     {
+        base.OnShown(e);
+        LoadSelectedImage();
+    }
+
+    private async void LoadSelectedImage()
+    {
+        if (!IsHandleCreated || IsDisposed) return;
+        _imageLoadCancellation?.Cancel();
+        _imageLoadCancellation?.Dispose();
+        var cancellation = _imageLoadCancellation = new CancellationTokenSource();
+        var token = cancellation.Token;
+        var version = ++_imageLoadVersion;
         _displaySizeInvalid = false;
         _thumbnail?.Dispose();
         _thumbnail = null;
         _imagePixelSize = Size.Empty;
         _loadedImagePath = null;
-        _imageError = null;
-        var sourcePixelSize = Size.Empty;
+        _imageError = UiLocalization.T("Loading background image...");
         var choice = _projectImage.SelectedItem as ImageChoice;
         _source.Text = _pendingExternalPath ?? choice?.Asset?.Name ?? choice?.ToString() ?? "—";
         _toolTip.SetToolTip(_source, _source.Text);
+        _originalSize.Text = "—";
+        UpdateDraft();
+        Bitmap? loaded = null;
         try
         {
-            var path = _pendingExternalPath;
-            if (path is null && choice?.Asset is { } asset) path = _resolveImagePath(asset);
+            var external = _pendingExternalPath is not null;
+            var asset = choice?.Asset;
+            var path = _pendingExternalPath ?? (asset is null ? null : _resolveImagePath(asset));
             if (string.IsNullOrWhiteSpace(path))
+                throw new InvalidDataException(UiLocalization.T("Choose an available project image or an external file."));
+            var result = await Task.Run(() =>
             {
-                _imageError = UiLocalization.T("Choose an available project image or an external file.");
-                return;
-            }
-            if (!BitmapImageFormats.IsSupportedExtension(Path.GetExtension(path)))
-            {
-                _imageError = UiLocalization.T("The image file format is not supported.");
-                return;
-            }
-            var info = new FileInfo(path);
-            if (!info.Exists || info.Length <= 0 || info.Length > BitmapImageFormats.MaximumSourceBytes)
-            {
-                _imageError = UiLocalization.T("The image is missing, empty, or exceeds the image file size limit.");
-                return;
-            }
-            if (_pendingExternalPath is null && choice?.Asset is { } projectImage)
-            {
-                var raster = BitmapImageRasterizer.Decode(path, projectImage.ImportSettings);
-                using var bitmap = raster.AcquireBitmap();
-                _thumbnail = CreateThumbnail(bitmap.Bitmap);
-                _imagePixelSize = new Size(raster.PixelWidth, raster.PixelHeight);
-                sourcePixelSize = new Size(projectImage.PixelWidth, projectImage.PixelHeight);
-            }
-            else
-            {
-                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                using var source = Image.FromStream(stream, useEmbeddedColorManagement: true, validateImageData: true);
-                if (!BitmapImageFormats.TryValidateDecodedBudget(source.Width, source.Height, out var error))
+                token.ThrowIfCancellationRequested();
+                if (!BitmapImageFormats.IsSupportedExtension(Path.GetExtension(path)))
+                    throw new InvalidDataException(UiLocalization.T("The image file format is not supported."));
+                var info = new FileInfo(path);
+                if (!info.Exists || info.Length <= 0 || info.Length > BitmapImageFormats.MaximumSourceBytes)
+                    throw new InvalidDataException(UiLocalization.T("The image is missing, empty, or exceeds the image file size limit."));
+                if (!external && asset is not null)
                 {
-                    _imageError = error;
-                    return;
+                    var raster = BitmapImageRasterizer.Decode(path, asset.ImportSettings);
+                    using var bitmap = raster.AcquireBitmap();
+                    return (Thumbnail: CreateThumbnail(bitmap.Bitmap),
+                        PixelSize: new Size(raster.PixelWidth, raster.PixelHeight),
+                        SourceSize: new Size(asset.PixelWidth, asset.PixelHeight));
                 }
-                _thumbnail = CreateThumbnail(source);
-                _imagePixelSize = source.Size;
-                sourcePixelSize = source.Size;
-            }
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var image = Image.FromStream(stream, useEmbeddedColorManagement: true, validateImageData: true);
+                if (!BitmapImageFormats.TryValidateDecodedBudget(image.Width, image.Height, out var error))
+                    throw new InvalidDataException(error);
+                return (Thumbnail: CreateThumbnail(image), PixelSize: image.Size, SourceSize: image.Size);
+            }, token);
+            loaded = result.Thumbnail;
+            if (IsDisposed || token.IsCancellationRequested || version != _imageLoadVersion) return;
+            _thumbnail = loaded;
+            loaded = null;
+            _imagePixelSize = result.PixelSize;
             _loadedImagePath = path;
+            _imageError = null;
+            _originalSize.Text = PixelSizeText(result.SourceSize.Width, result.SourceSize.Height);
         }
-        catch (Exception exception)
+        catch (OperationCanceledException) { }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException
+            or OutOfMemoryException or System.Runtime.InteropServices.ExternalException)
         {
-            _imageError = string.Format(CultureInfo.CurrentCulture,
-                UiLocalization.T("Unable to open background image: {0}"), exception.Message);
+            if (!IsDisposed && version == _imageLoadVersion)
+                _imageError = string.Format(CultureInfo.CurrentCulture,
+                    UiLocalization.T("Unable to open background image: {0}"), exception.Message);
         }
         finally
         {
-            _originalSize.Text = sourcePixelSize.Width > 0 && sourcePixelSize.Height > 0
-                ? PixelSizeText(sourcePixelSize.Width, sourcePixelSize.Height) : "—";
-            _preview.Invalidate();
+            loaded?.Dispose();
+            if (!IsDisposed && version == _imageLoadVersion)
+            {
+                UpdateDraft();
+                _preview.Invalidate();
+            }
         }
     }
-
     private static Bitmap CreateThumbnail(Image source)
     {
         var factor = Math.Min(1d, 960d / Math.Max(source.Width, source.Height));
@@ -861,6 +877,10 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
     {
         if (disposing)
         {
+            _imageLoadVersion++;
+            _imageLoadCancellation?.Cancel();
+            _imageLoadCancellation?.Dispose();
+            _imageLoadCancellation = null;
             _thumbnail?.Dispose();
             _thumbnail = null;
             _toolTip.Dispose();
@@ -868,12 +888,21 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         base.Dispose(disposing);
     }
 
-    private static bool TryDimension(ModernTextInput input, out int value) =>
-        int.TryParse(input.Text, NumberStyles.Integer, CultureInfo.CurrentCulture, out value) && value is >= 1 and <= 32768;
+    private static bool TryDimension(ModernNumericUpDown input, out int value)
+    {
+        value = (int)input.Value;
+        return value is >= 1 and <= 32768;
+    }
 
-    private static bool TryNumber(ModernTextInput input, float minimum, float maximum, out float value) =>
-        float.TryParse(input.Text, NumberStyles.Float, CultureInfo.CurrentCulture, out value)
-        && float.IsFinite(value) && value >= minimum && value <= maximum;
+    private static bool TryNumber(ModernNumericUpDown input, float minimum, float maximum, out float value)
+    {
+        value = (float)input.Value;
+        return float.IsFinite(value) && value >= minimum && value <= maximum;
+    }
+
+    private static void SetNumber(ModernNumericUpDown input, string text) =>
+        input.Value = decimal.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out var value)
+            ? Math.Clamp(value, input.Minimum, input.Maximum) : input.Minimum;
 
     private static string FormatNumber(double value) => value.ToString("0.#########", CultureInfo.CurrentCulture);
 
@@ -884,7 +913,7 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
     {
         foreach (Control child in parent.Controls)
         {
-            if (child is ModernTextInput or ComboBox or Button or CheckBox)
+            if (child is ModernNumericUpDown or ComboBox or Button or CheckBox)
             {
                 child.Enter += (_, _) =>
                 {
@@ -909,11 +938,21 @@ internal sealed class SceneCanvasDialog : ModernDialogForm
         return -1;
     }
 
-    private static ModernTextInput NumberInput(string name)
+    private static ModernNumericUpDown NumberInput(string name)
     {
-        var input = new ModernTextInput { Dock = DockStyle.Fill, AccessibleName = name, Margin = Padding.Empty, MaxLength = 48 };
-        Theme.StyleTextBox(input);
-        input.Font = Theme.UiFont(11);
+        var dimension = name.StartsWith("Canvas", StringComparison.Ordinal);
+        var offset = name.Contains("offset", StringComparison.Ordinal);
+        var percentage = name.Contains("percentage", StringComparison.Ordinal);
+        var scale = name.Contains("scale", StringComparison.Ordinal);
+        var input = new ModernNumericUpDown
+        {
+            Dock = DockStyle.Fill, AccessibleName = name, Margin = Padding.Empty,
+            Minimum = offset ? -5_000_000 : scale ? 0.1m : dimension ? 1 : 0,
+            Maximum = offset ? 5_000_000 : scale ? 10_000 : percentage ? 100 : dimension ? 32768 : 1_000_000_000_000,
+            DecimalPlaces = dimension ? 0 : 9, Increment = dimension ? 1 : 0.1m, TrimTrailingZeros = true,
+            Suffix = percentage ? "%" : "px", ShowSuffix = true, MouseWheelChangesValue = false
+        };
+        InspectorModuleStyle.StyleField(input);
         return input;
     }
 

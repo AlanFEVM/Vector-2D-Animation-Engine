@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("Build", "Launcher", "Release", "Timeline", "Pressure", "Freehand", "Stress", "Render", "GpuOptics", "SelectionPerf", "All")]
+    [ValidateSet("Build", "Launcher", "Release", "Timeline", "Pressure", "Freehand", "Stress", "Render", "GpuOptics", "SelectionPerf", "RealisticInteraction", "All")]
     [string[]]$Suite = @("Build"),
 
     [switch]$Restore,
@@ -29,6 +29,7 @@ $benchmarkArguments = [ordered]@{
     Render = "--bench-render"
     GpuOptics = "--bench-gpu-optics"
     SelectionPerf = "--bench-selection-perf"
+    RealisticInteraction = "--bench-realistic-interaction"
 }
 
 function Invoke-DotnetChecked {

@@ -29,6 +29,7 @@ internal sealed partial class VectorProject
             id = Guid.NewGuid().ToString("N");
         }
         while (FindDrawingObject(id) is not null
+               || FindExternalSvgAsset(id) is not null
                || _imageAssets.Any(candidate => string.Equals(candidate.Id, id, StringComparison.Ordinal)));
 
         return id;
@@ -107,6 +108,7 @@ internal sealed partial class VectorProject
             || id.Length > MaxImageAssetPathLength
             || id.IndexOf('\0') >= 0
             || FindDrawingObject(id) is not null
+            || FindExternalSvgAsset(id) is not null
             || _imageAssets.Any(candidate => string.Equals(candidate.Id, id, StringComparison.Ordinal))
             || !TryNormalizeImageAssetName(name, out var normalizedName)
             || !TryNormalizeImageSourcePath(sourcePath, out var normalizedSourcePath)
@@ -245,6 +247,7 @@ internal sealed partial class VectorProject
     {
         return _imageAssets.Select(asset => new ImageAssetRestartSnapshot
         {
+            AssetFolderId = asset.AssetFolderId, AssetTagIds = asset.AssetTagIds.ToArray(),
             Id = asset.Id,
             Name = asset.Name,
             OriginalSourcePath = asset.OriginalSourcePath,
@@ -270,6 +273,7 @@ internal sealed partial class VectorProject
                 || restored.Count >= MaxImageAssetCount
                 || !IsValidRestartId(snapshot.Id)
                 || FindDrawingObject(snapshot.Id) is not null
+                || FindExternalSvgAsset(snapshot.Id) is not null
                 || !ids.Add(snapshot.Id)
                 || !TryNormalizeImageAssetName(snapshot.Name, out var normalizedName)
                 || !TryNormalizeImageSourcePath(snapshot.SourcePath, out var normalizedSourcePath)
@@ -284,6 +288,7 @@ internal sealed partial class VectorProject
 
             restored.Add(new ImageAssetDefinition
             {
+                AssetFolderId = snapshot.AssetFolderId, AssetTagIds = ValidateLibraryAssetMetadata(snapshot.AssetFolderId, snapshot.AssetTagIds),
                 Id = snapshot.Id,
                 Name = normalizedName,
                 OriginalSourcePath = snapshot.OriginalSourcePath,

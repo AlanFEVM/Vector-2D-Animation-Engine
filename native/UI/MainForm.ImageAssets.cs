@@ -162,6 +162,9 @@ internal sealed partial class MainForm
         _objectInspector.SetImagePreview(true, preview, ResolveBitmapImageSampling(asset.Id));
         var settings = asset.ImportSettings;
         var decoded = settings.ResolveStoredPixelSize(asset.PixelSize);
+        var crop = settings.ResolveCropPixelBounds(asset.PixelWidth, asset.PixelHeight);
+        var isCropped = settings.CropX != 0 || settings.CropY != 0
+            || settings.CropWidth != 1 || settings.CropHeight != 1;
         _imageInspector.SetState(new(asset.Id, asset.Name)
         {
             SourcePath = asset.SourcePath,
@@ -172,7 +175,11 @@ internal sealed partial class MainForm
             PixelsPerUnit = settings.PixelsPerUnit.ToString(),
             MaximumResolution = $"{settings.MaxSize} px",
             DecodedResolution = $"{decoded.Width:0} × {decoded.Height:0} px",
-            KeepTransparency = UiLocalization.T(settings.AlphaSource == ImageAlphaSource.FromInput ? "Yes" : "No")
+            KeepTransparency = UiLocalization.T(settings.AlphaSource == ImageAlphaSource.FromInput ? "Yes" : "No"),
+            Crop = isCropped ? $"{UiLocalization.T("Yes")} · {crop.X}, {crop.Y} · {crop.Width} × {crop.Height} px"
+                : UiLocalization.T("No"),
+            FlipHorizontal = UiLocalization.T(settings.FlipHorizontal ? "Yes" : "No"),
+            FlipVertical = UiLocalization.T(settings.FlipVertical ? "Yes" : "No")
         });
     }
 

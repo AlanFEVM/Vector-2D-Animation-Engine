@@ -1336,6 +1336,12 @@ internal static partial class Benchmark
 
     public static void RunPressureBrushRegression()
     {
+        if (Environment.GetEnvironmentVariable("VECTOR_BENCH_BRUSH_FEEL") == "1")
+        {
+            RunBrushFeelMeasurement();
+            return;
+        }
+
         RunPressurePreviewStabilityRegression();
         RunSoftBrushRegression();
         RunMixingBrushRegression();
@@ -1750,6 +1756,186 @@ internal static partial class Benchmark
         Console.WriteLine($"pressure_brush_preview_points={boundedPreview.Count}");
         Console.WriteLine($"pressure_brush_preview_avg_ms={pressurePreviewAverageMilliseconds:0.000}");
         Console.WriteLine($"pressure_brush_preview_budget_met={(pressurePreviewAverageMilliseconds <= pressureBrushCommitBudgetMilliseconds).ToString().ToLowerInvariant()}");
+    }
+
+    /// <summary>
+    /// Measures the pressure-brush input pipeline with synthetic but deterministic input so the
+    /// sampling, pressure response, taper and long-stroke costs can be compared before and after
+    /// feel tuning. This is a measurement entry point, not a budget assertion.
+    /// </summary>
+    private static void RunBrushFeelMeasurement()
+    {
+        var spacing = (float)typeof(MainForm)
+            .GetField(
+                "FreehandSampleSpacingPixels",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
+            .GetRawConstantValue()!;
+        var tag = Environment.GetEnvironmentVariable("VECTOR_BENCH_BRUSH_FEEL_TAG") ?? "current";
+        Console.WriteLine($"brush_feel_dedup_px={spacing:0.###},subsample_px=2,smoothing_default=70,tag={tag}");
+        foreach (var step in new[] { 0.5f, 1f, spacing, 1.5f, 2f, 4f, 8f, 16f, 32f, 64f })
+        {
+            var accepted = 0;
+            var samples = 0;
+            const int events = 100;
+            for (var index = 0; index < events; index++)
+            {
+                if (step < spacing) continue;
+                accepted++;
+                samples += (int)MathF.Ceiling(step / 2f);
+            }
+
+            Console.WriteLine(
+                $"brush_feel_spacing_px={step:0.###},accepted_events={accepted}/{events},"
+                + $"samples_per_100_events={samples},max_sample_gap_px=2,geometry_lost=false");
+        }
+
+        var baseDiameter = VectorUnits.StrokePointsToUnits(60);
+        const int cadenceMs = 8;
+        const float stepDistance = 2f;
+        var stepSamples = new PressureBrushSample[220];
+        for (var index = 0; index < stepSamples.Length; index++)
+        {
+            var pressure = index < 60 ? 0.2f : index < 140 ? 1f : 0.2f;
+            stepSamples[index] = new PressureBrushSample(
+                new PointF(index * stepDistance, 0),
+                300,
+                0,
+                pressure);
+        }
+
+        var streamedProfile = new List<PressureBrushPoint>();
+        var streamedDistances = new List<float>();
+        var stepDiameters = new float[stepSamples.Length];
+        var stepwatch = Stopwatch.StartNew();
+        var stepHandlerTotal = 0d;
+        for (var index = 0; index < stepSamples.Length; index++)
+        {
+            var handlerStarted = Stopwatch.GetTimestamp();
+            FreehandStrokeProcessor.UpdatePressurePreviewProfile(
+                stepSamples[..(index + 1)],
+                baseDiameter,
+                streamedProfile,
+                streamedDistances);
+            var smoothed = FreehandStrokeProcessor.SmoothPressureProfile(streamedProfile, 70);
+            stepDiameters[index] = smoothed[^1].Diameter;
+            stepHandlerTotal += Stopwatch.GetElapsedTime(handlerStarted).TotalMilliseconds;
+        }
+
+        stepwatch.Stop();
+        var highPlateau = AverageRange(stepDiameters, 100, 135);
+        var lowPlateau = AverageRange(stepDiameters, 180, 219);
+        var upLag = FindFirst(stepDiameters, 60, 140, diameter => diameter >= highPlateau * 0.9f);
+        var downLag = FindFirst(stepDiameters, 140, 220, diameter => diameter <= lowPlateau * 1.1f);
+        var overshoot = (MaxRange(stepDiameters, 60, 140) - highPlateau) / highPlateau * 100;
+        Console.WriteLine(
+            $"brush_feel_pressure_step:step_up_lag_samples={upLag - 60},step_up_lag_px={(upLag - 60) * stepDistance:0.#},"
+            + $"step_up_lag_ms={(upLag - 60) * cadenceMs},"
+            + $"step_down_lag_samples={downLag - 140},step_down_lag_px={(downLag - 140) * stepDistance:0.#},"
+            + $"step_down_lag_ms={(downLag - 140) * cadenceMs},overshoot_pct={overshoot:0.##},"
+            + $"handler_avg_ms={stepHandlerTotal / stepSamples.Length:0.###},handler_total_ms={stepwatch.Elapsed.TotalMilliseconds:0.##}");
+
+        var mouseSamples = new PressureBrushSample[120];
+        for (var index = 0; index < mouseSamples.Length; index++)
+        {
+            mouseSamples[index] = new PressureBrushSample(
+                new PointF(index * 3f, 0),
+                400,
+                index / 60f);
+        }
+
+        var mouseProfile = FreehandStrokeProcessor.ProcessPressure(mouseSamples, baseDiameter, 70, 1);
+        Console.WriteLine(
+            $"brush_feel_taper:start_diameter={mouseProfile[0].Diameter:0.##},"
+            + $"start_diameter_pt={VectorUnits.UnitsToStrokePoints(mouseProfile[0].Diameter):0.##},"
+            + $"end_diameter={mouseProfile[^1].Diameter:0.##},"
+            + $"end_diameter_pt={VectorUnits.UnitsToStrokePoints(mouseProfile[^1].Diameter):0.##},"
+            + $"base_pt={VectorUnits.UnitsToStrokePoints(baseDiameter):0.##},round_caps=true");
+
+        foreach (var count in new[] { 10_000, 30_000 })
+        {
+            var longSamples = new PressureBrushSample[count];
+            for (var index = 0; index < count; index++)
+            {
+                longSamples[index] = new PressureBrushSample(
+                    new PointF(index * 2f, MathF.Sin(index * 0.02f) * 40 + MathF.Sin(index * 0.11f) * 8),
+                    300,
+                    index / 480f,
+                    0.2f + 0.7f * MathF.Abs(MathF.Sin(index * 0.013f)));
+            }
+
+            var processWatch = Stopwatch.StartNew();
+            var longProfile = FreehandStrokeProcessor.ProcessPressure(longSamples, baseDiameter, 70, 1);
+            var processMilliseconds = processWatch.Elapsed.TotalMilliseconds;
+            var outlineWatch = Stopwatch.StartNew();
+            var outlines = FreehandStrokeProcessor.CreateVariableWidthBrushOutlines(longProfile, 1);
+            outlineWatch.Stop();
+            Console.WriteLine(
+                $"brush_feel_long_stroke:points={count},profile_points={longProfile.Length},"
+                + $"outline_paths={outlines.Length},outline_points={outlines.Sum(path => path.Length)},"
+                + $"process_ms={processMilliseconds:0.##},outline_ms={outlineWatch.Elapsed.TotalMilliseconds:0.##},"
+                + $"total_ms={processMilliseconds + outlineWatch.Elapsed.TotalMilliseconds:0.##}");
+        }
+
+        var strokeSamples = new PressureBrushSample[321];
+        for (var index = 0; index < strokeSamples.Length; index++)
+        {
+            strokeSamples[index] = new PressureBrushSample(
+                new PointF(index * 3f, MathF.Sin(index * 0.045f) * 30),
+                300,
+                index / 480f,
+                0.15f + 0.75f * MathF.Abs(MathF.Sin(index * 0.02f)));
+        }
+
+        var strokeScene = new VectorScene();
+        strokeScene.CreateEmpty();
+        strokeScene.AddPressureBrushStroke(
+            0,
+            strokeSamples,
+            baseDiameter,
+            Color.Coral,
+            BrushShape.CreateSoftRound(),
+            (uint)strokeSamples.Length,
+            smoothing: 70,
+            simplifyTolerance: 1,
+            frequency: 8,
+            continuous: true);
+        using var strokeStage = new StageControl(strokeScene) { Size = new Size(960, 540) };
+        strokeStage.SetVisibleWorldWidth(1200);
+        strokeStage.Refresh();
+        var drawGdi = RequireMethod(typeof(StageControl), "DrawGdi", [typeof(Graphics)]);
+        var strokeSnapshot = RenderStagePixels(strokeStage, drawGdi, new Size(960, 540));
+        var directory = Path.Combine(Environment.CurrentDirectory, "artifacts", "validation");
+        Directory.CreateDirectory(directory);
+        using (var bitmap = BitmapFromSnapshot(strokeSnapshot))
+        {
+            bitmap.Save(Path.Combine(directory, $"brush-feel-stroke-{tag}.png"));
+        }
+
+        Console.WriteLine($"brush_feel_stroke_hash={strokeSnapshot.Hash},tag={tag}");
+    }
+
+    private static float AverageRange(float[] values, int start, int endExclusive)
+    {
+        var total = 0f;
+        for (var index = start; index < endExclusive; index++) total += values[index];
+        return total / Math.Max(1, endExclusive - start);
+    }
+
+    private static float MaxRange(float[] values, int start, int endExclusive)
+    {
+        var maximum = float.MinValue;
+        for (var index = start; index < endExclusive; index++) maximum = Math.Max(maximum, values[index]);
+        return maximum;
+    }
+
+    private static int FindFirst(float[] values, int start, int endExclusive, Func<float, bool> predicate)
+    {
+        for (var index = start; index < endExclusive; index++)
+        {
+            if (predicate(values[index])) return index;
+        }
+
+        return endExclusive;
     }
 
     private static void RunBrushWorldScaleRegression()

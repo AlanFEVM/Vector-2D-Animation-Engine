@@ -68,13 +68,14 @@ internal sealed partial class MainForm
         }
         var instances = SelectedSceneInstances();
         var group = instances.Count > 1 || instances.Count == 0 && selection.Length > 1;
+        var relativeRotation = group || instances.Count == 0 && selection.Length == 1 && InspectorUsesBakedGeometry(selection[0]);
         var current = field switch
         {
             ObjectTransformField.X => geometry.X,
             ObjectTransformField.Y => geometry.Y,
             ObjectTransformField.Width => geometry.Width,
             ObjectTransformField.Height => geometry.Height,
-            _ => rotation
+            _ => _inspectorGeometryGesture && relativeRotation ? _inspectorGeometryLastRotation : rotation
         };
         if (Math.Abs(current - value) < 0.0001f) return;
         var moveX = field == ObjectTransformField.X ? value - geometry.X : 0;
@@ -104,13 +105,16 @@ internal sealed partial class MainForm
             if (field == ObjectTransformField.Width) scaleY = scaleX;
             if (field == ObjectTransformField.Height) scaleX = scaleY;
         }
-        var deltaDegrees = field == ObjectTransformField.Rotation ? NormalizeDegrees(value - rotation) : 0;
+        var deltaDegrees = field == ObjectTransformField.Rotation
+            ? NormalizeDegrees(value - current) : 0;
         if (field == ObjectTransformField.Rotation && Math.Abs(deltaDegrees) < 0.0001f)
         {
             UpdateInspector();
             return;
         }
         var pivot = new PointF(geometry.X, geometry.Y);
+        if (field == ObjectTransformField.Rotation && _inspectorGeometryGesture && relativeRotation)
+            _inspectorGeometryLastRotation = value;
         if (instances.Count > 0)
         {
             ApplyInspectorInstanceTransform(pivot, moveX, moveY, scaleX, scaleY, deltaDegrees);
@@ -134,14 +138,18 @@ internal sealed partial class MainForm
                 pivot.Y + moveY + localX * nextSin + localY * nextCos);
         }
         var targets = _scene.ExpandMotionTransformObjects(selection, _frame);
-        var snapshot = CreateCanvasMutationSnapshot(targets);
+        var snapshot = _inspectorGeometryGesture && _inspectorGeometryUndo is DrawingUndoEntry existingDrawing
+            ? existingDrawing.Snapshot : CreateCanvasMutationSnapshot(targets);
         try { _scene.TransformObjects(targets, Transform); }
         catch
         {
             RestoreCanvasMutationSnapshot(snapshot);
             throw;
         }
-        PushUndoSnapshot(snapshot);
+        if (_inspectorGeometryGesture)
+            _inspectorGeometryUndo ??= new DrawingUndoEntry(snapshot, ActiveDrawingObject(),
+                MemoryBytes: snapshot.EstimateMemoryBytes());
+        else PushUndoSnapshot(snapshot);
         _scene.RefreshTimelineTweenMaterializationsAtEndpointFrame(_frame);
         InvalidatePointerTopologyQueries();
         ClearSceneSnapQueryCache();
@@ -164,9 +172,12 @@ internal sealed partial class MainForm
         var instances = MotionTransformInstances();
         var selected = SelectedSceneInstances();
         var primary = selected.FirstOrDefault(instance => instance.Id == _selectedSceneInstanceId);
-        var instanceSnapshot = scene is not null ? scene.CreateInstanceSnapshot() : container!.CreateInstanceSnapshot();
-        var timelineSnapshot = scene?.Timeline.CreateSnapshot();
-        var drawingSnapshot = scene is null ? _scene.CreateSnapshot() : null;
+        var existingSceneUndo = _inspectorGeometryGesture ? _inspectorGeometryUndo as SceneTimelineUndoEntry : null;
+        var existingDrawingUndo = _inspectorGeometryGesture ? _inspectorGeometryUndo as DrawingUndoEntry : null;
+        var instanceSnapshot = existingSceneUndo?.InstanceSnapshot ?? existingDrawingUndo?.InstanceSnapshot
+            ?? (scene is not null ? scene.CreateInstanceSnapshot() : container!.CreateInstanceSnapshot());
+        var timelineSnapshot = existingSceneUndo?.Snapshot ?? scene?.Timeline.CreateSnapshot();
+        var drawingSnapshot = scene is null ? existingDrawingUndo?.Snapshot ?? _scene.CreateSnapshot() : null;
         var timelineSelection = _timeline.CaptureSelectionSnapshot();
         ClearInstanceTimelineEditTracking();
         foreach (var instance in instances)
@@ -193,7 +204,16 @@ internal sealed partial class MainForm
         RefreshEditedInstanceTimelineTweens();
         ClearInstanceTimelineEditTracking();
         _sceneInstanceTimelineDirty = false;
-        if (scene is not null)
+        if (_inspectorGeometryGesture)
+        {
+            _inspectorGeometryUndo ??= scene is not null
+                ? new SceneTimelineUndoEntry(scene, timelineSnapshot!, InstanceSnapshot: instanceSnapshot,
+                    PlayheadFrame: _frame, TimelineSelection: timelineSelection)
+                : new DrawingUndoEntry(drawingSnapshot!, container, instanceSnapshot,
+                    PlayheadFrame: _frame, TimelineSelection: timelineSelection,
+                    MemoryBytes: drawingSnapshot!.EstimateMemoryBytes());
+        }
+        else if (scene is not null)
             PushSceneTimelineUndo(scene, timelineSnapshot!, instanceSnapshot: instanceSnapshot,
                 playheadFrame: _frame, timelineSelection: timelineSelection);
         else PushUndoSnapshot(drawingSnapshot!, container, instanceSnapshot, playheadFrame: _frame, timelineSelection: timelineSelection);

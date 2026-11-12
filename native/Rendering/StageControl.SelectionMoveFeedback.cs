@@ -20,7 +20,7 @@ internal sealed partial class StageControl
 
     internal bool SelectionMoveFeedbackActive => ReferenceEquals(_selectionMoveScene, Scene)
         && _selectionMoveFrame == Frame && _selectionMoveOrigins.Count > 0
-        && UsesObjectSelectionOverlay;
+        && !UsesReferenceProjection;
 
     internal IReadOnlyDictionary<int, VectorScene> SelectionMoveOrigins => _selectionMoveOrigins;
     internal PointF[][][] SelectionMoveOriginClips(int objectIndex) => _selectionMoveOriginClips[objectIndex];
@@ -28,7 +28,7 @@ internal sealed partial class StageControl
     internal void BeginSelectionMoveFeedback(IEnumerable<int> objectIndices)
     {
         ClearSelectionFillDragFront(invalidate: false);
-        if (!UsesObjectSelectionOverlay) return;
+        if (UsesReferenceProjection) return;
         foreach (var objectIndex in objectIndices.Distinct()
             .Where(index => (uint)index < Scene.ObjectCount && Scene.IsObjectActive(index, Frame))
             .OrderByDescending(index => Scene.ObjectLayer[index])
@@ -42,6 +42,7 @@ internal sealed partial class StageControl
         }
         _selectionMoveScene = Scene;
         _selectionMoveFrame = Frame;
+        RequestStageFrame(basePresentationChanged: true, preserveSelectionRenderCache: true);
     }
 
     private bool ClearSelectionMoveFeedbackCore()

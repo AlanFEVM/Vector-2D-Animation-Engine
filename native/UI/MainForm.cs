@@ -40,7 +40,9 @@ internal sealed record TimelineClipboardCell(
     TimelineKeyframeKind Kind,
     IReadOnlyDictionary<string, InstanceFrameState> InstanceStates,
     SceneLightKind? LightKind = null,
-    SceneLightSettings? LightSettings = null)
+    SceneLightSettings? LightSettings = null,
+    bool IsCamera = false,
+    SceneShotSettings? CameraSettings = null)
 {
     public IReadOnlyList<TimelineClipboardInstanceState> InstanceStateEntries { get; init; } = [];
 }
@@ -219,10 +221,20 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private readonly ToolStripStatusLabel _renderFpsStatus = StatusLabel("Render FPS --");
     private readonly ToolStripStatusLabel _animationFpsStatus = StatusLabel("UPS --/300  Animation FPS 30");
     private readonly ToolStripStatusLabel _drawStatus = StatusLabel("Draw 0");
-    private readonly ToolStripStatusLabel _atomsStatus = StatusLabel("Atoms 0");
     private readonly ToolStripStatusLabel _zoomStatus = StatusLabel("Zoom 100%");
     private readonly ToolStripControlHost _timelineFrameStatus = CreateTimelineFrameStatus();
-    private readonly ToolStripStatusLabel _devReloadStatus = StatusLabel("Module Reload On");
+    /// <summary>
+    /// The Draw counter is a development diagnostic rather than authoring information,
+    /// so it is hidden unless the V2D_STATUS_DEBUG environment variable opts in.
+    /// </summary>
+    private static readonly bool DrawStatusDiagnosticsEnabled =
+        Environment.GetEnvironmentVariable("V2D_STATUS_DEBUG") == "1";
+    /// <summary>
+    /// Developer-only commands such as saving a folder project stay out of the shipping menu
+    /// unless V2D_DEV_TOOLS opts in, matching the other environment-based diagnostics switches.
+    /// </summary>
+    private static readonly bool DevelopmentMenuEnabled =
+        Environment.GetEnvironmentVariable("V2D_DEV_TOOLS") == "1";
     private Panel? _topBar;
     private Label? _topPlaybackFpsLabel;
     private WindowChromeButton? _restartWindowButton;
@@ -1655,11 +1667,10 @@ internal sealed partial class MainForm : Form, IMessageFilter
         saveProject.Click += (_, _) => SaveProject();
         var saveProjectAs = new ToolStripMenuItem("Save Project As") { Tag = ShortcutCommandIds.SaveProjectAs };
         saveProjectAs.Click += (_, _) => SaveProjectAs();
-        var saveProjectAsDevelopment = new ToolStripMenuItem("Save Project As Development Folder");
-        saveProjectAsDevelopment.Click += (_, _) => SaveProjectAsDevelopmentFolder();
         var renameProject = new ToolStripMenuItem("Rename Project");
         renameProject.Click += (_, _) => BeginProjectTitleEdit();
-        var canvasSettings = new ToolStripMenuItem("Project settings…");
+        // Match the document panel's wording so this is not mistaken for the app-wide Settings dialog.
+        var canvasSettings = new ToolStripMenuItem("Canvas & background…");
         canvasSettings.Click += (_, _) => ShowCanvasSettings();
         var settings = new ToolStripMenuItem("Settings");
         var acknowledgements = new ToolStripMenuItem("Acknowledgements");
@@ -1676,12 +1687,23 @@ internal sealed partial class MainForm : Form, IMessageFilter
         windows.DropDownOpening += (_, _) => hierarchy.Checked = _hierarchyWindow?.Visible == true;
         var releaseNotes = new ToolStripMenuItem("Release Notes");
         releaseNotes.Click += (_, _) => ShowReleaseNotes();
+        var help = new ToolStripMenuItem("Help") { DropDown = new AnimatedContextMenuStrip() };
+        help.DropDownItems.AddRange(new ToolStripItem[] { releaseNotes, acknowledgements });
         var projectFiles = new ToolStripMenuItem("Project Files") { DropDown = new AnimatedContextMenuStrip() };
-        projectFiles.DropDownItems.AddRange(new ToolStripItem[]
+        var projectFileItems = new List<ToolStripItem>
         {
-            newProject, openProject, new ToolStripSeparator(), saveProject, saveProjectAs, saveProjectAsDevelopment, renameProject,
-            new ToolStripSeparator(), canvasSettings
-        });
+            newProject, openProject, new ToolStripSeparator(), saveProject, saveProjectAs
+        };
+        if (DevelopmentMenuEnabled)
+        {
+            var saveProjectAsDevelopment = new ToolStripMenuItem("Save Project As Development Folder");
+            saveProjectAsDevelopment.Click += (_, _) => SaveProjectAsDevelopmentFolder();
+            projectFileItems.Add(saveProjectAsDevelopment);
+        }
+        projectFileItems.Add(renameProject);
+        projectFileItems.Add(new ToolStripSeparator());
+        projectFileItems.Add(canvasSettings);
+        projectFiles.DropDownItems.AddRange(projectFileItems.ToArray());
         var imports = new ToolStripMenuItem("Import") { DropDown = new AnimatedContextMenuStrip() };
         imports.DropDownItems.AddRange(new ToolStripItem[] { importFlash, flashVisualBridge, importSvg, importImage });
         _mainMenu.Items.AddRange(new ToolStripItem[]
@@ -1692,8 +1714,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             settings,
             windows,
             new ToolStripSeparator(),
-            releaseNotes,
-            acknowledgements
+            help
         });
         _mainMenu.Opening += (_, _) =>
         {
@@ -1916,100 +1937,52 @@ internal sealed partial class MainForm : Form, IMessageFilter
         dialog.NavigationPreviewEnabled = _applicationSettings.NavigationPreviewEnabled;
         dialog.SetCodexSettings(_applicationSettings, AppHost.Current?.CodexBridgeStatus ?? "Stopped");
         dialog.SetSelectionSettings(_applicationSettings.SelectionArrows);
+        using var previewTimer = new System.Windows.Forms.Timer { Interval = 60 };
         void PreviewCorners(object? sender, EventArgs e) => ApplyWindowCornerStyle(dialog.SelectedWindowCornerStyle);
-        dialog.CornerPreviewChanged += PreviewCorners;
+        void ApplyDraftTheme()
+        {
+            ApplyThemePreview(dialog.SelectedColorTheme,
+                dialog.SelectedThemeHueDegrees, dialog.SelectedThemeSaturationPercent, dialog.SelectedThemeBrightnessPercent,
+                dialog.SelectedAccentHueDegrees, dialog.SelectedAccentSaturationPercent, dialog.SelectedAccentBrightnessPercent,
+                dialog);
+        }
+        previewTimer.Tick += (_, _) => { previewTimer.Stop(); ApplyDraftTheme(); };
         void PreviewTheme(object? sender, EventArgs e)
         {
-            ApplyThemePreview(
-                dialog.SelectedColorTheme,
-                dialog.SelectedThemeHueDegrees,
-                dialog.SelectedThemeSaturationPercent,
-                dialog.SelectedThemeBrightnessPercent,
-                dialog.SelectedAccentHueDegrees,
-                dialog.SelectedAccentSaturationPercent,
-                dialog.SelectedAccentBrightnessPercent,
-                dialog);
-            CommitThemeColors(dialog);
+            if (!previewTimer.Enabled) previewTimer.Start();
         }
+        dialog.SaveRequested = SavePanelSettings;
+        dialog.OperationPreferencesSaveRequested = child => CommitPanelSettings(_applicationSettings with
+        {
+            FreeTransformShiftProportionalEnabled = child.FreeTransformShiftProportionalEnabled,
+            ToolbarPosition = child.SelectedToolbarPosition
+        }, child);
+        dialog.ShortcutProfilesSaveRequested = child => CommitPanelSettings(_applicationSettings with
+        {
+            ToolShortcutPreset = ShortcutProfiles.LegacyPresetForProfile(child.SelectedShortcutProfileId, child.CustomShortcutProfiles),
+            ActiveShortcutProfileId = child.SelectedShortcutProfileId,
+            CustomShortcutProfiles = child.CustomShortcutProfiles
+        }, child);
+        dialog.SelectionPreferencesSaveRequested = child => CommitPanelSettings(_applicationSettings with
+        {
+            SelectionArrows = child.SelectedSettings
+        }, child);
+        dialog.CornerPreviewChanged += PreviewCorners;
         dialog.ThemePreviewChanged += PreviewTheme;
-        var dialogResult = dialog.ShowDialog(this);
-        dialog.ThemePreviewChanged -= PreviewTheme;
-        dialog.CornerPreviewChanged -= PreviewCorners;
-        ApplyWindowCornerStyle(_applicationSettings.WindowCornerStyle);
-        if (dialogResult != DialogResult.OK)
+        try { dialog.ShowDialog(this); }
+        finally
         {
-            return;
+            previewTimer.Stop();
+            dialog.ThemePreviewChanged -= PreviewTheme;
+            dialog.CornerPreviewChanged -= PreviewCorners;
+            // The model holds only successfully saved settings. Unsaved theme/corner
+            // previews roll back while explicitly applied child preferences remain.
+            ApplyWindowCornerStyle(_applicationSettings.WindowCornerStyle);
+            ApplyThemePreview(_applicationSettings.ColorTheme,
+                _applicationSettings.ThemeHueDegrees, _applicationSettings.ThemeSaturationPercent, _applicationSettings.ThemeBrightnessPercent,
+                _applicationSettings.AccentHueDegrees, _applicationSettings.AccentSaturationPercent, _applicationSettings.AccentBrightnessPercent);
         }
-
-        var selectedShortcutProfileId = dialog.SelectedShortcutProfileId;
-        var customShortcutProfiles = dialog.CustomShortcutProfiles;
-        var settings = ApplicationSettingsStore.Normalize(_applicationSettings with
-        {
-            ToolShortcutPreset = ShortcutProfiles.LegacyPresetForProfile(
-                selectedShortcutProfileId,
-                customShortcutProfiles),
-            ActiveShortcutProfileId = selectedShortcutProfileId,
-            CustomShortcutProfiles = customShortcutProfiles,
-            Language = dialog.SelectedLanguage,
-            ColorTheme = dialog.SelectedColorTheme,
-            ThemeHueDegrees = dialog.SelectedThemeHueDegrees,
-            ThemeSaturationPercent = dialog.SelectedThemeSaturationPercent,
-            ThemeBrightnessPercent = dialog.SelectedThemeBrightnessPercent,
-            AccentHueDegrees = dialog.SelectedAccentHueDegrees,
-            AccentSaturationPercent = dialog.SelectedAccentSaturationPercent,
-            AccentBrightnessPercent = dialog.SelectedAccentBrightnessPercent,
-            SimpleSelectionHighlightEnabled = dialog.SimpleSelectionHighlightEnabled,
-            SelectionArrows = dialog.SelectionSettings,
-            ExperimentalSceneLightingEnabled = dialog.ExperimentalSceneLightingEnabled,
-            NavigationPreviewEnabled = dialog.NavigationPreviewEnabled,
-            Experimental3DEnabled = dialog.Experimental3DEnabled,
-            FreeTransformShiftProportionalEnabled = dialog.FreeTransformShiftProportionalEnabled,
-            ToolbarPosition = dialog.SelectedToolbarPosition,
-            WindowCornerStyle = dialog.SelectedWindowCornerStyle
-        });
-        settings = ApplicationSettingsStore.Normalize(dialog.ApplyCodexSettingsTo(settings));
-        if (!ApplicationSettingsStore.TrySave(settings))
-        {
-            ModernMessageDialog.Show(
-                this,
-                UiLocalization.T("The settings could not be saved. See the latest log file for details."),
-                UiLocalization.T("Settings"),
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            return;
-        }
-
-        var experimental3DChanged = _applicationSettings.Experimental3DEnabled != settings.Experimental3DEnabled;
-        _applicationSettings = settings;
-        _stage.ExperimentalSceneLightingEnabled = settings.ExperimentalSceneLightingEnabled;
-        _stage.NavigationPreviewEnabled = settings.NavigationPreviewEnabled;
-        RefreshSceneOpticsInspector();
-        HideToolFlyouts();
-        LayoutToolPalette();
-        RefreshShortcutMenuDisplay();
-        if (experimental3DChanged) ApplyExperimental3DSettings();
-        AppHost.Current?.ApplyCodexBridgeSettings(settings);
-        _stage.SimpleSelectionHighlightEnabled = settings.SimpleSelectionHighlightEnabled;
-        RefreshSelectionArrowPresentation();
-        ApplyWindowCornerStyle(settings.WindowCornerStyle);
-        Theme.ConfigureColorAdjustments(
-            settings.ColorTheme,
-            settings.ThemeHueDegrees,
-            settings.ThemeSaturationPercent,
-            settings.ThemeBrightnessPercent,
-            settings.AccentHueDegrees,
-            settings.AccentSaturationPercent,
-            settings.AccentBrightnessPercent);
-        UiLocalization.SetLanguage(settings.Language);
-        RefreshSceneOpticsText();
-        UpdateSceneDimensionButton();
-        AppLog.Info(
-            $"Application settings changed: shortcuts={settings.ActiveShortcutProfileId}, "
-            + $"colorTheme={settings.ColorTheme}, "
-            + $"themeHsb={settings.ThemeHueDegrees}/{settings.ThemeSaturationPercent}/{settings.ThemeBrightnessPercent}, "
-            + $"accentHsb={settings.AccentHueDegrees}/{settings.AccentSaturationPercent}/{settings.AccentBrightnessPercent}.");
     }
-
     private void ApplyThemePreview(
         ApplicationColorTheme colorTheme,
         int themeHueDegrees,
@@ -2053,27 +2026,6 @@ internal sealed partial class MainForm : Form, IMessageFilter
         {
             Theme.RefreshControlTree(previewDialog, previousPalette);
         }
-    }
-
-    private void CommitThemeColors(SettingsDialog dialog)
-    {
-        var settings = ApplicationSettingsStore.Normalize(_applicationSettings with
-        {
-            ColorTheme = dialog.SelectedColorTheme,
-            ThemeHueDegrees = dialog.SelectedThemeHueDegrees,
-            ThemeSaturationPercent = dialog.SelectedThemeSaturationPercent,
-            ThemeBrightnessPercent = dialog.SelectedThemeBrightnessPercent,
-            AccentHueDegrees = dialog.SelectedAccentHueDegrees,
-            AccentSaturationPercent = dialog.SelectedAccentSaturationPercent,
-            AccentBrightnessPercent = dialog.SelectedAccentBrightnessPercent
-        });
-        if (settings == _applicationSettings) return;
-        _applicationSettings = settings;
-        _stage.ExperimentalSceneLightingEnabled = settings.ExperimentalSceneLightingEnabled;
-        _stage.NavigationPreviewEnabled = settings.NavigationPreviewEnabled;
-        RefreshSceneOpticsInspector();
-        if (!ApplicationSettingsStore.TrySave(settings))
-            AppLog.Warn("Theme colors could not be saved; the current session keeps the selected colors.");
     }
 
     private void ChooseWorkspaceColor()
@@ -2663,8 +2615,11 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _statusBar.Items.Add(_renderFpsStatus);
         _statusBar.Items.Add(StatusSeparator());
         _statusBar.Items.Add(_animationFpsStatus);
-        _statusBar.Items.Add(StatusSeparator());
-        _statusBar.Items.Add(_drawStatus);
+        if (DrawStatusDiagnosticsEnabled)
+        {
+            _statusBar.Items.Add(StatusSeparator());
+            _statusBar.Items.Add(_drawStatus);
+        }
         _statusBar.Items.Add(StatusSeparator());
         _statusBar.Items.Add(_zoomStatus);
         _statusBar.Items.Add(StatusSeparator());
@@ -2844,25 +2799,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private int ScaleDrawingObjectTabMetric(int logicalPixels) =>
         ScaleResponsive(logicalPixels, Math.Max(1, DeviceDpi) / 96d);
 
-    private void AddScene()
-    {
-        if (!CommitTextEdit()) return;
-        _project.AddScene();
-        SelectScene(_scenes.Count - 1);
-    }
+    private void AddScene() => AddSceneFromPanel();
 
-    private void SelectScene(int index)
-    {
-        if (index < 0 || index >= _scenes.Count) return;
-        if (!CommitTextEdit()) return;
-        if (IsSymbolEditing && !ExitSceneSymbolEditing()) return;
-        if (_activeSceneIndex != index) ResetUndoHistory();
-        _activeSceneIndex = index;
-        _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects);
-        UpdateSceneDimensionButton();
-        if (IsSceneWorkspaceSelected) BindSceneEditStage(resetView: false);
-        AppLog.Info($"Selected scene: {_scenes[index].Name}");
-    }
+    private void SelectScene(int index) => SelectScenePreservingHistory(index);
 
     private SceneDefinition? ActiveScene()
     {
@@ -3060,31 +2999,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             : "Switch to perspective projection");
     }
 
-    private void AddSceneInstanceFromActiveDrawingObject()
-    {
-        var scene = ActiveScene();
-        var drawingObject = ActiveDrawingObject();
-        if (scene is null || drawingObject is null) return;
-
-        if (!_project.TryAddSceneInstance(
-                scene.Id,
-                drawingObject.Id,
-                PointF.Empty,
-                0,
-                out _))
-        {
-            return;
-        }
-
-        _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects);
-        if (IsSceneWorkspaceSelected)
-        {
-            _timeline.RefreshTimeline();
-            ApplyBoundTimelineDuration();
-            RebuildSceneComposition();
-        }
-        AppLog.Info($"Added scene instance: {drawingObject.Name} -> {scene.Name}");
-    }
+    private void AddSceneInstanceFromActiveDrawingObject() => AddSceneInstanceFromPanel();
 
     private void AddDrawingObject()
     {
@@ -3266,18 +3181,28 @@ internal sealed partial class MainForm : Form, IMessageFilter
             return;
         }
 
-        if (IsSymbolEditing && !ExitSceneSymbolEditing()) return;
+        CommitDrawingObjectDeletion(drawingObjectId);
+    }
+
+    private bool CommitDrawingObjectDeletion(string drawingObjectId)
+    {
+        if (IsSymbolEditing && !ExitSceneSymbolEditing()) return false;
+        var index = Array.FindIndex(_drawingObjects.ToArray(), item => item.Id == drawingObjectId);
+        if (index < 0) return false;
+        var drawingObject = _drawingObjects[index];
         var wasSceneBuildingContext = IsSceneBuildingContext();
-        if (!_project.TryRemoveDrawingObject(drawingObjectId, out _)) return;
+        var deletionHistory = CaptureSymbolDeletionHistory(drawingObject, index);
+        if (!_project.TryRemoveDrawingObject(drawingObjectId, out _)) return false;
 
         if (_activeDrawingObjectIndex > index) _activeDrawingObjectIndex--;
         else if (_activeDrawingObjectIndex == index) _activeDrawingObjectIndex = Math.Min(index, _drawingObjects.Count - 1);
 
-        ResetEditHistory();
-        if (wasSceneBuildingContext) BindSceneEditStage(resetView: false);
-        else BindActiveDrawingObjectScene(resetView: false);
+        PushSymbolDeletionHistory(deletionHistory);
+        if (wasSceneBuildingContext) BindSceneEditStageCore(resetView: false, preserveHistory: true);
+        else BindActiveDrawingObjectSceneCore(resetView: false, preserveHistory: true);
         BuildDrawingObjectTabs();
         AppLog.Info($"Deleted symbol: {drawingObject.Name}");
+        return true;
     }
 
     private void RefreshDrawingObjectAssetPresentation()
@@ -3299,8 +3224,12 @@ internal sealed partial class MainForm : Form, IMessageFilter
             : null;
     }
 
-    private void BindActiveDrawingObjectScene(bool resetView)
+    private void BindActiveDrawingObjectScene(bool resetView) => BindActiveDrawingObjectSceneCore(resetView, false);
+
+    private void BindActiveDrawingObjectSceneCore(bool resetView, bool preserveHistory)
     {
+        if (_inspectorGeometryGesture) CompleteInspectorGeometryEdit();
+        if (_anchorGesture) CompleteAnchorEdit();
         CompleteFillEdgeBezierSessionForContextChange();
         CancelTraditionalPenPath();
         CancelPenCurve();
@@ -3320,7 +3249,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         if (_symbolEditingSession is { } session
             && (session.SymbolId != drawingObject.Id || ActiveScene()?.Id != session.SceneId))
             ClearSymbolEditingSession();
-        if (!ReferenceEquals(_scene, nextScene)) ResetUndoHistory();
+        if (!preserveHistory && !ReferenceEquals(_scene, nextScene)) ResetUndoHistory();
         _scene = nextScene;
         if (_scene.LayerCount <= 0) _scene.CreateEmpty();
         _stage.BindScene(_scene);
@@ -3339,8 +3268,12 @@ internal sealed partial class MainForm : Form, IMessageFilter
         UpdateStatusBar();
     }
 
-    private void BindSceneEditStage(bool resetView)
+    private void BindSceneEditStage(bool resetView) => BindSceneEditStageCore(resetView, false);
+
+    private void BindSceneEditStageCore(bool resetView, bool preserveHistory)
     {
+        if (_inspectorGeometryGesture) CompleteInspectorGeometryEdit();
+        if (_anchorGesture) CompleteAnchorEdit();
         if (IsSymbolEditing) ClearSymbolEditingSession();
         CompleteFillEdgeBezierSessionForContextChange();
         CancelTraditionalPenPath();
@@ -3348,7 +3281,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         var sceneDefinition = ActiveScene();
         var nextScene = sceneDefinition?.ActiveMaskScene()
             ?? (ShouldUseSceneDrawingSurface(sceneDefinition) ? sceneDefinition!.DrawingScene : _sceneEditStage);
-        if (!ReferenceEquals(_scene, nextScene))
+        if (!preserveHistory && !ReferenceEquals(_scene, nextScene))
         {
             if (ReferenceEquals(_timeline.Context, sceneDefinition)) ResetCanvasUndoHistory();
             else ResetUndoHistory();
@@ -3636,7 +3569,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         if (!_drawingObjects[index].IsOpenCanvas)
             _currentScopeDrawingObjectId = _drawingObjects[index].Id;
         _activeDrawingObjectIndex = index;
-        if (IsSceneWorkspaceSelected) BindSceneEditStage(resetView: false);
+        if (IsSceneWorkspaceSelected) BindSceneEditStageCore(resetView: false, preserveHistory: true);
         else BindActiveDrawingObjectScene(resetView: true);
         BuildDrawingObjectTabs();
         RefreshToolButtons();

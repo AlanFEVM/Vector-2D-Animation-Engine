@@ -701,7 +701,7 @@ internal sealed partial class MainForm : Form
                 e.Location,
                 (float)Math.Clamp(Math.Exp(-dy * 0.01), 0.2, 5.0),
                 interactivePreview: true);
-            UpdateStatusBar();
+            UpdateNavigationStatusThrottled();
             return;
         }
 
@@ -761,6 +761,14 @@ internal sealed partial class MainForm : Form
         if (_duplicateProjectedDragArmed && !DuplicateProjectedSceneDrag()) return;
         var instances = MotionTransformInstances();
         if (instances.Count == 0) return;
+        if (!_stage.SelectionMoveFeedbackActive && !_stage.UsesReferenceProjection)
+        {
+            var composition = ActiveInstanceCompositionResult();
+            var ids = instances.Select(instance => instance.Id).ToHashSet(StringComparer.Ordinal);
+            _stage.BeginSelectionMoveFeedback(Enumerable.Range(0, _stage.Scene.ObjectCount)
+                .Where(index => composition.TryGetOwner(index, out var owner)
+                    && ids.Contains(string.IsNullOrWhiteSpace(owner.RootInstanceId) ? owner.InstanceId : owner.RootInstanceId)));
+        }
         if (!IsScene3DView() && _startWorld is { } axisStart) world = ConstrainStageMove(world, axisStart);
         var spatialSession = _spatialTransformEditSession;
         if (spatialSession is not null && _sceneSnapMoveStartPointer is { } snapStart)
@@ -1820,8 +1828,10 @@ internal sealed partial class MainForm : Form
             if (materialized.Changed) QueueDeferredPresentationRefresh(DeferredPresentationRefresh.Hierarchy);
         }
 
-        _drawingTransformSession = _scene.BeginTransformSession(
-            _scene.ExpandMotionTransformObjects(_selectedObjects, _frame));
+        var transformObjects = _scene.ExpandMotionTransformObjects(_selectedObjects, _frame);
+        if (_activeTransformHandle == TransformHandleKind.Move)
+            _stage.BeginSelectionMoveFeedback(transformObjects);
+        _drawingTransformSession = _scene.BeginTransformSession(transformObjects);
         session = _drawingTransformSession;
         return true;
     }

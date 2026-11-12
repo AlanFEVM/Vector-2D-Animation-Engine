@@ -1766,9 +1766,8 @@ internal sealed partial class MainForm : Form
         return Math.Min(160, ShapeGradientPreviewIntervalMilliseconds + (workingVertexCount - 1024) / 128d);
     }
 
-    private float SelectionToleranceWorld() => IsSelectionArrow(_tool)
-        ? Math.Max(0.001f, _stage.ScreenLengthToWorld(_applicationSettings.SelectionArrows.HitTolerancePixels))
-        : Math.Max(4, _stage.ScreenLengthToWorld(10));
+    private float SelectionToleranceWorld() =>
+        Math.Max(0.001f, _stage.ScreenLengthToWorld(_applicationSettings.SelectionArrows.HitTolerancePixels));
 
     internal static bool ShouldMoveMarqueeStrokeIndependently(
         IReadOnlyCollection<int> selectedObjects,
@@ -2710,30 +2709,32 @@ internal sealed partial class MainForm : Form
     private void ApplyDrawingObjectPlaybackSettings(DrawingObjectPlaybackSettingsChangedEventArgs settings)
     {
         var instances = SelectedSceneInstances();
+        var ownsSession = _instanceAppearanceEditSession is null;
+        if (ownsSession) BeginInstanceAppearanceEdit();
         var changed = false;
         ClearInstanceTimelineEditTracking();
         foreach (var instance in instances)
         {
             var editFrame = ResolveInstanceStateEditFrameForCurrentContext(instance);
             var state = instance.EvaluateState(editFrame);
-            if (state.PlaybackFps == settings.PlaybackFps
-                && state.PlaybackMode == settings.PlaybackMode
-                && state.HoldFrame == settings.HoldFrame)
+            var next = state with
+            {
+                PlaybackFps = settings.Fields.HasFlag(DrawingObjectPlaybackChangedFields.Fps) ? settings.PlaybackFps : state.PlaybackFps,
+                PlaybackMode = settings.Fields.HasFlag(DrawingObjectPlaybackChangedFields.Mode) ? settings.PlaybackMode : state.PlaybackMode,
+                HoldFrame = settings.Fields.HasFlag(DrawingObjectPlaybackChangedFields.HoldFrame) ? settings.HoldFrame : state.HoldFrame
+            };
+            if (next == state)
             {
                 continue;
             }
 
             editFrame = PrepareInstanceStateTimelineEdit(instance);
-            changed |= instance.SetStateAtFrame(editFrame, state with
-            {
-                PlaybackFps = settings.PlaybackFps,
-                PlaybackMode = settings.PlaybackMode,
-                HoldFrame = settings.HoldFrame
-            });
+            changed |= instance.SetStateAtFrame(editFrame, next);
         }
         if (!changed)
         {
             ClearInstanceTimelineEditTracking();
+            if (ownsSession) CompleteInstanceAppearanceEdit();
             return;
         }
 
@@ -2742,6 +2743,8 @@ internal sealed partial class MainForm : Form
         _sceneInstanceTimelineDirty = true;
         _timeline.RefreshTimeline();
         _sceneInstanceTimelineDirty = false;
+        if (_instanceAppearanceEditSession is { } session) session.Changed = true;
+        if (ownsSession) CompleteInstanceAppearanceEdit();
         RebuildEditableInstanceComposition();
         UpdateInspector();
     }
@@ -2917,13 +2920,19 @@ internal sealed partial class MainForm : Form
     private void ApplySelectedDrawingObjectAnchor(PointF anchor)
     {
         var selected = SelectedSceneInstance();
+        var symbol = selected is null ? null : _project.DrawingObjects.FirstOrDefault(item => item.Id == selected.DrawingObjectId);
+        if (symbol is null || symbol.Anchor == anchor) return;
+        var history = _anchorGestureUndo
+            ?? CaptureSymbolDeletionHistory(symbol, _project.DrawingObjects.ToList().IndexOf(symbol), captureAnchor: true);
         if (selected is null
             || !_project.TrySetDrawingObjectAnchor(selected.DrawingObjectId, anchor))
         {
             UpdateInspector();
             return;
         }
-
+        if (_anchorGesture) _anchorGestureUndo ??= history;
+        else PushSymbolDeletionHistory(history);
+        MarkProjectDirty();
         RebuildEditableInstanceComposition();
         UpdateInspector();
     }
@@ -2936,9 +2945,7 @@ internal sealed partial class MainForm : Form
 
         return instance.SetStateAtFrame(frame, state with
         {
-            ScaleX = 1f, ScaleY = 1f, ScaleZ = 1f,
-            RotationX = 0f, RotationY = 0f, RotationZ = 0f,
-            SkewX = 0f, SkewY = 0f
+            ScaleX = 1f, ScaleY = 1f, ScaleZ = 1f
         });
     }
 
@@ -2946,12 +2953,7 @@ internal sealed partial class MainForm : Form
     {
         return Math.Abs(state.ScaleX - 1f) > 0.0001f
             || Math.Abs(state.ScaleY - 1f) > 0.0001f
-            || Math.Abs(state.ScaleZ - 1f) > 0.0001f
-            || Math.Abs(state.RotationX) > 0.0001f
-            || Math.Abs(state.RotationY) > 0.0001f
-            || Math.Abs(state.RotationZ) > 0.0001f
-            || Math.Abs(state.SkewX) > 0.0001f
-            || Math.Abs(state.SkewY) > 0.0001f;
+            || Math.Abs(state.ScaleZ - 1f) > 0.0001f;
     }
 
 }

@@ -85,16 +85,31 @@ internal static partial class Benchmark
     private static void ConfigureExperimental3DForRegression(
         MainForm form,
         bool enabled = true,
-        bool? simpleCameraStyle = null)
+        bool? simpleCameraStyle = null,
+        bool? sceneLighting = null)
     {
         var settingsField = RequireField(typeof(MainForm), "_applicationSettings");
         var settings = (ApplicationSettings)settingsField.GetValue(form)!;
         settingsField.SetValue(form, settings with
         {
             Experimental3DEnabled = enabled,
+            ExperimentalSceneLightingEnabled = sceneLighting ?? settings.ExperimentalSceneLightingEnabled,
             SimpleCameraStyleEnabled = simpleCameraStyle ?? settings.SimpleCameraStyleEnabled
         });
+        if (sceneLighting is { } lighting)
+            ((StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!).ExperimentalSceneLightingEnabled = lighting;
         RequireMethod(typeof(MainForm), "ApplyExperimental3DSettings").Invoke(form, null);
+    }
+
+    private static void RunExplicitGpuRegression(Action regression)
+    {
+        var previous = Environment.GetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU");
+        try
+        {
+            Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", null);
+            regression();
+        }
+        finally { Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", previous); }
     }
 
     private static FieldInfo RequireField(

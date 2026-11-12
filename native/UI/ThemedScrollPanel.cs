@@ -18,6 +18,7 @@ internal sealed class ThemedScrollPanel : UserControl
     private bool _draggingThumb;
     private int _scrollOffset;
     private int _dragOffset;
+    private double _wheelRemainder;
 
     public ThemedScrollPanel()
     {
@@ -258,6 +259,7 @@ internal sealed class ThemedScrollPanel : UserControl
     private void AttachMouseWheelHandler(Control control)
     {
         control.MouseWheel += ContentMouseWheel;
+        control.Enter += EnsureFocusedControlVisible;
         control.ControlAdded += DescendantControlAdded;
         control.ControlRemoved += DescendantControlRemoved;
         foreach (Control child in control.Controls) AttachMouseWheelHandler(child);
@@ -266,6 +268,7 @@ internal sealed class ThemedScrollPanel : UserControl
     private void DetachMouseWheelHandler(Control control)
     {
         control.MouseWheel -= ContentMouseWheel;
+        control.Enter -= EnsureFocusedControlVisible;
         control.ControlAdded -= DescendantControlAdded;
         control.ControlRemoved -= DescendantControlRemoved;
         foreach (Control child in control.Controls) DetachMouseWheelHandler(child);
@@ -274,6 +277,15 @@ internal sealed class ThemedScrollPanel : UserControl
     private void DescendantControlAdded(object? sender, ControlEventArgs e)
     {
         if (e.Control is { } control) AttachMouseWheelHandler(control);
+    }
+
+    private void EnsureFocusedControlVisible(object? sender, EventArgs e)
+    {
+        if (sender is not Control { Visible: true } control || !control.CanSelect
+            || control.Height > _viewport.Height || !IsHandleCreated || !control.IsHandleCreated) return;
+        var bounds = _viewport.RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
+        if (bounds.Top < 0) SetScrollPosition(_scrollOffset + bounds.Top - 8);
+        else if (bounds.Bottom > _viewport.Height) SetScrollPosition(_scrollOffset + bounds.Bottom - _viewport.Height + 8);
     }
 
     private void DescendantControlRemoved(object? sender, ControlEventArgs e)
@@ -312,10 +324,14 @@ internal sealed class ThemedScrollPanel : UserControl
     {
         if (delta == 0) return;
         var lines = SystemInformation.MouseWheelScrollLines;
+        if (lines == 0) return;
         var amount = lines == -1
             ? Math.Max(ScrollLineHeight, _viewport.ClientSize.Height - ScrollLineHeight)
             : Math.Max(ScrollLineHeight, lines * ScrollLineHeight);
-        SetScrollPosition(_scrollOffset - Math.Sign(delta) * amount);
+        _wheelRemainder += delta / (double)SystemInformation.MouseWheelScrollDelta * amount;
+        var pixels = (int)_wheelRemainder;
+        _wheelRemainder -= pixels;
+        SetScrollPosition(_scrollOffset - pixels);
     }
 
     private void UpdateScrollMetrics()

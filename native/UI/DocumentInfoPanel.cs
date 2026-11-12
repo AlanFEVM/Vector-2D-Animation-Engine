@@ -26,7 +26,7 @@ internal sealed partial class DocumentInfoPanel : UserControl
     private readonly Button _canvasSettings = new SvgIconButton(SvgIconKind.Settings);
     private readonly SvgIconButton _overview = new(SvgIconKind.ChevronDown) { IsDisclosureHeader = true };
     private readonly Label[] _statCaptions =
-        [Caption("Scenes"), Caption("Symbols"), Caption("Objects"), Caption("Frames"), Caption("Frame rate"), Caption("Tags")];
+        [Caption("Scenes"), Caption("Symbols"), Caption("Current edit objects"), Caption("Current edit frames"), Caption("Frame rate"), Caption("Tags")];
     private readonly Label[] _stats = Enumerable.Range(0, 6).Select(_ => Caption("", false)).ToArray();
     private readonly Label _assets = Caption("");
     private readonly Label _assetsTitle = Caption("Assets", false);
@@ -36,6 +36,12 @@ internal sealed partial class DocumentInfoPanel : UserControl
     private bool _overviewExpanded = true;
     private bool _hintVisible;
     private bool _updating;
+    private readonly ShotDirectorPanel.CameraSectionToggle[] _sections =
+        [new("Current project"), new("Current layer"), new("Canvas & background")];
+    private readonly Control[] _sectionHeaders = new Control[3];
+    private int CollapsedHeight => (_sections[0].Expanded ? 0 : 128)
+        + (_sections[1].Expanded ? 0 : (int)Math.Ceiling(LayerPanel.PreferredPanelHeight * 96f / DeviceDpi) + 10)
+        + (_sections[2].Expanded ? 0 : 166);
     private int _projectBottom;
     private int _layerBottom;
     private int _canvasBottom;
@@ -45,7 +51,7 @@ internal sealed partial class DocumentInfoPanel : UserControl
     public event EventHandler? CanvasSettingsRequested;
     public int PreferredHeight => ScaleLogical((_overviewExpanded ? 820 : 646) + PlaybackViewHeight
         + (int)Math.Ceiling(LayerPanel.PreferredPanelHeight * 96f / DeviceDpi) - 98
-        + (_hintVisible ? 52 : 0));
+        + (_hintVisible ? 52 : 0) - CollapsedHeight);
 
     public DocumentInfoPanel()
     {
@@ -100,6 +106,19 @@ internal sealed partial class DocumentInfoPanel : UserControl
         Controls.AddRange(_statCaptions);
         Controls.AddRange(_stats);
         foreach (var stat in _stats) stat.Font = Theme.UiFont(12f);
+        string[] sectionNames = ["Current project", "Current layer", "Canvas & background"];
+        for (var index = 0; index < _sections.Length; index++)
+        {
+            _sectionHeaders[index] = InspectorModuleStyle.CreateSectionHeader(sectionNames[index], _sections[index], () =>
+            {
+                if (!_sections[0].Expanded) _nameEditor.Visible = false;
+                Height = PreferredHeight;
+                PerformLayout();
+                Invalidate();
+            });
+            _sectionHeaders[index].Dock = DockStyle.None;
+            Controls.Add(_sectionHeaders[index]);
+        }
         BuildPlaybackViewControls();
         UiLocalization.Watch(this);
         UpdateOverview();
@@ -134,7 +153,7 @@ internal sealed partial class DocumentInfoPanel : UserControl
             _assets.Text = $"{CompactFormat.Number(info.SvgAssetCount)} SVG · {CompactFormat.Number(info.ImageAssetCount)} {UiLocalization.T("Images")}";
             _assets.TextAlign = ContentAlignment.MiddleRight;
             _hintVisible = info.ObjectCount == 0;
-            _hint.Text = UiLocalization.T("Nothing here yet. Drag a symbol from the library onto the stage.");
+            _hint.Text = UiLocalization.T("No local drawing objects in the current edit. Nested symbols may still contain artwork.");
             _hint.Visible = _hintVisible;
             if (Height != PreferredHeight) Height = PreferredHeight;
             PerformLayout();
@@ -157,6 +176,7 @@ internal sealed partial class DocumentInfoPanel : UserControl
     protected override void OnLayout(LayoutEventArgs e)
     {
         base.OnLayout(e);
+        if (_sectionHeaders[2] is null) return;
         var inset = ScaleLogical(18);
         var width = Math.Max(0, ClientSize.Width - inset * 2);
         void Place(Control control, int top, int height, int left = 0, int? controlWidth = null) =>
@@ -168,10 +188,16 @@ internal sealed partial class DocumentInfoPanel : UserControl
         _nameEditor.Bounds = _name.Bounds;
         Place(_location, 138, 24);
         Place(_scene, 176, 30);
-        _projectBottom = ScaleLogical(220);
-        Place(_layerTitle, 238, 26);
-        LayerPanel.SetBounds(inset - ScaleLogical(4), ScaleLogical(274), width + ScaleLogical(14), LayerPanel.PreferredPanelHeight);
-        _layerBottom = LayerPanel.Bottom + ScaleLogical(4);
+        var projectOffset = _sections[0].Expanded ? 0 : -128;
+        _projectBottom = ScaleLogical(220 + projectOffset);
+        Place(_sectionHeaders[0], 64, 28, controlWidth: width / 2);
+        _projectCaption.Visible = _layerTitle.Visible = _canvasTitle.Visible = false;
+        _name.Visible = _location.Visible = _scene.Visible = _sections[0].Expanded;
+        if (!_sections[0].Expanded) _nameEditor.Visible = false;
+        Place(_sectionHeaders[1], 234 + projectOffset, 36);
+        LayerPanel.Visible = _sections[1].Expanded;
+        LayerPanel.SetBounds(inset - ScaleLogical(4), ScaleLogical(274 + projectOffset), width + ScaleLogical(14), LayerPanel.PreferredPanelHeight);
+        _layerBottom = _sections[1].Expanded ? LayerPanel.Bottom + ScaleLogical(4) : ScaleLogical(274 + projectOffset - 6);
         var offset = (int)Math.Ceiling(_layerBottom * 96f / DeviceDpi) - 376;
         Place(_canvasTitle, 394 + offset, 26, controlWidth: width * 3 / 5);
         _canvasStatus.SetBounds(inset + width * 3 / 5, ScaleLogical(394 + offset), width - width * 3 / 5, ScaleLogical(26));
@@ -182,6 +208,10 @@ internal sealed partial class DocumentInfoPanel : UserControl
         Place(_background, 496 + offset, 26, controlWidth: captionWidth);
         _backgroundValue.SetBounds(inset + captionWidth, _background.Top, width - captionWidth, _background.Height);
         Place(_canvasSettings, 536 + offset, Theme.ControlHeight);
+        Place(_sectionHeaders[2], 390 + offset, 36, controlWidth: width * 3 / 5);
+        foreach (var control in new Control[] { _canvasPrompt, _canvas, _canvasValue, _background, _backgroundValue, _canvasSettings })
+            control.Visible = _sections[2].Expanded;
+        if (!_sections[2].Expanded) offset -= 166;
         _canvasBottom = ScaleLogical(586 + offset);
         LayoutPlaybackViewControls(inset, width, 600 + offset);
         offset += PlaybackViewHeight;

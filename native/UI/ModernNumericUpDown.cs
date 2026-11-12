@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Drawing.Drawing2D;
 using System.Globalization;
 
@@ -21,7 +21,20 @@ internal sealed class NumericInteractionEventArgs : EventArgs
 internal sealed class ModernNumericUpDown : UserControl
 {
     public bool UseSecondaryText { get; set; }
+    public bool TrimTrailingZeros { get; set; }
     internal bool GroupedAppearance { get; set; }
+    private bool _lightweightAppearance;
+    internal bool LightweightAppearance
+    {
+        get => _lightweightAppearance;
+        set
+        {
+            if (_lightweightAppearance == value) return;
+            _lightweightAppearance = value;
+            LayoutChildren();
+            RetargetVisual();
+        }
+    }
 
     private const int LogicalDeadZonePixels = 4;
     private const int LogicalPixelsPerIncrement = 4;
@@ -64,6 +77,19 @@ internal sealed class ModernNumericUpDown : UserControl
     private string _suffix = string.Empty;
     private bool _showSuffix;
     private Rectangle _suffixBounds;
+    private readonly ErrorProvider _validation = new() { BlinkStyle = ErrorBlinkStyle.NeverBlink };
+    private decimal _keyboardStartValue;
+    private bool _mixedValue;
+    private string _inputError = "";
+    private readonly ToolTip _inputHelp = new();
+    private bool _keyboardStartMixed;
+    private bool _draftStartedMixed;
+
+    public bool MixedValue
+    {
+        get => _mixedValue;
+        set { if (_mixedValue == value) return; _mixedValue = value; _draftStartedMixed = false; UpdateEditorText(); }
+    }
 
     public ModernNumericUpDown()
     {
@@ -89,7 +115,16 @@ internal sealed class ModernNumericUpDown : UserControl
         _editor.MouseWheel += HandleChildMouseWheel;
         _editor.MouseEnter += (_, _) => UpdateHoverState();
         _editor.MouseLeave += (_, _) => UpdateHoverState();
-        _editor.GotFocus += (_, _) => RetargetVisual();
+        _validation.ContainerControl = this;
+        Theme.StyleToolTip(_inputHelp);
+        _editor.GotFocus += (_, _) => { _keyboardStartValue = Value; _keyboardStartMixed = MixedValue; RetargetVisual(); };
+        _editor.TextChanged += (_, _) =>
+        {
+            if (_updatingEditorText) return;
+            _draftStartedMixed |= _mixedValue;
+            _mixedValue = false;
+            SetInputError("");
+        };
         _editor.LostFocus += (_, _) =>
         {
             CommitEditorText();
@@ -152,6 +187,7 @@ internal sealed class ModernNumericUpDown : UserControl
 
     [DefaultValue(false)]
     public bool WheelAdjustsHoveredDigit { get; set; }
+    public bool MouseWheelChangesValue { get; set; }
 
     public int DecimalPlaces
     {
@@ -174,11 +210,12 @@ internal sealed class ModernNumericUpDown : UserControl
             var next = QuantizeAndClamp(value);
             if (_value == next)
             {
-                if (!_editor.Focused) UpdateEditorText();
+                if (!_editor.Focused && _inputError.Length == 0) UpdateEditorText();
                 return;
             }
 
             _value = next;
+            SetInputError("");
             UpdateEditorText();
             ValueChanged?.Invoke(this, EventArgs.Empty);
         }
@@ -275,6 +312,12 @@ internal sealed class ModernNumericUpDown : UserControl
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if (keyData == Keys.Escape && !IsScrubbing && !_stepperInteracting && _editor.Focused
+            && (_inputError.Length > 0 || _draftStartedMixed || _editor.Text != FormattedValue()))
+        {
+            RestoreKeyboardDraft();
+            return true;
+        }
         if (keyData == Keys.Escape && IsScrubbing)
         {
             EndInteraction(canceled: true);
@@ -296,10 +339,10 @@ internal sealed class ModernNumericUpDown : UserControl
         using var border = new Pen(
             SystemInformation.HighContrast
                 ? ContainsFocus ? SystemColors.Highlight : SystemColors.WindowText
-                : Theme.ControlOutline,
+                : _inputError.Length > 0 ? Theme.Danger : Theme.ControlOutline,
             Math.Max(1f, DeviceDpi / 96f));
         e.Graphics.Clear(Parent?.BackColor ?? Theme.Panel);
-        if (GroupedAppearance && !ContainsFocus && !SystemInformation.HighContrast)
+        if ((GroupedAppearance || LightweightAppearance && !_hovered) && !ContainsFocus && !SystemInformation.HighContrast && _inputError.Length == 0)
             e.Graphics.FillRectangle(fill, ClientRectangle);
         else
             Theme.PaintUiSurface(e.Graphics, fill, border, ClientRectangle);
@@ -317,6 +360,8 @@ internal sealed class ModernNumericUpDown : UserControl
     {
         if (disposing)
         {
+            _validation.Dispose();
+            _inputHelp.Dispose();
             RestoreScrubCursor();
             _editor.PointerMouseDown -= HandleEditorMouseDown;
             _editor.PointerMouseMove -= HandleEditorMouseMove;
@@ -335,7 +380,8 @@ internal sealed class ModernNumericUpDown : UserControl
     {
         if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
         var border = ScaleLogicalPixels(1);
-        var buttonWidth = Math.Min(ClientSize.Width, ScaleLogicalPixels(LogicalStepperWidth));
+        _increaseButton.Visible = _decreaseButton.Visible = !LightweightAppearance;
+        var buttonWidth = LightweightAppearance ? 0 : Math.Min(ClientSize.Width, ScaleLogicalPixels(LogicalStepperWidth));
         // Keep child HWND painting inside the outer stroke and rounded corners.
         var stepperInset = ScaleLogicalPixels(4);
         var buttonLeft = Math.Max(border, ClientSize.Width - buttonWidth - stepperInset);
@@ -422,6 +468,12 @@ internal sealed class ModernNumericUpDown : UserControl
 
     private void HandleEditorKeyDown(object? sender, KeyEventArgs e)
     {
+        if (e.KeyCode == Keys.Escape && !IsScrubbing && !_stepperInteracting)
+        {
+            RestoreKeyboardDraft();
+            e.Handled = e.SuppressKeyPress = true;
+            return;
+        }
         if (e.KeyCode == Keys.Escape && IsScrubbing)
         {
             EndInteraction(canceled: true);
@@ -466,6 +518,19 @@ internal sealed class ModernNumericUpDown : UserControl
     private bool TryAdjustFromMouseWheel(MouseEventArgs e, decimal? incrementOverride)
     {
         if (e is HandledMouseEventArgs { Handled: true }) return true;
+        if (!MouseWheelChangesValue)
+        {
+            // Child text editors consume wheel input, so forward it explicitly to the
+            // surrounding inspector instead of relying on WinForms event bubbling.
+            for (Control? parent = Parent; parent is not null; parent = parent.Parent)
+            {
+                if (parent is not ThemedScrollPanel scroll) continue;
+                scroll.ScrollWheel(e.Delta);
+                if (e is HandledMouseEventArgs handledScroll) handledScroll.Handled = true;
+                return true;
+            }
+            return false;
+        }
         if (!Enabled || e.Delta == 0 || IsScrubbing || _stepperInteracting) return false;
 
         _wheelDelta += e.Delta;
@@ -536,7 +601,8 @@ internal sealed class ModernNumericUpDown : UserControl
     private void BeginInteraction()
     {
         if (IsScrubbing || _stepperInteracting) return;
-        CommitEditorText();
+        if (!CommitEditorText()) return;
+        _mixedValue = false;
         _pointerPending = false;
         _interactionStartValue = Value;
         _rawScrubValue = Value;
@@ -613,12 +679,15 @@ internal sealed class ModernNumericUpDown : UserControl
         var args = new NumericInteractionEventArgs(initialValue, finalValue, canceled ? changed : finalValue != initialValue);
         if (canceled) InteractionCanceled?.Invoke(this, args);
         else InteractionCompleted?.Invoke(this, args);
+        _keyboardStartValue = Value;
+        _keyboardStartMixed = MixedValue;
     }
 
     private void BeginStepperInteraction()
     {
         if (_stepperInteracting || IsScrubbing) return;
-        CommitEditorText();
+        if (!CommitEditorText()) return;
+        _mixedValue = false;
         _stepperInteracting = true;
         _stepperStartValue = Value;
         _stepperInteractionChanged = false;
@@ -629,7 +698,7 @@ internal sealed class ModernNumericUpDown : UserControl
     private void StepValue(int increments, decimal? incrementOverride = null)
     {
         if (!_stepperInteracting) BeginStepperInteraction();
-        if (increments == 0) return;
+        if (!_stepperInteracting || increments == 0) return;
         decimal next;
         try
         {
@@ -660,24 +729,67 @@ internal sealed class ModernNumericUpDown : UserControl
         var args = new NumericInteractionEventArgs(initialValue, finalValue, canceled ? changed : finalValue != initialValue);
         if (canceled) InteractionCanceled?.Invoke(this, args);
         else InteractionCompleted?.Invoke(this, args);
+        _keyboardStartValue = Value;
+        _keyboardStartMixed = MixedValue;
     }
 
-    private void CommitEditorText()
+    internal bool TryCommitInput() => CommitEditorText();
+
+    private void SetInputError(string message)
     {
-        if (_updatingEditorText) return;
+        _inputError = message;
+        _validation.SetError(_editor, message);
+        _inputHelp.SetToolTip(_editor, message);
+        _inputHelp.SetToolTip(this, message);
+        if (message.Length > 0) _editor.AccessibleDescription = message;
+        else UpdateEditorAccessibility();
+        Invalidate();
+    }
+
+    private bool CommitEditorText()
+    {
+        if (_updatingEditorText) return true;
+        if (_mixedValue && string.IsNullOrWhiteSpace(_editor.Text)) return true;
         if (!decimal.TryParse(_editor.Text, NumberStyles.Number, CultureInfo.CurrentCulture, out var parsed))
         {
-            UpdateEditorText();
-            return;
+            SetInputError(UiLocalization.T("Enter a valid number. Press Esc to restore the previous value."));
+            return false;
         }
-
+        if (parsed < Minimum || parsed > Maximum)
+        {
+            SetInputError(string.Format(UiLocalization.T("Enter a value from {0} to {1}."), Minimum, Maximum));
+            return false;
+        }
+        _mixedValue = false;
+        SetInputError("");
+        var applyMixedPrimary = _draftStartedMixed && QuantizeAndClamp(parsed) == Value;
+        _draftStartedMixed = false;
         Value = parsed;
+        if (applyMixedPrimary) ValueChanged?.Invoke(this, EventArgs.Empty);
+        _keyboardStartValue = Value;
+        _keyboardStartMixed = false;
+        return true;
     }
+
+    private void RestoreKeyboardDraft()
+    {
+        SetInputError("");
+        Value = _keyboardStartValue;
+        _draftStartedMixed = false;
+        MixedValue = _keyboardStartMixed;
+        UpdateEditorText();
+    }
+
+    private string FormattedValue() => _mixedValue ? "" : Value.ToString(TrimTrailingZeros
+        ? DecimalPlaces == 0 ? "0" : "0." + new string('#', DecimalPlaces)
+        : $"F{DecimalPlaces}", CultureInfo.CurrentCulture);
 
     private void UpdateEditorText()
     {
         if (_editor.IsDisposed) return;
-        var text = Value.ToString($"F{DecimalPlaces}", CultureInfo.CurrentCulture);
+        _editor.PlaceholderText = _mixedValue ? UiLocalization.T("Mixed") : "";
+        _editor.Invalidate();
+        var text = FormattedValue();
         if (string.Equals(_editor.Text, text, StringComparison.Ordinal)) return;
         _updatingEditorText = true;
         try
@@ -767,6 +879,8 @@ internal sealed class ModernNumericUpDown : UserControl
     private Color ResolveVisualColor()
     {
         if (SystemInformation.HighContrast) return Enabled ? SystemColors.Window : SystemColors.Control;
+        if (LightweightAppearance && !ContainsFocus && !_hovered && !IsScrubbing && _inputError.Length == 0)
+            return Parent?.BackColor ?? Theme.Panel;
         if (!Enabled) return Theme.DisabledSurface;
         if (IsScrubbing || _stepperInteracting) return Theme.Mix(Theme.Field, Theme.AccentSurface, 0.72f);
         if (ContainsFocus) return Theme.Mix(Theme.Field, Theme.AccentSurface, 0.42f);
@@ -851,6 +965,16 @@ internal sealed class ModernNumericUpDown : UserControl
             }
 
             base.WndProc(ref message);
+            if (message.Msg is 0x000F or 0x0317 or 0x0318
+                && Parent is ModernNumericUpDown { MixedValue: true } && TextLength == 0 && IsHandleCreated)
+            {
+                using var graphics = message.Msg != 0x000F && message.WParam != IntPtr.Zero
+                    ? Graphics.FromHdc(message.WParam) : CreateGraphics();
+                graphics.Clear(BackColor);
+                TextRenderer.DrawText(graphics, UiLocalization.T("Mixed"), Font, ClientRectangle,
+                    Theme.ReadableText(BackColor, Theme.Muted),
+                    TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            }
         }
 
         private static MouseEventArgs MouseEvent(Message message, MouseButtons button)

@@ -10,18 +10,16 @@ internal sealed class ShotDirectorMicroMotionEventArgs(string shotId, SceneShotM
 
 internal sealed partial class ShotDirectorPanel
 {
-    private readonly SvgIconButton _microMotionDisclosure = new(SvgIconKind.ChevronDown)
-        { Text = "Micro motion", IsDisclosureHeader = true, AccessibleName = "Camera micro motion" };
+    private readonly Label _microMotionHeading = DesignCaption("Micro motion");
+    private readonly CameraSectionToggle _microMotionDisclosure = new("Camera micro motion", expanded: false);
+    private readonly Label _microMotionEnabledCaption = DesignCaption("Enabled", true);
     private readonly ModernToggleSwitch _microMotionEnabled = new()
-        { Text = "Enabled", AutoSize = false, AccessibleName = "Enable camera micro motion" };
-    private readonly SvgIconButton _microMotionHandheldDefaults = new(SvgIconKind.RestoreSize)
-        { Text = "Handheld defaults", AccessibleName = "Apply handheld camera defaults" };
+        { AutoSize = false, AccessibleName = "Enable camera micro motion" };
     private readonly ModernNumericUpDown _microMotionHorizontal = MotionNumber("Horizontal amplitude", 0, 5, 0.25m, 2, "%");
     private readonly ModernNumericUpDown _microMotionVertical = MotionNumber("Vertical amplitude", 0, 5, 0.25m, 2, "%");
     private readonly ModernNumericUpDown _microMotionRotation = MotionNumber("Roll amplitude", 0, 5, 0.15m, 2, "°");
     private readonly ModernNumericUpDown _microMotionSpeed = MotionNumber("Motion speed", 0.01m, 20, 0.8m, 2, "Hz");
     private readonly ModernNumericUpDown _microMotionSeed = MotionNumber("Motion seed", 0, 999999, 1, 0, "");
-    private bool _microMotionExpanded = true;
 
     private IEnumerable<ModernNumericUpDown> MicroMotionEditors =>
         [_microMotionHorizontal, _microMotionVertical, _microMotionRotation, _microMotionSpeed, _microMotionSeed];
@@ -36,23 +34,9 @@ internal sealed partial class ShotDirectorPanel
 
     private void InitializeMicroMotion()
     {
-        _inspector.Content.Controls.AddRange([_microMotionDisclosure, _microMotionEnabled, _microMotionHandheldDefaults]);
-        _microMotionHandheldDefaults.Click += (_, _) =>
-        {
-            if (_updatingEditors || !_state.IsAvailable || !ActiveCameraAllowed || ActiveShot() is not { } shot) return;
-            ShotEditStarted?.Invoke(this, EventArgs.Empty);
-            ShotMicroMotionCommitted?.Invoke(this, new ShotDirectorMicroMotionEventArgs(shot.Id,
-                shot.MicroMotion with { Enabled = true }, useHandheldDefaults: true));
-            ShotEditCompleted?.Invoke(this, EventArgs.Empty);
-        };
-        _help.SetToolTip(_microMotionHandheldDefaults,
-            UiLocalization.T("Fit gentle handheld motion to the camera's initial framing. Replaces amplitudes and speed, keeps the seed."));
-        _microMotionDisclosure.Click += (_, _) =>
-        {
-            _microMotionExpanded = !_microMotionExpanded;
-            _microMotionDisclosure.Icon = _microMotionExpanded ? SvgIconKind.ChevronDown : SvgIconKind.ChevronRight;
-            PerformLayout();
-        };
+        _inspector.Content.Controls.AddRange([_microMotionHeading, _microMotionDisclosure,
+            _microMotionEnabledCaption, _microMotionEnabled]);
+        InitializeDesignedSection(_microMotionHeading, _microMotionDisclosure);
         _microMotionEnabled.CheckedChanged += (_, _) =>
         {
             if (_updatingEditors) return;
@@ -62,6 +46,7 @@ internal sealed partial class ShotDirectorPanel
             PerformLayout();
         };
         _help.SetToolTip(_microMotionDisclosure, UiLocalization.T("Adds repeatable camera drift without changing framing keys."));
+        _help.SetToolTip(_microMotionHeading, UiLocalization.T("Adds repeatable camera drift without changing framing keys."));
         foreach (var editor in MicroMotionEditors)
         {
             Theme.StyleNumeric(editor);
@@ -136,36 +121,28 @@ internal sealed partial class ShotDirectorPanel
     {
         var left = ScaleMetric(16);
         var width = Math.Max(1, right - left);
-        var toggleWidth = Math.Min(width / 2, ScaleMetric(92));
-        _microMotionDisclosure.SetBounds(left, top, Math.Max(1, width - toggleWidth - ScaleMetric(8)), ScaleMetric(RowHeight));
-        _microMotionEnabled.SetBounds(right - toggleWidth, top, toggleWidth, ScaleMetric(RowHeight));
+        _microMotionHeading.SetBounds(left, top, Math.Max(1, width - ScaleMetric(36)), ScaleMetric(28));
+        _microMotionDisclosure.SetBounds(right - ScaleMetric(28), top, ScaleMetric(28), ScaleMetric(28));
         _microMotionDisclosure.TabIndex = tabIndex++;
-        _microMotionEnabled.TabIndex = tabIndex++;
-        top += ScaleMetric(RowStep);
-        _microMotionHandheldDefaults.Visible = _microMotionExpanded;
-        _microMotionHandheldDefaults.TabStop = _microMotionExpanded && _microMotionHandheldDefaults.Enabled;
-        if (_microMotionExpanded)
+        top += ScaleMetric(36);
+        _microMotionEnabled.Visible = _microMotionDisclosure.Expanded;
+        _microMotionEnabledCaption.Visible = _microMotionDisclosure.Expanded;
+        _microMotionEnabled.TabStop = _microMotionDisclosure.Expanded && _microMotionEnabled.Enabled;
+        if (_microMotionDisclosure.Expanded)
         {
-            _microMotionHandheldDefaults.SetBounds(left, top, width, ScaleMetric(RowHeight));
-            _microMotionHandheldDefaults.TabIndex = tabIndex++;
+            LayoutDesignedField(_microMotionEnabled, top, right, _microMotionEnabledCaption);
+            _microMotionEnabled.TabIndex = tabIndex++;
             top += ScaleMetric(RowStep);
         }
         foreach (var editor in MicroMotionEditors)
         {
-            var visible = _microMotionExpanded && _microMotionEnabled.Checked;
+            var visible = _microMotionDisclosure.Expanded;
             editor.Visible = visible;
             if (editor.Tag is Label label) label.Visible = visible;
             editor.TabStop = visible && editor.Enabled;
             if (!visible) continue;
             editor.TabIndex = tabIndex++;
-            var split = left + (int)Math.Round(width * 0.48f);
-            if (editor.Tag is Label caption)
-            {
-                var labelHeight = Math.Min(ScaleMetric(RowHeight), caption.Font.Height + ScaleMetric(4));
-                caption.SetBounds(left, top + (ScaleMetric(RowHeight) - labelHeight) / 2,
-                    Math.Max(1, split - left - ScaleMetric(8)), labelHeight);
-            }
-            editor.SetBounds(split, top, Math.Max(1, right - split), ScaleMetric(RowHeight));
+            LayoutDesignedField(editor, top, right);
             top += ScaleMetric(RowStep);
         }
         return top;
@@ -174,13 +151,11 @@ internal sealed partial class ShotDirectorPanel
     private void ApplyMicroMotionEditorState(bool editable)
     {
         _microMotionEnabled.Enabled = editable;
-        _microMotionEnabled.TabStop = editable;
-        _microMotionHandheldDefaults.Enabled = editable;
-        _microMotionHandheldDefaults.TabStop = editable && _microMotionExpanded;
+        _microMotionEnabled.TabStop = editable && _microMotionDisclosure.Expanded;
         foreach (var editor in MicroMotionEditors)
         {
             editor.Enabled = editable && _microMotionEnabled.Checked;
-            editor.TabStop = editor.Enabled && _microMotionExpanded;
+            editor.TabStop = editor.Enabled && _microMotionDisclosure.Expanded;
         }
     }
 }

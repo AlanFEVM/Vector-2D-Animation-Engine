@@ -8,7 +8,6 @@ internal sealed class SymbolFiltersChangedEventArgs(Func<SymbolFilters, SymbolFi
 
 internal sealed partial class SymbolFiltersPanel : Panel
 {
-    private const int LogicalPanelHeight = 456;
     private enum FilterKind { Blur, Glow, Shadow, Bevel, GradientBevel, GradientGlow }
     private sealed record NumericField(Label Label, ModernNumericUpDown Input, FilterKind Kind,
         int Row, int Column, Func<SymbolFilters, float> Read,
@@ -77,12 +76,13 @@ internal sealed partial class SymbolFiltersPanel : Panel
             f => f.Shadow.Quality, (f, v) => f with { Shadow = f.Shadow with { Quality = v } });
 
         BuildEffectSelector();
+        BuildOrderAndGradientEditors();
         _blur.CheckedChanged += (_, _) => ToggleFilter(FilterKind.Blur, _blur.Checked);
         _glow.CheckedChanged += (_, _) => ToggleFilter(FilterKind.Glow, _glow.Checked);
         _shadow.CheckedChanged += (_, _) => ToggleFilter(FilterKind.Shadow, _shadow.Checked);
         _glowColor.Click += (_, _) => ChooseColor(FilterKind.Glow);
         _shadowColor.Click += (_, _) => ChooseColor(FilterKind.Shadow);
-        _toolTip.SetToolTip(_order, "Effects run in order: blur, glow, then drop shadow.");
+        _toolTip.SetToolTip(_order, UiLocalization.T("Move built-in effects up or down. Disabled effects keep their place. Imported effects retain their source order."));
         _toolTip.SetToolTip(_selectionHint, "With multiple symbols selected, only the edited parameter changes.");
         UiLocalization.Watch(this);
         SetFilters(default);
@@ -93,7 +93,16 @@ internal sealed partial class SymbolFiltersPanel : Panel
     public event EventHandler? InteractionStarted;
     public event EventHandler? InteractionCompleted;
     public event EventHandler? InteractionCanceled;
-    public int PreferredPanelHeight => ScaleLogical(LogicalPanelHeight);
+    public int PreferredPanelHeight
+    {
+        get
+        {
+            var kind = (FilterKind)Math.Max(0, _selector.SelectedIndex);
+            var colors = kind == FilterKind.Blur ? 0 : (int)kind >= 3 ? 2 : 1;
+            return ScaleLogical(468 + _fields.Count(field => field.Kind == kind) * 40
+                + (kind is FilterKind.GradientBevel or FilterKind.GradientGlow ? 264 : colors * 40));
+        }
+    }
 
     public void SetFilters(SymbolFilters filters, bool mixed = false)
     {
@@ -111,7 +120,7 @@ internal sealed partial class SymbolFiltersPanel : Panel
         var input = new ModernNumericUpDown
         {
             Minimum = minimum, Maximum = maximum, DecimalPlaces = decimalPlaces, Increment = increment,
-            Suffix = suffix, AccessibleName = accessibleName, WheelAdjustsHoveredDigit = true
+            Suffix = suffix, ShowSuffix = !string.IsNullOrEmpty(suffix), AccessibleName = accessibleName, WheelAdjustsHoveredDigit = true
         };
         InspectorModuleStyle.StyleField(input);
         var field = new NumericField(caption, input, kind, row, column, read, patch);
@@ -215,14 +224,16 @@ internal sealed partial class SymbolFiltersPanel : Panel
         {
             if (_interactionActive && !_disposing) ApplyColor(kind, picker.Color);
         };
+        var accepted = false;
         try
         {
-            picker.ShowDialog(FindForm());
+            accepted = picker.ShowDialog(FindForm()) == DialogResult.OK;
         }
         finally
         {
             _activePicker = null;
-            CompleteInteraction();
+            if (accepted) CompleteInteraction();
+            else CancelInteraction();
         }
     }
 
@@ -250,6 +261,7 @@ internal sealed partial class SymbolFiltersPanel : Panel
                 field.Input.Value = float.IsFinite(value)
                     ? (decimal)Math.Clamp(value, (float)field.Input.Minimum, (float)field.Input.Maximum)
                     : field.Input.Minimum;
+                field.Input.MixedValue = _mixed;
                 var enabled = IsFilterEnabled(field.Kind);
                 field.Input.Enabled = enabled;
                 field.Label.ForeColor = enabled ? Theme.Muted : Theme.Mix(Theme.Muted, Theme.Panel, 0.55f);
@@ -259,7 +271,23 @@ internal sealed partial class SymbolFiltersPanel : Panel
             UpdateColor(_shadowColor, _filters.Shadow.ColorArgb, _filters.Shadow.Enabled);
             _selectionHint.Text = _mixed
                 ? "Mixed values. Edit one parameter at a time."
-                : "Combine effects. Sizes are stage pixels.";
+                : (FilterKind)Math.Max(0, _selector.SelectedIndex) is FilterKind.GradientBevel or FilterKind.GradientGlow
+                    ? "Edit gradient stops, position, color and alpha. Sizes are stage pixels."
+                    : "Combine effects. Sizes are stage pixels.";
+            var enabledNames = (_filters.Order ?? SymbolFilterOrder.Default).Items.Select(item => (FilterKind)item).Where(IsFilterEnabled)
+                .Select(kind => UiLocalization.T(kind switch
+                {
+                    FilterKind.Shadow => "Drop Shadow", FilterKind.GradientBevel => "Gradient Bevel",
+                    FilterKind.GradientGlow => "Gradient Glow", _ => kind.ToString()
+                })).ToList();
+            if (_filters.ColorTransform.Enabled) enabledNames.Insert(0, UiLocalization.T("Color transform"));
+            if (_filters.AdditionalBlurs?.HasEnabled == true || _filters.FlashFilters?.HasEnabled == true)
+                enabledNames.Add(UiLocalization.T("Imported effects"));
+            var summary = string.Join(" → ", enabledNames);
+            _order.Text = UiLocalization.T("Enabled effects") + ": "
+                + (_mixed ? UiLocalization.T("Mixed") : summary.Length > 0 ? summary : UiLocalization.T("No effects"));
+            _toolTip.SetToolTip(_order, _order.Text + "\n" + UiLocalization.T("Move built-in effects up or down. Disabled effects keep their place. Imported effects retain their source order."));
+            RefreshOrderAndGradientEditors();
         }
         finally { _updating = updating; }
     }
@@ -316,7 +344,7 @@ internal sealed partial class SymbolFiltersPanel : Panel
     {
         if (_activePicker is { IsDisposed: false } picker)
         {
-            CompleteInteraction();
+            CancelInteraction();
             picker.Close();
         }
         else CancelInteraction();
@@ -337,42 +365,46 @@ internal sealed partial class SymbolFiltersPanel : Panel
     {
         if (_selector.Items.Count == 0) return;
         var kind = (FilterKind)Math.Max(0, _selector.SelectedIndex);
-        int left = ScaleLogical(12), width = Math.Max(0, ClientSize.Width - left * 2);
+        int left = ScaleLogical(16), width = Math.Max(0, ClientSize.Width - left * 2);
         _title.SetBounds(left, ScaleLogical(8), width, ScaleLogical(24));
-        _order.Visible = false;
-        _selectionHint.SetBounds(left, ScaleLogical(34), width, ScaleLogical(28));
-        _selector.SetBounds(left, ScaleLogical(68), width - ScaleLogical(76), ScaleLogical(28));
-        _add.SetBounds(left + width - ScaleLogical(70), ScaleLogical(68), ScaleLogical(32), ScaleLogical(28));
-        _remove.SetBounds(left + width - ScaleLogical(32), ScaleLogical(68), ScaleLogical(32), ScaleLogical(28));
+        _order.Visible = true;
+        _order.SetBounds(left, ScaleLogical(36), width, ScaleLogical(48));
+        LayoutOrderEditors(left, width);
+        _selectionHint.SetBounds(left, ScaleLogical(324), width, ScaleLogical(40));
+        _selector.SetBounds(left, ScaleLogical(372), Math.Max(1, width - ScaleLogical(80)), ScaleLogical(32));
+        _add.SetBounds(left + width - ScaleLogical(72), ScaleLogical(372), ScaleLogical(32), ScaleLogical(32));
+        _remove.SetBounds(left + width - ScaleLogical(32), ScaleLogical(372), ScaleLogical(32), ScaleLogical(32));
         var toggles = new[] { _blur, _glow, _shadow };
         for (int i = 0; i < toggles.Length; i++)
         {
             toggles[i].Visible = (int)kind == i;
-            toggles[i].SetBounds(left, ScaleLogical(102), width, ScaleLogical(28));
+            toggles[i].SetBounds(left, ScaleLogical(412), width, ScaleLogical(32));
         }
-        var selected = _fields.Where(f => f.Kind == kind).ToArray();
-        int firstRow = selected.Length == 0 ? 0 : selected.Min(f => f.Row);
-        int colWidth = (width - ScaleLogical(10)) / 2;
+        var selected = _fields.Where(f => f.Kind == kind).OrderBy(field => field.Row).ThenBy(field => field.Column).ToArray();
+        var split = left + (int)Math.Floor(width * 0.48f);
         foreach (var field in _fields)
         {
             bool visible = field.Kind == kind;
             field.Label.Visible = field.Input.Visible = visible;
-            int x = left + field.Column * (colWidth + ScaleLogical(10));
-            int y = 136 + (field.Row - firstRow) / 48 * 56;
-            field.Label.SetBounds(x, ScaleLogical(y), colWidth, ScaleLogical(16));
-            field.Input.SetBounds(x, ScaleLogical(y + 20), colWidth, ScaleLogical(Theme.ControlHeight));
+            if (!visible) continue;
+            int y = 452 + Array.IndexOf(selected, field) * 40;
+            field.Label.SetBounds(left, ScaleLogical(y), Math.Max(1, split - left - ScaleLogical(8)), ScaleLogical(32));
+            field.Input.SetBounds(split, ScaleLogical(y), Math.Max(1, left + width - split), ScaleLogical(32));
         }
         _glowColor.Visible = kind == FilterKind.Glow;
         _shadowColor.Visible = kind == FilterKind.Shadow;
-        int colorsY = selected.Length == 0 ? 136 : 136 + (selected.Max(f => f.Row) - firstRow) / 48 * 56 + 56;
-        _glowColor.SetBounds(left, ScaleLogical(colorsY), width, ScaleLogical(38));
-        _shadowColor.SetBounds(left, ScaleLogical(colorsY), width, ScaleLogical(38));
+        int colorsY = 452 + selected.Length * 40;
+        _glowColor.SetBounds(left, ScaleLogical(colorsY), width, ScaleLogical(32));
+        _shadowColor.SetBounds(left, ScaleLogical(colorsY), width, ScaleLogical(32));
         bool edge = (int)kind >= 3;
-        _startColor.Visible = _endColor.Visible = edge;
+        _startColor.Visible = _endColor.Visible = kind == FilterKind.Bevel;
         _effectStatus.Visible = edge;
-        _effectStatus.SetBounds(left, ScaleLogical(102), width, ScaleLogical(28));
-        _startColor.SetBounds(left, ScaleLogical(colorsY), width, ScaleLogical(38));
-        _endColor.SetBounds(left, ScaleLogical(colorsY + 44), width, ScaleLogical(38));
+        _effectStatus.SetBounds(left, ScaleLogical(412), width, ScaleLogical(32));
+        _startColor.SetBounds(left, ScaleLogical(colorsY), width, ScaleLogical(32));
+        _endColor.SetBounds(left, ScaleLogical(colorsY + 40), width, ScaleLogical(32));
+        LayoutGradientEditors(left, width, colorsY, kind is FilterKind.GradientBevel or FilterKind.GradientGlow);
+        MinimumSize = new Size(ScaleLogical(248), PreferredPanelHeight);
+        Height = PreferredPanelHeight;
     }
 
     private int ScaleLogical(int value) => (int)Math.Round(value * DeviceDpi / 96f);

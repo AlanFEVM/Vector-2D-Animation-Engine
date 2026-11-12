@@ -9,6 +9,7 @@ internal static partial class Benchmark
     /// </summary>
     private static void RunSymbolPackageRegression()
     {
+        RunSymbolPackageImageRegression();
         var project = VectorProject.CreateEmpty();
         var root = project.DrawingObjects[0];
         root.Name = "Package Root";
@@ -224,6 +225,59 @@ internal static partial class Benchmark
         {
             DeleteTemporaryDirectory(temporaryRoot);
         }
+    }
+
+    private static void RunSymbolPackageImageRegression()
+    {
+        var directory = CreateTemporaryDirectory("symbol-package-images");
+        try
+        {
+            var sourcePath = Path.Combine(directory, "source.png");
+            WriteFixturePng(sourcePath, 64, 48);
+            var project = VectorProject.CreateEmpty();
+            var root = project.DrawingObjects[0];
+            var child = project.AddDrawingObject("Image child");
+            project.TryAddDrawingObjectInstance(root.Id, child.Id, PointF.Empty, out _);
+            var settings = BitmapImageImportSettings.Default with { FilterMode = ImageFilterMode.Point, PixelsPerUnit = 144 };
+            AssertTimeline(project.TryAddImageAssetFromSource("Packed image", sourcePath,
+                BitmapImageRasterizer.ComputeSha256(sourcePath), 64, 48, 96, settings, out var asset),
+                "Image package fixture could not create its image.");
+            var contours = new[] { new[] { new PointF(0, 0), new PointF(1, 0), new PointF(1, 1) } };
+            child.Scene.AddBitmapObject(0, PointF.Empty,
+                new BitmapObjectData { ImageAssetId = asset!.Id, PlacedSize = new SizeF(64, 48), VisibleContours = contours });
+            root.Scene.AddBitmapObject(0, new PointF(100, 0),
+                new BitmapObjectData { ImageAssetId = asset.Id, PlacedSize = new SizeF(32, 24) });
+            var path = Path.Combine(directory, "images.V2DSymbol");
+            DrawingObjectSymbolPackageService.Export(project, root.Id, path);
+            File.Delete(sourcePath);
+            var package = DrawingObjectSymbolPackage.Read(path);
+            AssertTimeline(package.ImageAssets.Length == 1, "Shared image dependencies were not deduplicated.");
+            var target = VectorProject.CreateEmpty();
+            var imported = DrawingObjectSymbolPackageService.Import(target, package);
+            var image = target.ImageAssets.Single();
+            var importedChild = target.DrawingObjects.Single(symbol => symbol.Id == imported.Instances.Single().DrawingObjectId);
+            var bitmap = importedChild.Scene.CreateSnapshot().BitmapObjects.Values.Single();
+            AssertTimeline(image.Id != asset.Id && image.ImportSettings == settings && File.Exists(image.SourcePath)
+                && bitmap.ImageAssetId == image.Id && bitmap.VisibleContours![0].SequenceEqual(contours[0]),
+                "Image package import lost its owned bytes, import settings, id remapping or erased contour.");
+            DrawingObjectSymbolPackageService.Import(target, package);
+            AssertTimeline(target.ImageAssets.Count == 2 && target.ImageAssets.Select(item => item.Id).Distinct().Count() == 2,
+                "Repeated image package import reused resource identity.");
+            var manifest = ProjectVaultStore.Save(target, Path.Combine(directory, "target", "Images.v2dProject"));
+            var reopened = ProjectVaultStore.Load(manifest);
+            AssertTimeline(reopened.ImageAssets.Count == 2 && reopened.ImageAssets.All(item => File.Exists(item.SourcePath)),
+                "Packaged images did not survive project save and reopen.");
+            var data = package.ImageAssets[0].Data;
+            data[0] ^= 1;
+            var initialCount = target.DrawingObjects.Count;
+            ExpectInvalidData(() => DrawingObjectSymbolPackageService.Import(target, package),
+                "An image package with a damaged checksum was accepted.");
+            data[0] ^= 1;
+            AssertTimeline(target.DrawingObjects.Count == initialCount && target.ImageAssets.Count == 2,
+                "Rejected image package import changed the live project.");
+            Console.WriteLine("symbol_package_images=ok");
+        }
+        finally { DeleteTemporaryDirectory(directory); }
     }
 
     private static void RunSymbolPackageDropRegression(string packagePath)

@@ -1337,6 +1337,9 @@ internal sealed partial class MainForm : Form
         _sceneEditorPanel.AddSceneRequested += (_, _) => AddScene();
         _sceneEditorPanel.AddSceneInstanceRequested += (_, _) => AddSceneInstanceFromActiveDrawingObject();
         _sceneEditorPanel.SceneSelectionChanged += (_, e) => SelectScene(e.Index);
+        _sceneEditorPanel.SceneRenameRequested += (_, e) => RenameSceneFromPanel(e.Index);
+        _sceneEditorPanel.SceneDeleteRequested += (_, e) => DeleteSceneFromPanel(e.Index);
+        _sceneEditorPanel.SceneInstanceSelected += (_, e) => SelectInstanceFromScenePanel(e.InstanceId);
         _sceneEditorPanel.DrawingObjectOpenRequested += (_, e) => OpenDrawingObjectEditor(e.DrawingObjectId);
         _libraryVaultPanel.DrawingObjectOpenRequested += (_, e) => OpenDrawingObjectEditor(e.DrawingObjectId);
         _libraryVaultPanel.DrawingObjectRenameRequested += (_, e) => RenameDrawingObject(e.DrawingObjectId);
@@ -1365,6 +1368,11 @@ internal sealed partial class MainForm : Form
         _libraryVaultPanel.ImageAssetDeleteRequested += (_, e) => DeleteImageAsset(e.AssetId);
         _libraryVaultPanel.ImageAssetUpdateRequested += (_, e) => UpdateImageAssetFromSource(e.AssetId);
         _libraryVaultPanel.ImageAssetDuplicateRequested += (_, e) => DuplicateSharedAsset(e.AssetId, svg: false);
+        _libraryVaultPanel.AssetFolderDeleteRequested += (_, e) => DeleteAssetFolderFromPanel(e.FolderId);
+        _libraryVaultPanel.ImageAssetRenameRequested += (_, e) => RenameLibraryAssetFromPanel(e.AssetId, svg: false);
+        _libraryVaultPanel.ExternalSvgAssetRenameRequested += (_, e) => RenameLibraryAssetFromPanel(e.AssetId, svg: true);
+        _libraryVaultPanel.LibraryAssetMoveRequested += (_, e) => MoveLibraryAssetFromPanel(e.AssetId, e.TargetFolderId);
+        _libraryVaultPanel.AssetBatchActionRequested += (_, e) => HandleVaultBatchAction(e);
         _libraryVaultPanel.SetImageAssetAvailabilityProvider(asset => ResolveImageAssetPath(asset) is not null);
         _libraryVaultPanel.SetImageAssetPreviewProvider(asset =>
         {
@@ -1441,6 +1449,12 @@ internal sealed partial class MainForm : Form
         };
         _drawingObjectInstancePanel.PlaybackSettingsChanged += (_, e) =>
             ApplyDrawingObjectPlaybackSettings(e);
+        _drawingObjectInstancePanel.PlaybackInteractionStarted += (_, _) => BeginInstanceAppearanceEdit();
+        _drawingObjectInstancePanel.AnchorInteractionStarted += (_, _) => BeginAnchorEdit();
+        _drawingObjectInstancePanel.AnchorInteractionCompleted += (_, _) => CompleteAnchorEdit();
+        _drawingObjectInstancePanel.AnchorInteractionCanceled += (_, _) => CancelAnchorEdit();
+        _drawingObjectInstancePanel.PlaybackInteractionCompleted += (_, _) => CompleteInstanceAppearanceEdit();
+        _drawingObjectInstancePanel.PlaybackInteractionCanceled += (_, _) => CancelInstanceAppearanceEdit();
         _drawingObjectInstancePanel.AnchorChanged += (_, e) =>
             ApplySelectedDrawingObjectAnchor(e.Anchor);
         _drawingObjectInstancePanel.AppearanceInteractionStarted += (_, _) =>
@@ -1574,6 +1588,14 @@ internal sealed partial class MainForm : Form
                 RefreshInspectorAfterMaterialChange();
                 _stage.Invalidate();
             }
+        };
+        _hierarchyPanel.ObjectNameResolver = index =>
+        {
+            if (_scene.TryGetBitmapObjectData(index, out var bitmap))
+                return _project.FindImageAsset(bitmap.ImageAssetId)?.Name ?? "";
+            if (_scene.TryGetImportedSvgAssetId(index, out var svgId))
+                return _project.FindExternalSvgAsset(svgId)?.Name ?? "";
+            return "";
         };
         _hierarchyPanel.HierarchySelectionChanged += (_, e) =>
         {
@@ -1944,8 +1966,7 @@ internal sealed partial class MainForm : Form
             SetProjectDirty(false);
             CaptureActiveSceneOpticsSaveCheckpoint();
             AppLog.Info($"Saved project asset library: {_projectManifestPath}");
-            ModernMessageDialog.Show(this, _projectManifestPath, UiLocalization.T("Save Project"),
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            UpdateStatusBar();
             return true;
         }
         catch (Exception ex)
@@ -1974,8 +1995,7 @@ internal sealed partial class MainForm : Form
             SetProjectDirty(false);
             CaptureActiveSceneOpticsSaveCheckpoint();
             AppLog.Info($"Saved packaged project: {fullPackagePath}");
-            ModernMessageDialog.Show(this, fullPackagePath, UiLocalization.T("Save Project"),
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            UpdateStatusBar();
             return true;
         }
         catch (Exception ex)
@@ -2196,18 +2216,22 @@ internal sealed partial class MainForm : Form
 
     private void ResetEditHistory()
     {
+        _scenePanelHistories.Clear();
         ResetUndoHistory();
         _clipboardObjects.Clear();
     }
 
     private void ResetUndoHistory()
     {
+        _scenePanelHistories.Clear();
         _documentRedo.Clear();
         _canvasSettingsUndo.Clear();
         _canvasSettingsRedo.Clear();
         ResetCanvasUndoHistory();
         _sceneTimelineUndoStack.Clear();
         _sharedAssetUndoStack.Clear();
+        _symbolDeletionUndo.Clear();
+        _panelCommandUndo.Clear();
     }
 
     private void ResetCanvasUndoHistory()
@@ -2382,6 +2406,8 @@ internal sealed partial class MainForm : Form
 
         if (_frame < _playbackSettings.StartFrame || _frame >= _playbackSettings.EndFrame)
             SetFrame(_playbackSettings.StartFrame);
+        // A drag that still holds the mouse would commit into the document after playback starts.
+        _timeline.CancelDragForPlayback();
         StartPlaybackCompositionPreload();
         if (fromEnter) BeginEnterPlaybackView();
         else _stage.SetEnterPlaybackViewSettings(null);
@@ -2463,15 +2489,15 @@ internal sealed partial class MainForm : Form
 
     private void UpdatePerformanceMetrics()
     {
-        var stats = _stage.LastStats;
-        SetToolStripText(_drawStatus, stats.TileLod
-            ? stats.VisibleObjects > 0 || stats.DrawnObjects > 0
-                ? $"Draw {CompactFormat.Number(stats.DrawnObjects)} / {CompactFormat.Number(stats.VisibleObjects)} + Tiles {CompactFormat.Number(stats.TileDraws)}"
-                : $"Tiles {CompactFormat.Number(stats.TileDraws)}"
-            : $"Draw {CompactFormat.Number(stats.DrawnObjects)} / {CompactFormat.Number(stats.VisibleObjects)}");
-        var totalAtoms = _scene.VirtualAtomCount;
-        if (_stage.UnderlayScene is { } underlay && !ReferenceEquals(underlay, _scene)) totalAtoms += underlay.VirtualAtomCount;
-        SetToolStripText(_atomsStatus, $"Atoms {CompactFormat.Number(stats.VisibleAtoms)} / {CompactFormat.Number(totalAtoms)}");
+        if (DrawStatusDiagnosticsEnabled)
+        {
+            var stats = _stage.LastStats;
+            SetToolStripText(_drawStatus, stats.TileLod
+                ? stats.VisibleObjects > 0 || stats.DrawnObjects > 0
+                    ? $"Draw {CompactFormat.Number(stats.DrawnObjects)} / {CompactFormat.Number(stats.VisibleObjects)} + Tiles {CompactFormat.Number(stats.TileDraws)}"
+                    : $"Tiles {CompactFormat.Number(stats.TileDraws)}"
+                : $"Draw {CompactFormat.Number(stats.DrawnObjects)} / {CompactFormat.Number(stats.VisibleObjects)}");
+        }
         UpdateStatusBar();
     }
 
@@ -2479,8 +2505,7 @@ internal sealed partial class MainForm : Form
     {
         _renderFpsStatus.ForeColor = Theme.SecondaryText;
         _animationFpsStatus.ForeColor = Theme.SecondaryText;
-        _drawStatus.ForeColor = Theme.SecondaryText;
-        _atomsStatus.ForeColor = Theme.SecondaryText;
+        if (DrawStatusDiagnosticsEnabled) _drawStatus.ForeColor = Theme.SecondaryText;
         _zoomStatus.ForeColor = Theme.SecondaryText;
         _timelineFrameStatus.ForeColor = Theme.SecondaryText;
         SetToolStripText(

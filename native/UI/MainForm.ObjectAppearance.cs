@@ -34,7 +34,16 @@ internal sealed partial class MainForm
             || _scene.StrokeArgb[index] != _scene.StrokeArgb[objectIndex]
             || Math.Abs(_scene.Stroke[index] - _scene.Stroke[objectIndex]) > 0.001f
             || _scene.GetGradientKind(index) != _scene.GetGradientKind(objectIndex));
-        _objectAppearancePanel.SetMaterial(_materialEditor, fillAvailable, strokeAvailable, mixed);
+        _objectAppearancePanel.SetMaterial(_materialEditor, fillAvailable, strokeAvailable, mixed,
+            selection.Any(index => Math.Abs(_scene.Stroke[index] - _scene.Stroke[objectIndex]) > 0.001f),
+            selection.Any(index => InspectorMaterialAlpha(index) != InspectorMaterialAlpha(objectIndex)));
+    }
+
+    private byte InspectorMaterialAlpha(int index)
+    {
+        var stops = _scene.HasGradient(index) ? _scene.GetGradientStops(index) : [];
+        return stops.Length > 0 ? Color.FromArgb(stops[0].Argb).A
+            : Color.FromArgb(_materialEditor.EditingStroke ? _scene.StrokeArgb[index] : _scene.Argb[index]).A;
     }
 
     private void BindObjectMaterial(int objectIndex)
