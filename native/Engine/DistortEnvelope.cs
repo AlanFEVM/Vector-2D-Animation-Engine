@@ -53,11 +53,28 @@ internal readonly record struct DistortBezierAnchor(
 
 internal readonly struct DistortWarp : IEquatable<DistortWarp>
 {
+    private readonly Matrix3x2 _affineTransform;
+    private readonly bool _isAffine;
     [JsonConstructor]
     public DistortWarp(TransformOverlayFrame source, DistortEnvelope envelope)
     {
         Source = source;
         Envelope = envelope;
+        _isAffine = false;
+        _affineTransform = default;
+        if (source.IsValid && envelope.IsAffine)
+        {
+            var frame = new Matrix3x2(source.AxisX.X, source.AxisX.Y,
+                source.AxisY.X, source.AxisY.Y, source.Origin.X, source.Origin.Y);
+            if (Matrix3x2.Invert(frame, out var inverse))
+            {
+                var origin = envelope.TopLeft;
+                var x = Subtract(envelope.TopRight, origin);
+                var y = Subtract(envelope.BottomLeft, origin);
+                _affineTransform = inverse * new Matrix3x2(x.X, x.Y, y.X, y.Y, origin.X, origin.Y);
+                _isAffine = IsFinite(_affineTransform);
+            }
+        }
     }
 
     public TransformOverlayFrame Source { get; }
@@ -73,6 +90,12 @@ internal readonly struct DistortWarp : IEquatable<DistortWarp>
 
     public PointF Map(PointF point) => IsValid ? Envelope.Map(Source, point) : point;
 
+    internal bool TryGetAffineTransform(out Matrix3x2 transform)
+    {
+        transform = _affineTransform;
+        return _isAffine;
+    }
+
     public bool TryInverseMap(PointF mappedPoint, out PointF sourcePoint)
     {
         sourcePoint = mappedPoint;
@@ -86,7 +109,7 @@ internal readonly struct DistortWarp : IEquatable<DistortWarp>
     }
 
     public DistortWarp DeepClone() => IsValid
-        ? new DistortWarp(Source, Envelope.DeepClone())
+        ? this
         : default;
 
     public DistortWarp AffineTransform(Matrix3x2 transform)
@@ -157,6 +180,7 @@ internal readonly struct DistortWarp : IEquatable<DistortWarp>
 
 internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
 {
+    private enum ControlSource { Copied, Transformed }
     private const int MaximumAnchorsPerSide = 64;
     // The Distort tool exposes exactly one inserted anchor across the whole envelope. The four
     // corners are fixed structural anchors; every side may also carry one user-inserted anchor,
@@ -172,6 +196,7 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
     private readonly DistortBezierAnchor[]? _bottom;
     private readonly DistortBezierAnchor[]? _left;
     private readonly bool _isValid;
+    private readonly bool _isAffine;
     private readonly RectangleF _bounds;
 
     [JsonConstructor]
@@ -180,14 +205,23 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
         DistortBezierAnchor[] right,
         DistortBezierAnchor[] bottom,
         DistortBezierAnchor[] left)
+        : this(CloneAnchors(top), CloneAnchors(right), CloneAnchors(bottom), CloneAnchors(left), ControlSource.Copied)
     {
-        _top = CloneAnchors(top);
-        _right = CloneAnchors(right);
-        _bottom = CloneAnchors(bottom);
-        _left = CloneAnchors(left);
-        var analysis = Analyze(_top, _right, _bottom, _left);
+    }
+
+    // Transformed controls are freshly allocated and retain the validated ids,
+    // knots and corner links. Their coordinates still require full validation.
+    private DistortEnvelope(DistortBezierAnchor[] top, DistortBezierAnchor[] right,
+        DistortBezierAnchor[] bottom, DistortBezierAnchor[] left, ControlSource source)
+    {
+        _top = top;
+        _right = right;
+        _bottom = bottom;
+        _left = left;
+        var analysis = Analyze(top, right, bottom, left, source == ControlSource.Transformed);
         _isValid = analysis.IsValid;
         _bounds = analysis.Bounds;
+        _isAffine = _isValid && HasAffineControls(top, right, bottom, left);
     }
 
     public DistortEnvelope(
@@ -220,6 +254,28 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
     [JsonIgnore] public bool IsValid => _isValid;
     [JsonIgnore] public RectangleF Bounds => _isValid ? _bounds : RectangleF.Empty;
 
+    // Check control parameters as well as corners: collinear controls alone can
+    // still produce a nonlinear texture mapping along an otherwise straight edge.
+    [JsonIgnore] internal bool IsAffine => _isAffine;
+
+    private static bool HasAffineControls(DistortBezierAnchor[]? top, DistortBezierAnchor[]? right,
+        DistortBezierAnchor[]? bottom, DistortBezierAnchor[]? left) =>
+        IsLinearSide(top) && IsLinearSide(right) && IsLinearSide(bottom) && IsLinearSide(left)
+        && NearlyEqual(bottom![^1].Anchor, Add(top![^1].Anchor, Subtract(bottom[0].Anchor, top[0].Anchor)));
+
+    private static bool IsLinearSide(DistortBezierAnchor[]? side) => side is { Length: 2 }
+        && side[0].SourceT == 0 && side[1].SourceT == 1
+        && NearlyEqual(side[0].OutgoingControl, Lerp(side[0].Anchor, side[1].Anchor, 1f / 3f))
+        && NearlyEqual(side[1].IncomingControl, Lerp(side[0].Anchor, side[1].Anchor, 2f / 3f));
+
+    private static bool NearlyEqual(PointF a, PointF b)
+    {
+        // Permit only float roundoff from transforming the stored cubic controls.
+        var tolerance = 0.000001f * Math.Max(1, Math.Max(Math.Max(Math.Abs(a.X), Math.Abs(a.Y)),
+            Math.Max(Math.Abs(b.X), Math.Abs(b.Y))));
+        return Math.Abs(a.X - b.X) <= tolerance && Math.Abs(a.Y - b.Y) <= tolerance;
+    }
+
     public static DistortEnvelope FromBounds(RectangleF bounds) => new(
         new PointF(bounds.Left, bounds.Top),
         new PointF(bounds.Right, bounds.Top),
@@ -227,8 +283,11 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
         new PointF(bounds.Left, bounds.Bottom));
 
     public DistortEnvelope DeepClone() => IsValid
-        ? new DistortEnvelope(_top!, _right!, _bottom!, _left!)
+        ? this
         : default;
+    // Envelopes are immutable: public accessors clone arrays, and every edit
+    // constructs new controls. Sharing the private arrays keeps undo and preview
+    // isolated without allocating eight control arrays for every image read.
 
     // Collapses a legacy envelope that carries more than one inserted anchor down to the single
     // anchor the Distort tool now allows. Every side keeps its two structural corners and, at most,
@@ -695,7 +754,7 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
     public PointF BoundaryPoint(DistortSide side, float sourceT)
     {
         if (!IsValid || !float.IsFinite(sourceT)) return PointF.Empty;
-        return EvaluateBoundary(Side(side), sourceT).Point;
+        return EvaluateBoundaryPoint(Side(side), sourceT);
     }
 
     public PointF Map(TransformOverlayFrame source, PointF point)
@@ -705,7 +764,7 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
         {
             return point;
         }
-        var mapped = MapCoordinates(u, v).Point;
+        var mapped = MapPosition(u, v);
         return IsFinite(mapped) ? mapped : point;
     }
 
@@ -855,7 +914,7 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
             TransformAnchors(_top!, transform),
             TransformAnchors(_right!, transform),
             TransformAnchors(_bottom!, transform),
-            TransformAnchors(_left!, transform));
+            TransformAnchors(_left!, transform), ControlSource.Transformed);
         return transformed.IsValid ? transformed : this;
     }
 
@@ -869,7 +928,7 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
                 TransformAnchors(_top!, transform),
                 TransformAnchors(_right!, transform),
                 TransformAnchors(_bottom!, transform),
-                TransformAnchors(_left!, transform));
+                TransformAnchors(_left!, transform), ControlSource.Transformed);
             return transformed.IsValid ? transformed : this;
         }
         catch (Exception exception) when (exception is ArithmeticException or InvalidOperationException)
@@ -1110,6 +1169,14 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
         return float.IsFinite(u) && float.IsFinite(v);
     }
 
+    // Forward texture/mesh sampling needs positions only. Inverse mapping and
+    // validity analysis retain the derivative-bearing evaluator below.
+    private PointF MapPosition(float u, float v) => Subtract(
+        Add(
+            Add(Scale(EvaluateBoundaryPoint(_top!, u), 1f - v), Scale(EvaluateBoundaryPoint(_bottom!, u), v)),
+            Add(Scale(EvaluateBoundaryPoint(_left!, v), 1f - u), Scale(EvaluateBoundaryPoint(_right!, v), u))),
+        Bilinear(_top![0].Anchor, _top[^1].Anchor, _bottom![0].Anchor, _bottom[^1].Anchor, u, v));
+
     private CoonsSample MapCoordinates(float u, float v)
     {
         var top = EvaluateBoundary(_top!, u);
@@ -1145,17 +1212,29 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
         return new CoonsSample(point, du, dv);
     }
 
-    private static BoundarySample EvaluateBoundary(DistortBezierAnchor[] anchors, float sourceT)
+    private static void GetBoundaryParameters(DistortBezierAnchor[] anchors, float sourceT,
+        out DistortBezierAnchor start, out DistortBezierAnchor end, out float span, out float localT)
     {
         var segment = sourceT <= anchors[0].SourceT
             ? 0
             : sourceT >= anchors[^1].SourceT
                 ? anchors.Length - 2
                 : Math.Clamp(UpperBound(anchors, sourceT) - 1, 0, anchors.Length - 2);
-        var start = anchors[segment];
-        var end = anchors[segment + 1];
-        var span = end.SourceT - start.SourceT;
-        var localT = span <= SourceParameterTolerance ? 0f : (sourceT - start.SourceT) / span;
+        start = anchors[segment];
+        end = anchors[segment + 1];
+        span = end.SourceT - start.SourceT;
+        localT = span <= SourceParameterTolerance ? 0f : (sourceT - start.SourceT) / span;
+    }
+
+    private static PointF EvaluateBoundaryPoint(DistortBezierAnchor[] anchors, float sourceT)
+    {
+        GetBoundaryParameters(anchors, sourceT, out var start, out var end, out _, out var localT);
+        return CubicPoint(start.Anchor, start.OutgoingControl, end.IncomingControl, end.Anchor, localT);
+    }
+
+    private static BoundarySample EvaluateBoundary(DistortBezierAnchor[] anchors, float sourceT)
+    {
+        GetBoundaryParameters(anchors, sourceT, out var start, out var end, out var span, out var localT);
         var point = CubicPoint(
             start.Anchor,
             start.OutgoingControl,
@@ -1177,9 +1256,12 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
         DistortBezierAnchor[] top,
         DistortBezierAnchor[] right,
         DistortBezierAnchor[] bottom,
-        DistortBezierAnchor[] left)
+        DistortBezierAnchor[] left, bool transformedTopology = false)
     {
-        if (!ValidateSide(top)
+        if (transformedTopology ? !FiniteControls(top) || !FiniteControls(right) || !FiniteControls(bottom) || !FiniteControls(left)
+            || !ValidateCorner(top[0], left[0]) || !ValidateCorner(top[^1], right[0])
+            || !ValidateCorner(bottom[0], left[^1]) || !ValidateCorner(bottom[^1], right[^1])
+            : !ValidateSide(top)
             || !ValidateSide(right)
             || !ValidateSide(bottom)
             || !ValidateSide(left)
@@ -1200,6 +1282,12 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
         }
 
         var temporary = new DistortEnvelope(top, right, bottom, left, skipAnalysis: true);
+        // A linear parallelogram's Coons patch is affine everywhere. The side,
+        // corner, id and finite-control checks above still apply; interior
+        // sampling cannot add information within this safe arithmetic range.
+        if (temporary.IsAffine && Math.Abs(bounds.Left) < 1e30f && Math.Abs(bounds.Top) < 1e30f
+            && Math.Abs(bounds.Right) < 1e30f && Math.Abs(bounds.Bottom) < 1e30f)
+            return new EnvelopeAnalysis(true, bounds);
         var uParameters = ValidationParameters(top, bottom);
         var vParameters = ValidationParameters(left, right);
         foreach (var v in vParameters)
@@ -1226,7 +1314,15 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
         _bottom = bottom;
         _left = left;
         _isValid = skipAnalysis;
+        _isAffine = skipAnalysis && HasAffineControls(top, right, bottom, left);
         _bounds = RectangleF.Empty;
+    }
+
+    private static bool FiniteControls(DistortBezierAnchor[] anchors)
+    {
+        foreach (var anchor in anchors)
+            if (!IsFinite(anchor.Anchor) || !IsFinite(anchor.IncomingControl) || !IsFinite(anchor.OutgoingControl)) return false;
+        return true;
     }
 
     private static bool ValidateSide(DistortBezierAnchor[] anchors)

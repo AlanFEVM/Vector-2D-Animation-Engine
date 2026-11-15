@@ -8567,6 +8567,18 @@ internal static partial class Benchmark
 
     public static void RunStageRendererRegression()
     {
+        RunBitmapLiveDistortionRegression();
+        RunBitmapBreakApartRegression();
+        RunExplicitGpuRegression(RunBitmapLayerPixelRegression);
+        RunBitmapAffineTransformRegression();
+        RunBitmapBoundaryWorkingSetRegression();
+        RunBitmapDistortResultCacheBudgetRegression();
+        RunBitmapBackgroundDistortionRegression();
+        RunBitmapDistortRegression();
+        RunDistortBoundsCacheRegression();
+        RunBitmapDistortNativeRasterRegression();
+        RunBitmapDistortResultCacheRegression();
+        RunBitmapDistortZoomCacheRegression();
         RunUnlitSceneFrameCacheRegression();
         RunSceneToolPaletteVisibilityRegression();
         RunShotParallaxRenderingRegression();
@@ -8598,12 +8610,6 @@ internal static partial class Benchmark
         RunMotionTrackSceneInteractionRegression();
         RunMarqueeToolPolicyRegression();
         RunDistortPointerRegression();
-        RunBitmapDistortRegression();
-        RunDistortBoundsCacheRegression();
-        RunBitmapDistortNativeRasterRegression();
-        RunBitmapDistortResultCacheRegression();
-        RunBitmapDistortZoomCacheRegression();
-        RunBitmapDistortResultCacheBudgetRegression();
         RunDistortRasterPerformanceRegression();
         RunFrozenRotationTransformFrameRegression();
         RunZoomLodPreviewRegression();

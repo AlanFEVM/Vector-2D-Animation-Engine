@@ -80,8 +80,16 @@ internal sealed partial class Direct2DStageRenderer
         if (!_mergedSelectionActive) return false;
         var scene = stage.Scene;
 
-        if (scene.TryGetObjectDistortions(objectIndex, out _))
+        if (scene.TryGetObjectDistortionsView(objectIndex, out _))
         {
+            if (shape == ShapeKind.Bitmap
+                && scene.TryGetBitmapObjectData(objectIndex, out var bitmap) && !bitmap.IsBrokenApart
+                && stage.TryGetBitmapAffineWorldCorners(scene, objectIndex, out var affineCorners))
+            {
+                AppendMergedContour(stage, [affineCorners[0], affineCorners[1], affineCorners[3], affineCorners[2]], closed: true,
+                    stage.SelectionHighlightForObject(objectIndex, SelectionHighlightKind.Fill));
+                return true;
+            }
             var kind = stage.SelectionHighlightForObject(objectIndex, SelectionHighlightKind.Fill);
             foreach (var contour in scene.GetDistortedObjectBoundaryContours(objectIndex))
             {
@@ -158,7 +166,7 @@ internal sealed partial class Direct2DStageRenderer
         var shape = scene.ShapeKind[objectIndex];
         // Editable bezier lines and distorted objects keep their dedicated overlay.
         if (hit.Key.Kind == DrawingElementKind.Stroke && shape == ShapeKind.Line) return false;
-        if (scene.TryGetObjectDistortions(objectIndex, out _)) return false;
+        if (scene.TryGetObjectDistortionsView(objectIndex, out _)) return false;
         // One outline per object: a fill plus its boundary stroke is the same outline.
         if (!_mergedSelectionOutlinedObjects.Add(objectIndex)) return true;
         return TryAppendMergedObjectOutline(stage, objectIndex, shape);

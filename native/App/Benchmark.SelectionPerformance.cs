@@ -48,6 +48,7 @@ internal static partial class Benchmark
         try
         {
             Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", null);
+            RunThousandBitmapInteractionRegression();
             RunLargeSelectionFrameRateRegressionCore();
             Console.Out.Flush();
             RunOverlappingSelectionBuildRegressionCore();

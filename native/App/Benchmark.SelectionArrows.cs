@@ -6,6 +6,7 @@ internal static partial class Benchmark
 {
     private static void RunSelectionArrowRegression()
     {
+        RunBitmapBreakApartSelectionArrowRegression();
         var defaults = new SelectionArrowSettings();
         AssertTimeline(defaults.BehaviorFor(ToolMode.ObjectSelect) == SelectionArrowBehavior.Object
             && defaults.BehaviorFor(ToolMode.Select) == SelectionArrowBehavior.Path,
@@ -622,13 +623,15 @@ internal static partial class Benchmark
         scene.X[moving] = -2200;
         scene.Argb[moving] = Color.Blue.ToArgb();
         stage.Invalidate();
-        using (var overlap = Capture("DrawGdiBase2D", stage.ClientRectangle, int.MaxValue))
+        typeof(StageControl).GetProperty(nameof(StageControl.PlaybackActive), System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)!.SetValue(stage, true);
+        using (var overlap = Capture("DrawGdiBase2D", false))
         {
             using (var graphics = Graphics.FromImage(overlap))
-                RequireMethod(typeof(StageControl), "DrawGdiDynamic2D").Invoke(stage, [graphics, int.MaxValue]);
+                RequireMethod(typeof(StageControl), "DrawGdiDynamic2D").Invoke(stage, [graphics, default(RenderStats)]);
             AssertTimeline(Sample(overlap, new PointF(-2400, 0)).ToArgb() == Color.Blue.ToArgb(),
                 "The origin reference painted over the moving object after the dynamic pass.");
         }
+        typeof(StageControl).GetProperty(nameof(StageControl.PlaybackActive), System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)!.SetValue(stage, false);
         scene.Argb[moving] = color;
         scene.X[moving] = 4000;
         stage.Invalidate();
@@ -824,5 +827,58 @@ internal static partial class Benchmark
             RequireMethod(typeof(StageControl), "DrawObjectArrowSelection").Invoke(stage, [graphics]);
             return bitmap;
         }
+    }
+
+    private static void RunBitmapBreakApartSelectionArrowRegression()
+    {
+        using var form = new MainForm { ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual, Location = new Point(-30000, -30000) };
+        ((WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!).SelectedView = WorkspaceView.BasicDrawing;
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        scene.CreateEmpty();
+        var index = scene.AddBitmapObject(0, PointF.Empty, new BitmapObjectData
+        {
+            ImageAssetId = "bitmap-arrow", PlacedSize = new SizeF(4000, 3000),
+            VisibleContours = [[new(0, 0), new(1, 0), new(1, 1), new(0, 1)],
+                [new(0.4f, 0.4f), new(0.6f, 0.4f), new(0.6f, 0.6f), new(0.4f, 0.6f)]]
+        });
+        var settingsField = RequireField(typeof(MainForm), "_applicationSettings");
+        var settings = (ApplicationSettings)settingsField.GetValue(form)!;
+        settingsField.SetValue(form, settings with { SelectionArrows = new SelectionArrowSettings() });
+        var activate = RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]);
+        activate.Invoke(form, [ToolMode.ObjectSelect]);
+        var select = RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]);
+        select.Invoke(form, [index, false]);
+        AssertTimeline(stage.ObjectArrowUsesBounds(index) && !stage.ObjectArrowSelectedFills().Any(),
+            "An intact bitmap must retain whole-object selection.");
+        RequireField(typeof(MainForm), "_stageContextMenuBreakApartObjects").SetValue(form, new[] { index });
+        RequireMethod(typeof(MainForm), "BreakApartDrawingObjects").Invoke(form, []);
+        AssertTimeline(scene.TryGetBitmapObjectData(index, out var data) && data.IsBrokenApart
+            && !stage.ObjectArrowUsesBounds(index) && stage.ObjectArrowSelectedFills().Any()
+            && !stage.TryGetObjectArrowSelectionBounds(out _),
+            "Bitmap Break Apart did not replace its selection box with stippled fill feedback.");
+        var hit = scene.HitTestElement(new PointF(-1500, -1000), 0, 0);
+        RequireMethod(typeof(MainForm), "SetSelection", [typeof(DrawingElementHit), typeof(bool)])
+            .Invoke(form, [hit, false]);
+        AssertTimeline(stage.SelectedElements.Count == 1 && stage.GetSelectedFillPartContours(hit).Length == 2,
+            "Click selection discarded the bitmap fill or its hole.");
+        var start = Point.Round(stage.WorldToScreen(-2500, -2000));
+        var end = Point.Round(stage.WorldToScreen(0, 2000));
+        RequireField(typeof(MainForm), "_marqueeStart").SetValue(form, start);
+        RequireMethod(typeof(MainForm), "CompleteMarqueeSelection").Invoke(form, [end]);
+        AssertTimeline(scene.ObjectCount == 2 && stage.SelectedObjects.Count == 1
+            && stage.ObjectArrowSelectedFills().Count() == 1,
+            "A crossing marquee failed to select and stipple just the detached bitmap region.");
+        RequireMethod(typeof(MainForm), "CancelStageSelection").Invoke(form, []);
+        AssertTimeline(scene.ObjectCount == 1 && scene.TryGetBitmapObjectData(0, out data) && data.IsBrokenApart,
+            "Cancelling an unedited bitmap selection did not restore the temporary split.");
+        settingsField.SetValue(form, settings with { SelectionArrows = new SelectionArrowSettings
+            { BlackArrow = SelectionArrowBehavior.Path, WhiteArrow = SelectionArrowBehavior.Object } });
+        activate.Invoke(form, [ToolMode.Select]);
+        select.Invoke(form, [0, false]);
+        AssertTimeline(stage.ObjectSelectionMode && stage.ObjectArrowSelectedFills().Any(),
+            "Bitmap stipple did not follow the configured arrow role.");
+        Console.WriteLine("bitmap_break_apart_selection=stipple,click_fill,crossing_marquee,cancel,arrow_settings");
     }
 }

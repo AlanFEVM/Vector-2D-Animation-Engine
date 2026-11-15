@@ -71,6 +71,38 @@ internal readonly record struct TimelineBlankKeyframeRangePlan(int[] ExtensionFr
 
 internal sealed partial class MainForm : Form, IMessageFilter
 {
+    private sealed class MenuBarRenderer : ToolStripProfessionalRenderer
+    {
+        public MenuBarRenderer() => RoundedEdges = false;
+
+        protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
+        {
+            using var background = new SolidBrush(Theme.Top);
+            e.Graphics.FillRectangle(background, e.AffectedBounds);
+        }
+
+        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e) { }
+
+        protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+        {
+            if (!e.Item.Enabled || !e.Item.Selected && !e.Item.Pressed) return;
+            var bounds = new Rectangle(Point.Empty, e.Item.Size);
+            bounds.Inflate(-2, -4);
+            using var background = new SolidBrush(SystemInformation.HighContrast
+                ? SystemColors.Highlight : Theme.Mix(Theme.Top, Theme.Text, e.Item.Pressed ? 0.09f : 0.055f));
+            e.Graphics.FillRectangle(background, bounds);
+        }
+
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+        {
+            e.TextColor = SystemInformation.HighContrast
+                ? !e.Item.Enabled ? SystemColors.GrayText
+                    : e.Item.Selected || e.Item.Pressed ? SystemColors.HighlightText : SystemColors.MenuText
+                : !e.Item.Enabled ? Theme.DisabledText : Theme.ReadableText(Theme.Top, Theme.SecondaryText);
+            base.OnRenderItemText(e);
+        }
+    }
+
     [Flags]
     private enum DeferredPresentationRefresh
     {
@@ -245,8 +277,6 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private TextBox? _projectTitleEditor;
     private SvgIconButton? _propertiesPanelButton;
     private SvgIconButton? _timelinePanelButton;
-    private readonly DashDock _dashDock = new();
-    private readonly WorkspaceColorFlyout _workspaceColorFlyout = new();
     private readonly PlaybackSettingsPanel _playbackSettings = new();
     private readonly ModernNumericUpDown _topPlaybackFps = new()
     {
@@ -299,6 +329,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private readonly LibraryVaultPanel _libraryVaultPanel = new();
     private readonly AnimatedContextMenuStrip _stageContextMenu = new();
     private readonly AnimatedContextMenuStrip _mainMenu = new();
+    private readonly MenuStrip _menuBar = new();
+    private Label? _applicationMark;
+    private bool _layingOutTopBar;
     private readonly ToolStripMenuItem _deleteNestedInstanceMenuItem = new("Delete");
     private readonly ToolStripMenuItem _breakApartMenuItem = new("Break Apart");
     private readonly ToolStripMenuItem _convertToSymbolMenuItem = new("Convert to Symbol")
@@ -309,6 +342,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private readonly ToolStripMenuItem _transformGroupMenuItem = new("Transform");
     private readonly ToolStripMenuItem _flipHorizontalMenuItem = new("Flip Horizontal");
     private readonly ToolStripMenuItem _flipVerticalMenuItem = new("Flip Vertical");
+    private readonly ToolStripMenuItem _fitBitmapToCanvasMenuItem = new("Fit Bitmap to Canvas");
     private readonly ToolStripMenuItem _bringForwardMenuItem = new("Bring Forward")
     {
         Tag = ShortcutCommandIds.BringForward
@@ -947,7 +981,6 @@ internal sealed partial class MainForm : Form, IMessageFilter
         };
         _stage.AllowDrop = true;
         BindStageBitmapImageResolvers(_stage);
-        _dashDock.SetWorkspaceColor(_stage.BackColor);
         Theme.StyleTextBox(_textEditor);
         _textEditor.BorderStyle = BorderStyle.FixedSingle;
         BuildStageContextMenu();
@@ -993,6 +1026,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         HookEvents();
         UiLocalization.Watch(this);
         UiLocalization.Watch(_mainMenu);
+        UiLocalization.Watch(_menuBar);
         UiLocalization.Watch(_stageContextMenu);
         UiLocalization.Watch(_scene3DContextMenu);
         if (_restartState is null) CreateNewProject();
@@ -1035,6 +1069,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         {
             _flipHorizontalMenuItem,
             _flipVerticalMenuItem,
+            _fitBitmapToCanvasMenuItem,
             new ToolStripSeparator(),
             _bringForwardMenuItem,
             _sendBackwardMenuItem
@@ -1067,6 +1102,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _convertToSymbolMenuItem.Click += (_, _) => ConvertStageSelectionToSymbol();
         _flipHorizontalMenuItem.Click += (_, _) => FlipSelectedDrawingObjects(horizontal: true);
         _flipVerticalMenuItem.Click += (_, _) => FlipSelectedDrawingObjects(horizontal: false);
+        _fitBitmapToCanvasMenuItem.Click += (_, _) => FitSelectedBitmapsToCanvas();
         _bringForwardMenuItem.Click += (_, _) => MoveSelectedDrawingObjectsInStack(1);
         _sendBackwardMenuItem.Click += (_, _) => MoveSelectedDrawingObjectsInStack(-1);
         _convertLineToFillMenuItem.Click += (_, _) => ConvertStageContextLineToFill();
@@ -1110,6 +1146,10 @@ internal sealed partial class MainForm : Form, IMessageFilter
             }
 
             var drawingTargets = SelectedActiveDrawingObjectIndices();
+            var bitmapTargets = drawingTargets
+                .Where(index => _scene.ShapeKind[index] == ShapeKind.Bitmap
+                    && _scene.TryGetBitmapObjectData(index, out _))
+                .ToArray();
             var selectedInstances = SelectedSceneInstances();
             var breakApartWorkspace = IsDrawingWorkspaceContext || IsSceneDrawingAvailable();
             var hasBreakApartTarget = selectedInstances.Count > 0 || drawingTargets.Length > 0;
@@ -1147,6 +1187,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
                     && _scene.ShapeKind[index] != ShapeKind.Bitmap);
             _flipHorizontalMenuItem.Enabled = commandTargetCount > 0 && !containsNonFlippableObject;
             _flipVerticalMenuItem.Enabled = commandTargetCount > 0 && !containsNonFlippableObject;
+            var canFitBitmap = bitmapTargets.Any(CanFitBitmapToCanvas);
+            _fitBitmapToCanvasMenuItem.Visible = canFitBitmap;
+            _fitBitmapToCanvasMenuItem.Enabled = canFitBitmap;
             _bringForwardMenuItem.Enabled = canBringForward;
             _sendBackwardMenuItem.Enabled = canSendBackward;
             _mergeAndSimplifyLinesMenuItem.Enabled = !DrawingToolsBlocked()
@@ -1188,23 +1231,28 @@ internal sealed partial class MainForm : Form, IMessageFilter
         PaintBottomBorder(top);
         Controls.Add(top);
         RegisterWindowDrag(top);
-        var menuButton = new SvgIconButton(SvgIconKind.Menu)
-        {
-            Left = 10,
-            Top = 8,
-            AccessibleName = "Main menu"
-        };
-        Theme.StyleToolbarButton(menuButton);
-        menuButton.MouseEnter += (_, _) => _toolTip.ShowFor(menuButton, "Main menu");
-        menuButton.MouseLeave += (_, _) => _toolTip.HideTip();
-        menuButton.Click += (_, _) => DropDownToggle.Toggle(_mainMenu,
-            () => _mainMenu.Show(menuButton, new Point(0, menuButton.Height + 4)));
-        top.Controls.Add(menuButton);
+        _menuBar.Dock = DockStyle.None;
+        _menuBar.LayoutStyle = ToolStripLayoutStyle.HorizontalStackWithOverflow;
+        _menuBar.CanOverflow = true;
+        _menuBar.Left = 8;
+        _menuBar.Top = 2;
+        _menuBar.Width = 720;
+        _menuBar.Height = 32;
+        _menuBar.AutoSize = false;
+        _menuBar.BackColor = Theme.Top;
+        _menuBar.ForeColor = Theme.SecondaryText;
+        _menuBar.Font = Theme.UiFont(8.5f);
+        _menuBar.RenderMode = ToolStripRenderMode.Professional;
+        _menuBar.Renderer = new MenuBarRenderer();
+        _menuBar.AccessibleName = "Main menu";
+        top.Controls.Add(_menuBar);
+        MainMenuStrip = _menuBar;
         BuildMainMenu();
-        var mark = new Label { Text = "V2", Left = 52, Top = 10, Width = 30, Height = 30, ForeColor = Theme.Accent, BackColor = Theme.Top, Font = Theme.UiFont(10.5f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
+        var mark = new Label { Text = "V2", Left = 740, Top = 10, Width = 30, Height = 30, ForeColor = Theme.Accent, BackColor = Theme.Top, Font = Theme.UiFont(10.5f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
+        _applicationMark = mark;
         RegisterWindowDrag(mark);
         top.Controls.Add(mark);
-        _projectTitleLabel = Theme.Label("Untitled Project", 94, 13, 180, Theme.Text, Theme.UiFont(10, FontStyle.Bold));
+        _projectTitleLabel = Theme.Label("Untitled Project", 780, 13, 180, Theme.Text, Theme.UiFont(10, FontStyle.Bold));
         _projectTitleLabel.AutoEllipsis = true;
         _projectTitleLabel.Cursor = Cursors.Hand;
         _projectTitleLabel.Click += (_, _) => BeginProjectTitleEdit();
@@ -1214,7 +1262,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
         _projectTitleEditor = new TextBox
         {
-            Left = 94,
+            Left = 780,
             Top = 13,
             Width = 180,
             Height = 23,
@@ -1249,8 +1297,6 @@ internal sealed partial class MainForm : Form, IMessageFilter
         };
         _propertiesPanelButton = new SvgIconButton(SvgIconKind.PropertiesPanel)
         {
-            Left = 282,
-            Top = 8,
             AccessibleName = "Properties panel",
             AccessibleRole = AccessibleRole.CheckButton
         };
@@ -1260,8 +1306,6 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _propertiesPanelButton.MouseLeave += (_, _) => _toolTip.HideTip();
         _timelinePanelButton = new SvgIconButton(SvgIconKind.TimelinePanel)
         {
-            Left = 324,
-            Top = 8,
             AccessibleName = "Timeline panel",
             AccessibleRole = AccessibleRole.CheckButton
         };
@@ -1269,9 +1313,6 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _timelinePanelButton.Click += (_, _) => ToggleTimelinePanel();
         _timelinePanelButton.MouseEnter += (_, _) => _toolTip.ShowFor(_timelinePanelButton, "Timeline (F2)");
         _timelinePanelButton.MouseLeave += (_, _) => _toolTip.HideTip();
-        _dashDock.WorkspaceColorRequested += (_, _) => ChooseWorkspaceColor();
-        _workspaceColorFlyout.ColorPreviewChanged += (_, _) => PreviewWorkspaceColor(_workspaceColorFlyout.Color);
-        _workspaceColorFlyout.ColorEditingCompleted += (_, _) => CommitWorkspaceColor(_workspaceColorFlyout.Color);
         var playbackFpsLabel = new Label
         {
             Text = "FPS",
@@ -1297,16 +1338,24 @@ internal sealed partial class MainForm : Form, IMessageFilter
         var minimize = CreateWindowButton(WindowChromeButtonKind.Minimize, "Minimize");
         _minimizeWindowButton = minimize;
         minimize.Click += (_, _) => WindowState = FormWindowState.Minimized;
+        minimize.MouseEnter += (_, _) => _toolTip.ShowFor(minimize, "Minimize");
+        minimize.MouseLeave += (_, _) => _toolTip.HideTip();
         _maximizeButton = CreateWindowButton(WindowChromeButtonKind.Maximize, "Maximize");
         _maximizeButton.Click += (_, _) => ToggleMaximized();
+        _maximizeButton.MouseEnter += (_, _) => _toolTip.ShowFor(_maximizeButton,
+            WindowState == FormWindowState.Maximized ? "Restore" : "Maximize");
+        _maximizeButton.MouseLeave += (_, _) => _toolTip.HideTip();
         var close = CreateWindowButton(WindowChromeButtonKind.Close, "Close");
         _closeWindowButton = close;
         close.Click += (_, _) => Close();
+        close.MouseEnter += (_, _) => _toolTip.ShowFor(close, "Close");
+        close.MouseLeave += (_, _) => _toolTip.HideTip();
         top.Controls.Add(restart);
         top.Controls.Add(minimize);
         top.Controls.Add(_maximizeButton);
         top.Controls.Add(close);
         top.Resize += (_, _) => LayoutTopBar();
+        _menuBar.Layout += (_, _) => LayoutTopBar();
         Resize += (_, _) =>
         {
             UpdateWindowChromeState();
@@ -1424,41 +1473,16 @@ internal sealed partial class MainForm : Form, IMessageFilter
         metrics.Controls.Add(_sceneProjectionButton);
         metrics.Controls.Add(zoomIn);
         metrics.Controls.Add(zoomOut);
-        var workbenchActions = new Panel { BackColor = Theme.Top, Height = _workspaceTabs.Height };
-        workbenchActions.Controls.Add(_propertiesPanelButton);
-        workbenchActions.Controls.Add(_timelinePanelButton);
-        _dashDock.CompactHeight = true;
-        workbenchActions.Controls.Add(_dashDock);
-        _workspaceHeader.Controls.Add(workbenchActions);
-        void LayoutWorkbenchActions()
-        {
-            var available = _workspaceTabs.WorkbenchActionsBounds;
-            var gap = ScaleResponsive(6, DeviceDpi / 96d);
-            var buttonsWidth = _propertiesPanelButton.Width + _timelinePanelButton.Width + gap * 2;
-            _dashDock.Compact = available.Width < buttonsWidth + ScaleResponsive(DashDock.PreferredDockWidth, DeviceDpi / 96d);
-            workbenchActions.Width = buttonsWidth + _dashDock.Width;
-            workbenchActions.Height = Math.Max(_dashDock.Height, Math.Max(_propertiesPanelButton.Height, _timelinePanelButton.Height));
-            workbenchActions.Visible = available.Width >= workbenchActions.Width;
-            workbenchActions.Left = Math.Clamp(
-                (_workspaceHeader.ClientSize.Width - workbenchActions.Width) / 2,
-                available.Left,
-                Math.Max(available.Left, available.Right - workbenchActions.Width));
-            workbenchActions.Top = _workspaceTabs.Top + (_workspaceTabs.Height - workbenchActions.Height) / 2;
-            _propertiesPanelButton.SetBounds(0, (workbenchActions.Height - _propertiesPanelButton.Height) / 2, _propertiesPanelButton.Width, _propertiesPanelButton.Height);
-            _timelinePanelButton.Left = _propertiesPanelButton.Right + gap;
-            _timelinePanelButton.Top = _propertiesPanelButton.Top;
-            _dashDock.Left = _timelinePanelButton.Right + gap;
-            _dashDock.Top = (workbenchActions.Height - _dashDock.Height) / 2;
-            if (_workspaceHeader.Controls.GetChildIndex(workbenchActions) != 0) workbenchActions.BringToFront();
-        }
-        _workspaceTabs.Layout += (_, _) => LayoutWorkbenchActions();
-        _workspaceHeader.Layout += (_, _) => LayoutWorkbenchActions();
-        workbenchActions.BringToFront();
-        LayoutWorkbenchActions();
+        metrics.Controls.Add(_propertiesPanelButton);
+        metrics.Controls.Add(_timelinePanelButton);
         void LayoutMetricActions()
         {
-            const int rightInset = 6;
-            const int actionGap = 6;
+            var scale = metrics.DeviceDpi / 96d;
+            var rightInset = ScaleResponsive(6, scale);
+            var actionGap = ScaleResponsive(6, scale);
+            var side = Math.Max(1, metrics.ClientSize.Height - 2 * ScaleResponsive(3, scale));
+            foreach (var button in new[] { _propertiesPanelButton, _timelinePanelButton, zoomOut, zoomIn })
+                button.SetBounds(button.Left, (metrics.ClientSize.Height - side) / 2, side, side);
             var right = metrics.ClientSize.Width - rightInset;
             if (_sceneDimensionButton.Visible)
             {
@@ -1474,7 +1498,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
             zoomIn.Left = right - zoomIn.Width;
             zoomOut.Left = zoomIn.Left - actionGap - zoomOut.Width;
-            var contentRight = zoomOut.Left - actionGap;
+            _timelinePanelButton.Left = zoomOut.Left - actionGap - _timelinePanelButton.Width;
+            _propertiesPanelButton.Left = _timelinePanelButton.Left - actionGap - _propertiesPanelButton.Width;
+            var contentRight = _propertiesPanelButton.Left - actionGap;
             if (_eraserOptionsStrip.Visible)
             {
                 _eraserOptionsStrip.Left = Math.Max(0, contentRight - _eraserOptionsStrip.Width);
@@ -1558,8 +1584,6 @@ internal sealed partial class MainForm : Form, IMessageFilter
         body.Resize += (_, _) => LayoutVaultDrawer();
         LayoutVaultDrawer();
         RefreshToolButtons();
-        workbenchActions.BringToFront();
-        LayoutWorkbenchActions();
 
         InitializeShotDirector();
         Controls.Add(_timeline);
@@ -1650,7 +1674,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
     private void BuildMainMenu()
     {
-        _mainMenu.TrailingImages = true;
+        _mainMenu.Items.Clear();
+        _menuBar.Items.Clear();
         var newProject = new ToolStripMenuItem("New Project") { Tag = ShortcutCommandIds.NewProject };
         newProject.Click += (_, _) => CreateNewProjectFromCommand();
         var openProject = new ToolStripMenuItem("Open Project") { Tag = ShortcutCommandIds.OpenProject };
@@ -1673,27 +1698,29 @@ internal sealed partial class MainForm : Form, IMessageFilter
         var canvasSettings = new ToolStripMenuItem("Canvas & background…");
         canvasSettings.Click += (_, _) => ShowCanvasSettings();
         var settings = new ToolStripMenuItem("Settings");
+        settings.Tag = "menu.settings";
         var acknowledgements = new ToolStripMenuItem("Acknowledgements");
         acknowledgements.Click += (_, _) => ShowAcknowledgements();
         settings.Click += (_, _) => ShowSettings();
-        var windows = new ToolStripMenuItem("Window");
-        var hierarchy = new ToolStripMenuItem("Hierarchy");
-        hierarchy.Click += (_, _) =>
-        {
-            _hierarchyWindow?.ToggleFor(this);
-            hierarchy.Checked = _hierarchyWindow?.Visible == true;
-        };
-        windows.DropDownItems.Add(hierarchy);
-        windows.DropDownOpening += (_, _) => hierarchy.Checked = _hierarchyWindow?.Visible == true;
         var releaseNotes = new ToolStripMenuItem("Release Notes");
         releaseNotes.Click += (_, _) => ShowReleaseNotes();
-        var help = new ToolStripMenuItem("Help") { DropDown = new AnimatedContextMenuStrip() };
-        help.DropDownItems.AddRange(new ToolStripItem[] { releaseNotes, acknowledgements });
-        var projectFiles = new ToolStripMenuItem("Project Files") { DropDown = new AnimatedContextMenuStrip() };
-        var projectFileItems = new List<ToolStripItem>
+
+        ToolStripMenuItem Root(string text) => new(text)
         {
-            newProject, openProject, new ToolStripSeparator(), saveProject, saveProjectAs
+            DropDown = new AnimatedContextMenuStrip(),
+            Font = _menuBar.Font,
+            Overflow = ToolStripItemOverflow.AsNeeded
         };
+        ToolStripMenuItem Command(string text, Action action, string? tag = null)
+        {
+            var item = new ToolStripMenuItem(text);
+            if (tag is not null) item.Tag = tag;
+            item.Click += (_, _) => action();
+            return item;
+        }
+
+        var file = Root("File");
+        var projectFileItems = new List<ToolStripItem> { newProject, openProject, new ToolStripSeparator(), saveProject, saveProjectAs };
         if (DevelopmentMenuEnabled)
         {
             var saveProjectAsDevelopment = new ToolStripMenuItem("Save Project As Development Folder");
@@ -1703,20 +1730,65 @@ internal sealed partial class MainForm : Form, IMessageFilter
         projectFileItems.Add(renameProject);
         projectFileItems.Add(new ToolStripSeparator());
         projectFileItems.Add(canvasSettings);
-        projectFiles.DropDownItems.AddRange(projectFileItems.ToArray());
-        var imports = new ToolStripMenuItem("Import") { DropDown = new AnimatedContextMenuStrip() };
-        imports.DropDownItems.AddRange(new ToolStripItem[] { importFlash, flashVisualBridge, importSvg, importImage });
-        _mainMenu.Items.AddRange(new ToolStripItem[]
+        file.DropDownItems.AddRange(projectFileItems.ToArray());
+
+        var edit = Root("Edit");
+        edit.DropDownItems.AddRange([
+            Command("Undo", () => UndoLastEdit(), ShortcutCommandIds.Undo),
+            Command("Redo", () => RedoLastEdit(), ShortcutCommandIds.Redo),
+            new ToolStripSeparator(),
+            Command("Cut", () => CutSelectedObjects(), ShortcutCommandIds.Cut),
+            Command("Copy", () => CopySelectedObjects(), ShortcutCommandIds.Copy),
+            Command("Paste", () => PasteCopiedObjects(), ShortcutCommandIds.Paste),
+            Command("Delete", () => DeleteSelectedObject(), ShortcutCommandIds.Delete)
+        ]);
+
+        var view = Root("View");
+        view.DropDownItems.AddRange([
+            Command("Fit Stage", () => _stage.Fit()),
+            new ToolStripSeparator(),
+            Command("Properties", ToggleInspectorPanel),
+            Command("Timeline", ToggleTimelinePanel),
+            Command("Hierarchy", () => _hierarchyWindow?.ToggleFor(this))
+        ]);
+
+        var insert = Root("Insert");
+        insert.DropDownItems.AddRange([importFlash, flashVisualBridge, importSvg, importImage,
+            new ToolStripSeparator(), Command("Text Tool", () => ActivateTool(ToolMode.Text))]);
+
+        edit.DropDownItems.AddRange([
+            new ToolStripSeparator(),
+            Command("Break Apart", BreakApartStageSelection, ShortcutCommandIds.BreakApart),
+            Command("Convert to Symbol", () => ConvertStageSelectionToSymbol(), ShortcutCommandIds.ConvertToSymbol),
+            Command("Flip Horizontal", () => FlipSelectedDrawingObjects(horizontal: true), ShortcutCommandIds.FlipHorizontal),
+            Command("Flip Vertical", () => FlipSelectedDrawingObjects(horizontal: false), ShortcutCommandIds.FlipVertical),
+            Command("Fit Bitmap to Canvas", FitSelectedBitmapsToCanvas),
+            Command("Bring Forward", () => MoveSelectedDrawingObjectsInStack(1), ShortcutCommandIds.BringForward),
+            Command("Send Backward", () => MoveSelectedDrawingObjectsInStack(-1), ShortcutCommandIds.SendBackward),
+            new ToolStripSeparator(),
+            settings
+        ]);
+
+        var control = Root("Control");
+        control.DropDownItems.AddRange([
+            Command("Play / Pause", TogglePlayback),
+            Command("Stop", StopPlayback)
+        ]);
+
+        var help = Root("Help");
+        help.DropDownItems.AddRange([releaseNotes, acknowledgements]);
+
+        _menuBar.Items.AddRange([file, edit, view, insert, control, help]);
+        foreach (var root in _menuBar.Items.OfType<ToolStripMenuItem>())
         {
-            projectFiles,
-            imports,
-            new ToolStripSeparator(),
-            settings,
-            windows,
-            new ToolStripSeparator(),
-            help
-        });
-        _mainMenu.Opening += (_, _) =>
+            root.DropDownOpening += (_, _) =>
+            {
+                RefreshShortcutMenuDisplay();
+                importSvg.Enabled = CanImportSvg();
+                importImage.Enabled = CanPlaceImage();
+            };
+        }
+        _menuBar.MenuActivate += (_, _) =>
         {
             RefreshShortcutMenuDisplay();
             importSvg.Enabled = CanImportSvg();
@@ -1729,7 +1801,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         var profile = ShortcutProfiles.ResolveProfile(
             _applicationSettings.ActiveShortcutProfileId,
             _applicationSettings.CustomShortcutProfiles);
-        foreach (var menu in new[] { _mainMenu, _stageContextMenu })
+        foreach (var menu in new ToolStrip[] { _menuBar, _stageContextMenu })
             RefreshItems(menu.Items);
         _timeline.UpdateShortcutDisplay(profile);
 
@@ -1935,10 +2007,12 @@ internal sealed partial class MainForm : Form, IMessageFilter
             _applicationSettings.ToolbarPosition);
         dialog.ExperimentalSceneLightingEnabled = _applicationSettings.ExperimentalSceneLightingEnabled;
         dialog.NavigationPreviewEnabled = _applicationSettings.NavigationPreviewEnabled;
+        dialog.SetWorkspaceColor(Color.FromArgb(_applicationSettings.WorkspaceColorArgb));
         dialog.SetCodexSettings(_applicationSettings, AppHost.Current?.CodexBridgeStatus ?? "Stopped");
         dialog.SetSelectionSettings(_applicationSettings.SelectionArrows);
         using var previewTimer = new System.Windows.Forms.Timer { Interval = 60 };
         void PreviewCorners(object? sender, EventArgs e) => ApplyWindowCornerStyle(dialog.SelectedWindowCornerStyle);
+        void PreviewWorkspace(object? sender, EventArgs e) => PreviewWorkspaceColor(dialog.SelectedWorkspaceColor);
         void ApplyDraftTheme()
         {
             ApplyThemePreview(dialog.SelectedColorTheme,
@@ -1969,15 +2043,18 @@ internal sealed partial class MainForm : Form, IMessageFilter
         }, child);
         dialog.CornerPreviewChanged += PreviewCorners;
         dialog.ThemePreviewChanged += PreviewTheme;
+        dialog.WorkspaceColorPreviewChanged += PreviewWorkspace;
         try { dialog.ShowDialog(this); }
         finally
         {
             previewTimer.Stop();
             dialog.ThemePreviewChanged -= PreviewTheme;
             dialog.CornerPreviewChanged -= PreviewCorners;
+            dialog.WorkspaceColorPreviewChanged -= PreviewWorkspace;
             // The model holds only successfully saved settings. Unsaved theme/corner
             // previews roll back while explicitly applied child preferences remain.
             ApplyWindowCornerStyle(_applicationSettings.WindowCornerStyle);
+            PreviewWorkspaceColor(Color.FromArgb(_applicationSettings.WorkspaceColorArgb));
             ApplyThemePreview(_applicationSettings.ColorTheme,
                 _applicationSettings.ThemeHueDegrees, _applicationSettings.ThemeSaturationPercent, _applicationSettings.ThemeBrightnessPercent,
                 _applicationSettings.AccentHueDegrees, _applicationSettings.AccentSaturationPercent, _applicationSettings.AccentBrightnessPercent);
@@ -2028,23 +2105,6 @@ internal sealed partial class MainForm : Form, IMessageFilter
         }
     }
 
-    private void ChooseWorkspaceColor()
-    {
-        _workspaceColorFlyout.ShowFor(_dashDock, _stage.BackColor);
-    }
-
-    private void CommitWorkspaceColor(Color color)
-    {
-        color = Color.FromArgb(255, color.R, color.G, color.B);
-        PreviewWorkspaceColor(color);
-        if (_applicationSettings.WorkspaceColorArgb == color.ToArgb()) return;
-        _applicationSettings = _applicationSettings with { WorkspaceColorArgb = color.ToArgb() };
-        if (!ApplicationSettingsStore.TrySave(_applicationSettings))
-        {
-            AppLog.Warn("The workspace color could not be saved; the current session will keep the selected color.");
-        }
-    }
-
     private void PreviewWorkspaceColor(Color color)
     {
         color = Color.FromArgb(255, color.R, color.G, color.B);
@@ -2053,7 +2113,6 @@ internal sealed partial class MainForm : Form, IMessageFilter
             _stage.BackColor = color;
             _stage.Invalidate();
         }
-        _dashDock.SetWorkspaceColor(color);
     }
 
     private void PersistTimelineFrameWidth()
@@ -2494,8 +2553,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
             _stageContextMenu.Dispose();
             DisposeScene3DContextMenu();
             _mainMenu.Dispose();
+            _menuBar.Dispose();
             _hierarchyWindow?.Dispose();
-            _workspaceColorFlyout.Dispose();
             _toolTip.Dispose();
             _textEditorOwnedFont?.Dispose();
             _applicationIcon.Dispose();

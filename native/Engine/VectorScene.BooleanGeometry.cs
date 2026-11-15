@@ -804,6 +804,8 @@ internal sealed partial class VectorScene
 
         try
         {
+            if (TryGetBitmapObjectData(fillIndex, out var bitmap) && bitmap.IsBrokenApart)
+                return new FillPartition(BuildBitmapTopologyRegions(fillIndex, candidates), []);
             var sourceContours = FillWorldContours(fillIndex);
             var source = ToClipperPaths(sourceContours);
             if (source.Count == 0) return new FillPartition([], []);

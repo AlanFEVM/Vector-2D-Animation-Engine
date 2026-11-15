@@ -218,7 +218,14 @@ internal sealed partial class Direct2DStageRenderer
     private void DrawSelectionOutline(StageControl stage, int i, bool primary)
     {
         var shape = stage.Scene.ShapeKind.Length > i ? stage.Scene.ShapeKind[i] : ShapeKind.Rectangle;
-        if (stage.Scene.TryGetObjectDistortions(i, out _))
+        if (stage.Scene.TryGetBitmapObjectData(i, out var bitmap) && bitmap.IsBrokenApart)
+        {
+            foreach (var contour in stage.Scene.GetDistortedObjectBoundaryContours(i))
+                DrawSelectionPolyline(CloseSelectionPolyline(contour.Select(point => WorldToVector(stage, point)).ToArray()),
+                    primary, stage.SelectionHighlightForObject(i, SelectionHighlightKind.Fill));
+            return;
+        }
+        if (stage.Scene.TryGetObjectDistortionsView(i, out _))
         {
             var highlightKind = stage.SelectionHighlightForObject(i, SelectionHighlightKind.Fill);
             foreach (var contour in stage.Scene.GetDistortedObjectBoundaryContours(i))

@@ -5,6 +5,8 @@ internal static class InspectorModuleStyle
 {
     public const int PageHeaderHeight = 54;
     public const float PageTitleFontSize = 10f;
+    /// <summary>Numeric and selectable inspector values stay one step above field captions.</summary>
+    public const float InspectorValueFontSize = 9.5f;
 
     public static void StylePageTitle(Label title)
     {
@@ -72,7 +74,7 @@ internal static class InspectorModuleStyle
         if (input is ModernNumericUpDown numeric)
         {
             Theme.StyleNumeric(numeric);
-            numeric.Font = Theme.UiFont(11f);
+            numeric.Font = Theme.UiFont(InspectorValueFontSize);
         }
         else if (input is ComboBox combo)
         {

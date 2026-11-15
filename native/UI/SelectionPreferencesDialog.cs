@@ -42,7 +42,7 @@ internal sealed class SelectionPreferencesDialog : ModernDialogForm
         }
         var description = new Label
         {
-            Text = "Selection highlights only the clicked fill or stroke with a stipple pattern. Groups stay whole. Path editing exposes geometry handles. Shared symbols require entering their editor.",
+            Text = "Selection stipples fills and strokes, including broken-apart images. Marquee and lasso cut raw fills. Intact images and groups stay whole. Path editing shows handles. Shared symbols require entering their editor.",
             ForeColor = Theme.Muted, Dock = DockStyle.Fill, AutoSize = false,
             Margin = new Padding(0, 10, 0, 6), UseMnemonic = false
         };

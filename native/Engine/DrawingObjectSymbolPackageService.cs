@@ -166,6 +166,7 @@ internal static class DrawingObjectSymbolPackageService
                     {
                         ImageAssetId = importedImageAssets[source.ImageAssetId],
                         PlacedSize = source.PlacedSize,
+                        IsBrokenApart = source.IsBrokenApart,
                         VisibleContours = source.VisibleContours
                     };
                 }

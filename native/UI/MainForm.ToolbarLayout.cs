@@ -15,15 +15,24 @@ internal sealed partial class MainForm
                 .Select(control => body.PointToClient(control.PointToScreen(new Point(control.Width, 0))).X + control.Margin.Right)
                 .DefaultIfEmpty(0).Max()
             : 0;
-        var left = Math.Max(tabRight + gap, Math.Min((int)Math.Round(280 * scale), stagePanel.Width / 5));
+        var contextGap = Math.Max(gap, (int)Math.Round(12 * scale));
+        var left = drawingRowVisible
+            ? tabRight + contextGap
+            : Math.Min((int)Math.Round(280 * scale), stagePanel.Width / 5);
         // Hidden row children retain stale bounds and must not constrain the scene toolbar.
+        var firstSnappingControlLeft = _drawSnappingStrip.Controls.Cast<Control>()
+            .SelectMany(host => host.Controls.Count > 0 ? host.Controls.Cast<Control>() : new[] { host })
+            .Where(control => control.Visible && control.Width > 0)
+            .Select(control => body.PointToClient(control.PointToScreen(Point.Empty)).X)
+            .DefaultIfEmpty(body.PointToClient(_drawSnappingStrip.PointToScreen(Point.Empty)).X)
+            .Min();
         var right = drawingRowVisible
-            ? body.PointToClient(_drawSnappingStrip.PointToScreen(Point.Empty)).X - gap
+            ? firstSnappingControlLeft - gap
             : stagePanel.Right - gap;
-        var visibleCount = Math.Max(1, tools.Controls.Cast<Control>().Count(control => control.Visible));
+        var visibleTools = tools.Controls.Cast<Control>().Where(control => control.Visible).ToArray();
+        var visibleCount = Math.Max(1, visibleTools.Length);
         var compact = right - left < (int)Math.Round(240 * scale);
         var top = body.PointToClient(_workspaceTabs.PointToScreen(new Point(0, _workspaceTabs.Height))).Y + gap;
-        var bottom = body.PointToClient(_stageMetrics.PointToScreen(new Point(0, _stageMetrics.Height))).Y - gap;
         if (compact)
         {
             left = stagePanel.Left + gap;
@@ -33,7 +42,9 @@ internal sealed partial class MainForm
             top = body.PointToClient(_stageMetrics.PointToScreen(Point.Empty)).Y + gap;
         }
         var width = Math.Max(1, right - left);
-        var height = Math.Max(1, bottom - top);
+        var toolbarButtonSize = Math.Max(20, (int)Math.Round(28 * scale));
+        var toolbarVerticalInset = Math.Max(1, (int)Math.Round(2 * scale));
+        var toolbarHeight = toolbarButtonSize + toolbarVerticalInset * 2;
         tools.SuspendLayout();
         try
         {
@@ -41,31 +52,49 @@ internal sealed partial class MainForm
             tools.AutoSize = false;
             tools.FlowDirection = FlowDirection.LeftToRight;
             tools.WrapContents = false;
-            tools.Padding = new Padding(compact ? 1 : gap);
+            tools.Padding = new Padding(compact ? 1 : gap, toolbarVerticalInset, compact ? 1 : gap, toolbarVerticalInset);
             tools.AutoScroll = false;
             tools.AutoScrollPosition = Point.Empty;
-            var buttonHeight = Math.Max(1, height - tools.Padding.Vertical);
-            var buttonGap = compact ? 1 : gap;
+            var buttonHeight = toolbarButtonSize;
+            var categoryBoundaryCount = visibleTools.Count(IsTopToolbarCategoryBoundary);
+            var availableMarginWidth = Math.Max(0, width - tools.Padding.Horizontal - visibleCount * buttonHeight);
+            var requestedCategoryGap = Math.Max(gap, (int)Math.Round(8 * scale));
+            var categoryGap = compact || categoryBoundaryCount == 0
+                ? 0
+                : Math.Min(requestedCategoryGap,
+                    Math.Max(0, (availableMarginWidth - visibleCount * gap) / categoryBoundaryCount));
+            var preferredButtonGap = Math.Max(gap, (int)Math.Round(12 * scale));
+            var maximumButtonGap = Math.Max(1,
+                (availableMarginWidth - categoryBoundaryCount * categoryGap) / visibleCount);
+            var buttonGap = compact ? 1 : Math.Min(preferredButtonGap, maximumButtonGap);
             var availableButtonWidth = Math.Max(1, (width - tools.Padding.Horizontal) / visibleCount - buttonGap);
-            var buttonWidth = Math.Min(availableButtonWidth, compact ? buttonHeight : (int)Math.Round(64 * scale));
+            var buttonWidth = Math.Min(availableButtonWidth, buttonHeight);
             foreach (Control control in tools.Controls)
             {
-                control.Margin = new Padding(0, 0, buttonGap, 0);
-                control.Size = new Size(buttonWidth, compact ? buttonWidth : buttonHeight);
+                var trailingGap = buttonGap + (IsTopToolbarCategoryBoundary(control) ? categoryGap : 0);
+                control.Margin = new Padding(0, 0, trailingGap, 0);
+                control.Size = new Size(buttonWidth, buttonHeight);
                 if (control is SvgIconButton button)
                 {
-                    button.ShowsLabelBelowIcon = !compact;
-                    button.Text = compact ? string.Empty : UiLocalization.T(ToolbarButtonLabel(button));
+                    button.ShowsLabelBelowIcon = false;
+                    button.Text = string.Empty;
                     button.Invalidate();
                 }
             }
-            tools.SetBounds(left, top, width, height);
+            tools.SetBounds(left, top, width, toolbarHeight);
         }
         finally
         {
             tools.ResumeLayout(true);
         }
         tools.BringToFront();
+    }
+
+    private bool IsTopToolbarCategoryBoundary(Control control)
+    {
+        return ReferenceEquals(control, _lassoToolGroup.ParentButton)
+            || ReferenceEquals(control, _transformToolGroup.ParentButton)
+            || control.Tag is ToolMode.Text or ToolMode.Eraser;
     }
 
     private void BindToolGroupFlyoutTrigger(SvgIconButton button, Action showFlyout)

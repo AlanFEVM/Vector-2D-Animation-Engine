@@ -621,6 +621,18 @@ internal sealed partial class VectorScene
     private static RectangleF MapBoundsThroughDistortion(RectangleF sourceBounds, DistortWarp distortion)
     {
         if (!distortion.IsValid || sourceBounds.IsEmpty) return sourceBounds;
+        if (distortion.TryGetAffineTransform(out var affine))
+        {
+            var first = System.Numerics.Vector2.Transform(new(sourceBounds.Left, sourceBounds.Top), affine);
+            var second = System.Numerics.Vector2.Transform(new(sourceBounds.Right, sourceBounds.Top), affine);
+            var third = System.Numerics.Vector2.Transform(new(sourceBounds.Right, sourceBounds.Bottom), affine);
+            var fourth = System.Numerics.Vector2.Transform(new(sourceBounds.Left, sourceBounds.Bottom), affine);
+            var low = System.Numerics.Vector2.Min(System.Numerics.Vector2.Min(first, second), System.Numerics.Vector2.Min(third, fourth));
+            var high = System.Numerics.Vector2.Max(System.Numerics.Vector2.Max(first, second), System.Numerics.Vector2.Max(third, fourth));
+            var exact = RectangleF.FromLTRB(low.X, low.Y, high.X, high.Y);
+            exact.Inflate(0.5f, 0.5f);
+            return exact;
+        }
         const int divisions = 8;
         var samples = new PointF[divisions + 1, divisions + 1];
         var hasPoint = false;

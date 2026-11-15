@@ -379,30 +379,24 @@ internal static partial class SvgIcons
                 break;
             }
             case SvgIconKind.PolygonLasso:
-            {
-                var polygon = new[]
-                {
-                    P(r, 5, 7), P(r, 12, 3), P(r, 20, 7), P(r, 19, 16),
-                    P(r, 12, 21), P(r, 5, 17), P(r, 5, 7)
-                };
-                g.DrawLines(pen, polygon);
-                g.DrawLine(pen, P(r, 5, 7), P(r, 2, 4));
-                g.DrawLine(thinPen, P(r, 2, 4), P(r, 3, 9));
-                FillHandle(g, solidFill, r, 5, 7);
-                FillHandle(g, solidFill, r, 12, 3);
-                FillHandle(g, solidFill, r, 20, 7);
-                break;
-            }
             case SvgIconKind.FreehandLasso:
             {
-                using var lasso = new GraphicsPath();
-                lasso.StartFigure();
-                lasso.AddBezier(P(r, 5, 8), P(r, 7, 3), P(r, 17, 3), P(r, 20, 8));
-                lasso.AddBezier(P(r, 20, 8), P(r, 23, 13), P(r, 18, 21), P(r, 11, 19));
-                lasso.AddBezier(P(r, 11, 19), P(r, 5, 18), P(r, 2, 13), P(r, 5, 8));
-                g.DrawPath(pen, lasso);
-                g.DrawLine(pen, P(r, 5, 8), P(r, 2, 5));
-                g.DrawLine(thinPen, P(r, 2, 5), P(r, 3, 10));
+                // Both variants share the supplied rope end and pointer; straight edges
+                // distinguish the polygon tool from the original curved lasso.
+                const string ropeAndPointer = "M162.12032 601.856c67.648 0 122.496 51.008 122.496 113.92 0 37.12-19.072 70.016-48.576 90.88 5.376 34.816 4.544 79.232-18.816 120.832-19.072 34.048-60.992 78.208-152.32 95.488a58.24 58.24 0 0 1-10.88 1.024c-25.152 0-47.68-16.448-52.928-40.256-5.952-27.136 12.928-53.76 42.176-59.264 39.872-7.552 66.176-22.144 78.144-43.52 9.6-17.088 10.432-37.568 8.192-55.36-51.84-13.248-89.984-57.408-89.984-109.824 0-62.912 54.848-113.92 122.496-113.92zM820.80832 512L1344.00832 689.92l-188.8 90.752-41.472 193.088L820.80832 512z";
+                const string curvedLoop = "M297.80032 825.472c14.72-34.368 56.576-51.2 93.568-37.568 73.984 27.328 157.888 41.792 242.688 41.792 84.864 0 168.768-14.464 242.752-41.792 36.992-13.632 78.912 3.2 93.568 37.568 14.72 34.368-3.392 73.344-40.32 87.04-90.816 33.472-193.088 51.2-296 51.2-102.784 0-205.12-17.728-295.872-51.2-36.992-13.696-55.04-52.672-40.384-87.04zM608.00832 0c159.104 0 309.376 46.72 423.168 131.392C1150.34432 220.096 1216.00832 339.712 1216.00832 468.096c0 16.64-1.152 33.344-3.392 49.792-4.608 33.664-34.24 58.112-68.416 58.112a71.68 71.68 0 0 1-9.152-0.64c-37.76-4.8-64.384-38.4-59.392-75.008 1.408-10.624 2.176-21.504 2.176-32.256 0-85.952-46.464-167.872-130.88-230.72-89.792-66.816-210.176-103.68-338.944-103.68-128.768 0-249.152 36.864-338.944 103.68-84.416 62.848-130.88 144.768-130.88 230.72 0 7.168 0.32 14.336 0.96 21.504 3.328 36.8-24.768 69.184-62.784 72.384-38.016 3.2-71.552-24-74.88-60.8A368.768 368.768 0 0 1 0.00832 468.16C0.00832 339.712 65.67232 220.16 184.84032 131.392 298.63232 46.656 448.90432 0 608.00832 0z";
+                var loop = kind == SvgIconKind.FreehandLasso
+                    ? $"<path d='{curvedLoop}'/>"
+                    : "<path fill='none' stroke='currentColor' stroke-width='134' stroke-linecap='round' stroke-linejoin='round' d='M70 495V260L608 70 1146 260V495M350 835L608 900 870 835'/>";
+                var tint = $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+                var opacity = (color.A / 255f).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var xml = $"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1344 1024' color='{tint}' fill='{tint}' opacity='{opacity}'><path d='{ropeAndPointer}'/>{loop}</svg>";
+                var document = Svg.SvgDocument.FromSvg<Svg.SvgDocument>(xml);
+                var width = Math.Max(1, (int)Math.Min(r.Width, r.Height * 1344f / 1024f));
+                var height = Math.Max(1, (int)Math.Round(width * 1024f / 1344f));
+                using var bitmap = document.Draw(width, height);
+                g.DrawImage(bitmap, new RectangleF(r.X + (r.Width - width) / 2f,
+                    r.Y + (r.Height - height) / 2f, width, height));
                 break;
             }
             case SvgIconKind.Transform:
@@ -497,17 +491,29 @@ internal static partial class SvgIcons
                 break;
             }
             case SvgIconKind.Line:
-                g.DrawLine(pen, P(r, 4, 20), P(r, 20, 4));
-                g.FillEllipse(solidFill, Rect(r, 2.5f, 18.5f, 4, 4));
-                g.DrawEllipse(pen, Rect(r, 18.5f, 2.5f, 4, 4));
+            {
+                const string data = "M68.754286 916.845714L876.690286 23.771429c12.288-13.531429 42.715429-4.096 67.949714 21.138285l3.072 3.218286 1.682286 1.828571c25.6 27.428571 35.474286 59.830857 22.528 74.093715L163.913143 1017.124571c-12.214857 13.531429-42.642286 4.096-67.876572-21.138285a129.024 129.024 0 0 1-3.072-3.218286l-1.755428-1.828571c-25.6-27.428571-35.401143-59.830857-22.528-74.093715z";
+                var opacity = (color.A / 255f).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var xml = $"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 1024'><path fill='#{color.R:X2}{color.G:X2}{color.B:X2}' opacity='{opacity}' d='{data}'/></svg>";
+                var document = Svg.SvgDocument.FromSvg<Svg.SvgDocument>(xml);
+                var side = Math.Max(1, (int)Math.Min(r.Width, r.Height));
+                using var bitmap = document.Draw(side, side);
+                g.DrawImage(bitmap, new RectangleF(r.X + (r.Width - side) / 2f,
+                    r.Y + (r.Height - side) / 2f, side, side));
                 break;
+            }
             case SvgIconKind.Pen:
             {
-                var nib = new[] { P(r, 6, 4), P(r, 18, 4), P(r, 21, 10), P(r, 12, 22), P(r, 3, 10) };
+                // Match the brush's diagonal handle, tint and outline, with a split nib.
+                var handle = new[] { P(r, 13, 3), P(r, 21, 7), P(r, 12, 16), P(r, 8, 13) };
+                g.FillPolygon(fill, handle);
+                DrawPolygon(g, pen, handle);
+                g.DrawLine(thinPen, P(r, 12, 13), P(r, 17, 8));
+                var nib = new[] { P(r, 8, 13), P(r, 12, 16), P(r, 11, 20), P(r, 3, 23), P(r, 5, 16) };
                 g.FillPolygon(fill, nib);
                 DrawPolygon(g, pen, nib);
-                g.DrawLine(pen, P(r, 12, 12), P(r, 12, 21));
-                g.FillEllipse(solidFill, Rect(r, 10, 8, 4, 4));
+                g.DrawLine(thinPen, P(r, 3, 23), P(r, 8, 18));
+                g.FillEllipse(solidFill, Rect(r, 7, 17, 2, 2));
                 break;
             }
             case SvgIconKind.SimplePen:
@@ -557,17 +563,20 @@ internal static partial class SvgIcons
             }
             case SvgIconKind.Fill:
             {
-                var bucket = new[] { P(r, 10, 2), P(r, 20, 12), P(r, 11, 21), P(r, 1, 11) };
+                var bucket = new[]
+                {
+                    P(r, 11.5f, 4), P(r, 21, 13.5f),
+                    P(r, 13.5f, 21), P(r, 4, 11.5f)
+                };
                 g.FillPolygon(fill, bucket);
                 DrawPolygon(g, pen, bucket);
-                g.DrawLine(thinPen, P(r, 3.5f, 2.5f), P(r, 12.5f, 11.5f));
-                g.DrawLine(pen, P(r, 1.5f, 11), P(r, 19.5f, 11));
+                g.DrawLine(pen, P(r, 11.5f, 9.5f), P(r, 17.5f, 3.5f));
                 using var drop = new GraphicsPath();
-                drop.AddBezier(P(r, 21, 13), P(r, 18.8f, 16.2f), P(r, 18.5f, 19), P(r, 21, 20.5f));
-                drop.AddBezier(P(r, 21, 20.5f), P(r, 23.5f, 19), P(r, 23.2f, 16.2f), P(r, 21, 13));
+                drop.AddBezier(P(r, 3, 16), P(r, 1.5f, 18.5f), P(r, 0.5f, 22), P(r, 3, 22));
+                drop.AddBezier(P(r, 3, 22), P(r, 5.5f, 22), P(r, 4.5f, 18.5f), P(r, 3, 16));
                 drop.CloseFigure();
                 g.FillPath(fill, drop);
-                g.DrawPath(thinPen, drop);
+                g.DrawPath(pen, drop);
                 break;
             }
             case SvgIconKind.InkBottle:

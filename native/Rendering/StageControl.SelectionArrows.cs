@@ -51,7 +51,9 @@ internal sealed partial class StageControl
     }
 
     internal bool ObjectArrowUsesBounds(int objectIndex) => Scene.ShapeKind[objectIndex]
-        is ShapeKind.Bitmap or ShapeKind.ImportedSvg or ShapeKind.Text
+        is ShapeKind.ImportedSvg or ShapeKind.Text
+        || Scene.ShapeKind[objectIndex] == ShapeKind.Bitmap
+            && (!Scene.TryGetBitmapObjectData(objectIndex, out var bitmap) || !bitmap.IsBrokenApart)
         || Scene.ShapeKind[objectIndex] == ShapeKind.MixingStroke && !Scene.TryGetMixingBrushLocalRegion(objectIndex, out _);
 
     private void PrepareObjectArrowSelection()

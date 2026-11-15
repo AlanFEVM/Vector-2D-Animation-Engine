@@ -201,6 +201,7 @@ internal sealed partial class MainForm
                         {
                             ImageAssetId = target,
                             PlacedSize = data.PlacedSize,
+                            IsBrokenApart = data.IsBrokenApart,
                             VisibleContours = data.VisibleContours
                         }));
         }

@@ -2002,7 +2002,9 @@ internal sealed partial class MainForm : Form
     {
         if ((uint)objectIndex >= _scene.ObjectCount) return false;
         var shape = _scene.ShapeKind[objectIndex];
-        return shape is ShapeKind.ImportedSvg or ShapeKind.Text or ShapeKind.Bitmap
+        return shape is ShapeKind.ImportedSvg or ShapeKind.Text
+            || shape == ShapeKind.Bitmap
+                && (!_scene.TryGetBitmapObjectData(objectIndex, out var bitmap) || !bitmap.IsBrokenApart)
             || shape == ShapeKind.MixingStroke
                 && !_scene.TryGetMixingBrushLocalRegion(objectIndex, out _);
     }
@@ -2240,7 +2242,9 @@ internal sealed partial class MainForm : Form
             return false;
         }
         var shape = _scene.ShapeKind[objectIndex];
-        if (shape is not (ShapeKind.ImportedSvg or ShapeKind.Text)) return false;
+        if (shape is not (ShapeKind.ImportedSvg or ShapeKind.Text or ShapeKind.Bitmap)) return false;
+        if (shape == ShapeKind.Bitmap
+            && (!_scene.TryGetBitmapObjectData(objectIndex, out var bitmap) || bitmap.IsBrokenApart)) return false;
         if (shape == ShapeKind.Text
             && (!_scene.TryGetTextWorldContours(objectIndex, out var contours) || contours.Length == 0))
         {
@@ -2348,6 +2352,16 @@ internal sealed partial class MainForm : Form
                     throw new InvalidOperationException("One or more text objects could not be broken apart.");
                 }
                 producedKeys.AddRange(textObjects.Select(index =>
+                    new DrawingStackKey(_scene.ObjectOrder[index], _scene.ObjectSubOrder[index])));
+            }
+            var bitmapTargets = targetDescriptors.Where(item => item.Shape == ShapeKind.Bitmap)
+                .Select(item => FindActiveObjectByStackKey(item.Key)).ToArray();
+            if (bitmapTargets.Length > 0)
+            {
+                var bitmapObjects = _scene.BreakApartBitmapObjects(bitmapTargets);
+                if (bitmapObjects.Length != bitmapTargets.Length)
+                    throw new InvalidOperationException("One or more images could not be broken apart.");
+                producedKeys.AddRange(bitmapObjects.Select(index =>
                     new DrawingStackKey(_scene.ObjectOrder[index], _scene.ObjectSubOrder[index])));
             }
         }

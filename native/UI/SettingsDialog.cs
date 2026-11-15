@@ -9,6 +9,21 @@ internal sealed class SettingsDialog : ModernDialogForm
     private readonly Button _charcoalColorTheme = new SegmentedButton { Text = "Charcoal" };
     private readonly ColorAdjustmentControl _themeColorAdjustment;
     private readonly ColorAdjustmentControl _highlightColorAdjustment;
+    private readonly ColorTargetButton _workspaceColorButton = new("Workspace color")
+    {
+        Dock = DockStyle.Fill, Margin = new Padding(0, 8, 0, 8),
+        AccessibleName = "Workspace color", AccessibleDescription = "Choose a solid workspace color"
+    };
+    private readonly WorkspaceColorFlyout _workspaceColorFlyout = new();
+    public Color SelectedWorkspaceColor => _workspaceColorButton.SwatchColor;
+    internal event EventHandler? WorkspaceColorPreviewChanged;
+
+    internal void SetWorkspaceColor(Color color)
+    {
+        color = Color.FromArgb(255, color.R, color.G, color.B);
+        _workspaceColorButton.SwatchColor = color;
+        _workspaceColorButton.Text = $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+    }
     private string _selectedShortcutProfileId;
     private ShortcutProfileRecord[] _customShortcutProfiles;
     private bool _freeTransformShiftProportionalEnabled;
@@ -170,7 +185,7 @@ internal sealed class SettingsDialog : ModernDialogForm
             RowCount = 10
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        foreach (var height in new[] { 32, 46, 174, 16, 48, 36, 46, 40, 32, 46 })
+        foreach (var height in new[] { 32, 46, 174, 48, 48, 36, 46, 40, 32, 46 })
             content.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         var generalScroll = new ThemedScrollPanel { Dock = DockStyle.Fill, ContentPadding = Padding.Empty };
         generalScroll.Content.Controls.Add(content);
@@ -215,6 +230,14 @@ internal sealed class SettingsDialog : ModernDialogForm
         colorThemeSelector.Controls.Add(_charcoalColorTheme, 3, 0);
         content.Controls.Add(colorThemeSelector, 0, 1);
         content.Controls.Add(CreateColorAdjustmentLayout(), 0, 2);
+        SetWorkspaceColor(Theme.Stage);
+        _workspaceColorButton.Click += (_, _) => _workspaceColorFlyout.ShowFor(_workspaceColorButton, SelectedWorkspaceColor);
+        _workspaceColorFlyout.ColorPreviewChanged += (_, _) =>
+        {
+            SetWorkspaceColor(_workspaceColorFlyout.Color);
+            WorkspaceColorPreviewChanged?.Invoke(this, EventArgs.Empty);
+        };
+        content.Controls.Add(CreateOptionRow("Workspace color", _workspaceColorButton), 0, 3);
 
         var languageSelector = CreateSegmentedSelector();
         ConfigureSelectionButton(_englishLanguage, "Use the English interface");
@@ -304,6 +327,12 @@ internal sealed class SettingsDialog : ModernDialogForm
     }
 
     public string SelectedShortcutProfileId => _selectedShortcutProfileId;
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _workspaceColorFlyout.Dispose();
+        base.Dispose(disposing);
+    }
+
     internal void SetCodexSettings(ApplicationSettings settings, string status) => _codexIntegration.SetSettings(settings, status);
     internal ApplicationSettings ApplyCodexSettingsTo(ApplicationSettings settings) => _codexIntegration.ApplyTo(settings);
     public ShortcutProfileRecord[] CustomShortcutProfiles => _customShortcutProfiles.Select(ShortcutProfiles.CloneProfile).ToArray();

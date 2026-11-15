@@ -18,6 +18,10 @@ internal sealed class BitmapObjectData
     // Normalized image coordinates; null means the whole image, empty means erased.
     public PointF[][]? VisibleContours { get; init; }
 
+    // Editable texture fill: marquee/lasso may detach a clipped region while
+    // retaining the original asset and its pixel-to-world mapping.
+    public bool IsBrokenApart { get; init; }
+
     public bool IsValid =>
         (VisibleContours is null || (VisibleContours.Length <= 65536
             && VisibleContours.All(contour => contour is { Length: >= 3 }
@@ -35,6 +39,7 @@ internal sealed class BitmapObjectData
     {
         ImageAssetId = ImageAssetId,
         VisibleContours = VisibleContours,
+        IsBrokenApart = IsBrokenApart,
         PlacedSize = placedSize
     };
 }

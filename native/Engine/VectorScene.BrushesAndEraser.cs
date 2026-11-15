@@ -613,6 +613,7 @@ internal sealed partial class VectorScene
                     {
                         ImageAssetId = bitmap.ImageAssetId,
                         PlacedSize = bitmap.PlacedSize,
+                        IsBrokenApart = bitmap.IsBrokenApart,
                         VisibleContours = regions.SelectMany(region => region.Contours).Select(contour =>
                             contour.Select(point =>
                             {

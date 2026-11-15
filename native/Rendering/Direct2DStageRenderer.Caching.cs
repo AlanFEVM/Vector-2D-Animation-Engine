@@ -24,6 +24,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         _shotPreviewCaptureFailed = false;
         ClearRetainedCompositionMasks();
         ClearSelectionCommands();
+        _selectionObservedScene = null;
         ClearLayerContentHighlightCommands();
         ClearReferenceNavigationCommands();
         ClearSelectionElementGeometry();

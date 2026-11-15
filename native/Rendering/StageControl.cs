@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+﻿﻿using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Numerics;
@@ -1821,6 +1821,9 @@ internal sealed partial class StageControl : Control
         if (targetsChanged) ClearDistortRasterCache();
         _distortPreviewScene = next.Count > 0 ? scene : null;
         _distortPreviewOverrides = next;
+        if (_pendingDistortBake is { } pending && ReferenceEquals(pending.Key.Scene, scene)
+            && next.ContainsKey(pending.Key.ObjectIndex))
+            pending.Cancellation.Cancel();
         RequestStageFrame(basePresentationChanged: true);
     }
 
@@ -3345,10 +3348,10 @@ internal sealed partial class StageControl : Control
 
     private bool HasSoftwareDistortionForCurrentFrame()
     {
-        return SceneHasDistortionsForRendering(Scene)
-            || SceneHasDistortionsForRendering(UnderlayScene)
-            || SceneHasDistortionsForRendering(OnionSkinScene)
-            || SceneHasDistortionsForRendering(DragPreviewScene);
+        return SceneRequiresSoftwareDistortion(Scene)
+            || SceneRequiresSoftwareDistortion(UnderlayScene)
+            || SceneRequiresSoftwareDistortion(OnionSkinScene)
+            || SceneRequiresSoftwareDistortion(DragPreviewScene);
     }
 
     private bool ShouldUseGdiRasterZoomPreview()

@@ -157,7 +157,7 @@ internal sealed partial class VectorScene
                 GradientEndY[targetObject] = nextGradientEndY;
             }
             if (nextDistortions.Length == 0) _objectDistortions.Remove(targetObject);
-            else _objectDistortions[targetObject] = CloneDistortions(nextDistortions);
+            else _objectDistortions[targetObject] = nextDistortions;
             changed = true;
         }
 
@@ -626,7 +626,7 @@ internal sealed partial class VectorScene
             return false;
         }
 
-        TryGetObjectDistortions(objectIndex, out var distortions);
+        TryGetObjectDistortionsView(objectIndex, out var distortions);
         _objectDistortions[objectIndex] = TransformBitmapDistortions(
             GetRawObjectWorldBounds(objectIndex), distortions, transform);
         return true;
@@ -637,9 +637,18 @@ internal sealed partial class VectorScene
         IReadOnlyList<DistortWarp> distortions,
         Func<PointF, PointF> transform)
     {
-        var result = distortions.Count > 0
-            ? CloneDistortions(distortions)
-            : [DistortWarp.FromBounds(bounds)];
+        if (distortions.Count == 0)
+        {
+            var identity = DistortWarp.FromBounds(bounds);
+            return [new DistortWarp(identity.Source, identity.Envelope.Transform(transform))];
+        }
+        if (distortions.Count == 1)
+        {
+            var only = distortions[0];
+            return [new DistortWarp(only.Source, only.Envelope.Transform(transform))];
+        }
+
+        var result = CloneDistortions(distortions);
         var last = result[^1];
         result[^1] = new DistortWarp(last.Source, last.Envelope.Transform(transform));
         return result;

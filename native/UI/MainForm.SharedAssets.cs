@@ -191,6 +191,7 @@ internal sealed partial class MainForm
                         {
                             ImageAssetId = replacementId,
                             PlacedSize = new SizeF(scene.Width[index], scene.Height[index]),
+                            IsBrokenApart = data.IsBrokenApart,
                             VisibleContours = data.VisibleContours
                         })) throw new InvalidOperationException("The image reference could not be replaced.");
                     }

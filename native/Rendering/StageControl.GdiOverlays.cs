@@ -137,6 +137,14 @@ internal sealed partial class StageControl : Control
     {
         var shape = Scene.ShapeKind.Length > i ? Scene.ShapeKind[i] : ShapeKind.Rectangle;
 
+        if (Scene.TryGetBitmapObjectData(i, out var bitmap) && bitmap.IsBrokenApart)
+        {
+            foreach (var contour in GetObjectBoundaryContoursForRendering(Scene, i))
+                DrawSelectionPolyline(g, contour.Concat(contour.Take(1)).Select(WorldToScreen).ToArray(), primary,
+                    SelectionHighlightForObject(i, SelectionHighlightKind.Fill));
+            return;
+        }
+
         if (TryGetObjectDistortionsForRendering(Scene, i, out var distortions))
         {
             if (TryGetDistortedVectorGeometryForRendering(Scene, i, distortions, out var geometry))

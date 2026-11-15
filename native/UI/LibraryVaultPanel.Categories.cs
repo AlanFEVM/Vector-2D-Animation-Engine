@@ -24,7 +24,7 @@ internal sealed partial class LibraryVaultPanel
         Images
     }
 
-    private readonly Dictionary<AssetCategory, SegmentedButton> _assetCategoryButtons = [];
+    private readonly Dictionary<AssetCategory, SvgIconButton> _assetCategoryButtons = [];
     private readonly ToolStripMenuItem _useExternalSvgAssetMenuItem = new("Use");
     private readonly ToolStripMenuItem _relocateExternalSvgAssetMenuItem = new(UiLocalization.T("Replace Source..."));
     private readonly ToolStripMenuItem _updateExternalSvgAssetMenuItem = new(UiLocalization.T("Update from Source"));
@@ -84,13 +84,15 @@ internal sealed partial class LibraryVaultPanel
     }
 
     /// <summary>
-    /// Host-supplied decode hook used only for the hover thumbnail. Decoding stays in
+    /// Host-supplied decode hook used for list and hover thumbnails. Decoding stays in
     /// <see cref="BitmapImageRasterizer"/> so the preview shares the render cache instead of
     /// reading the file a second time with different settings.
     /// </summary>
     public void SetImageAssetPreviewProvider(Func<ImageAssetDefinition, BitmapImageRaster?>? previewProvider)
     {
         _imageAssetPreviewProvider = previewProvider;
+        ClearAssetThumbnails();
+        _projectObjects.Invalidate();
     }
 
     public void SetExternalSvgAssetAvailabilityProvider(
@@ -135,8 +137,15 @@ internal sealed partial class LibraryVaultPanel
         string text,
         int column)
     {
-        var button = new SegmentedButton
+        var button = new SvgIconButton(category switch
         {
+            AssetCategory.ExternalSvg => SvgIconKind.AssetSvg,
+            AssetCategory.Images => SvgIconKind.AssetImage,
+            AssetCategory.ThreeDimensionalSymbols => SvgIconKind.Transform3D,
+            _ => SvgIconKind.AssetSymbol
+        })
+        {
+            ShowsLabelBelowIcon = true,
             Dock = DockStyle.Fill,
             Text = text,
             TextAlign = ContentAlignment.MiddleCenter,
@@ -148,6 +157,7 @@ internal sealed partial class LibraryVaultPanel
             TabIndex = column
         };
         Theme.StyleSegmentedButton(button);
+        _toolTip.SetToolTip(button, UiLocalization.T(text));
         button.Click += (_, _) => SelectAssetCategory(category);
         _assetCategoryButtons.Add(category, button);
         layout.Controls.Add(button, column, 0);

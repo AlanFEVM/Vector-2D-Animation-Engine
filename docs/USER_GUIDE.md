@@ -41,6 +41,30 @@ After a marquee selection, the canvas presents the selection before refreshing t
 
 位图经过倾斜、镜像或自由变形后，选择命中会按相同的图像映射还原坐标，避免可见图像与可点击区域错位。
 
+位图的直线仿射倾斜、镜像及其后续移动和缩放可直接使用 Direct2D 绘制共享原图，避免每次交互重新烘焙像素；曲线包络和透视变形继续使用原有畸变绘制路径。实际帧率取决于图片数量、像素尺寸、可见范围及设备。
+
+Straight affine bitmap skew, mirroring, and subsequent movement or scaling can draw the shared source directly with Direct2D, avoiding pixel baking on each interaction. Curved envelopes and perspective distortion retain the existing distortion renderer. Frame rate depends on image count, pixel dimensions, visible area, and hardware.
+
+选中图片后可执行“打散”，将其转为保留原图纹理的可编辑填充。使用矩形框选或套索切出局部后，可单独移动或删除该区域；透明度、孔洞和原图纹理坐标随区域保留，支持撤销及保存后重新打开。打散后按原始填色参与选择：黑箭头以雪花点纹覆盖实际裁剪区域并保留孔洞，不显示整体图片选框；穿过式框选或套索沿选区边界切分，只选中框内部分。此反馈跟随“设置 > 选择与编辑”的箭头角色交换，未编辑就取消选区会恢复临时切分。倾斜、镜像等仿射变换后的图片也可局部切分；曲线或折叠包络目前仍按完整对象选择。
+
+Break Apart converts a selected bitmap into an editable fill retaining the source texture. Rectangle and lasso selections can detach regions for independent movement or deletion, preserving transparency, holes and texture coordinates through undo and Save/Open. Broken-apart images use raw-fill selection: the object-role arrow stipples the clipped region, preserves holes and replaces the image selection box. Crossing marquee and lasso cut along selection edges and select only the inside. Feedback follows the configured arrow roles; canceling an unedited selection restores temporary cuts. Partial splitting also supports affine skew and mirroring; curved or folded envelopes currently retain whole-object selection.
+
+已打散图片还可被同图层、同 Cel 内未锁定的原始描边、填色或其他已打散图片切出分区。点击分区只显示该区域的雪花，拖动或删除时才拆离为保留原图纹理映射的独立片段；相交对象保持独立。倾斜和镜像后的分区仍按原图坐标保留纹理。未打散图片、整体 SVG、文字、组和元件实例不作为这类切割对象；曲线／折叠图片包络仍不支持相交分区。
+
+Broken-apart images can also be partitioned by unlocked raw strokes, fills, or other broken-apart images in the same layer and cel. Clicking stipples only that region; moving or deleting materializes independent fragments retaining the source texture mapping. The intersecting object remains independent. Skew and reflection preserve source texture coordinates. Intact images, whole SVGs, text, groups and symbol instances do not act as these cutters; curved or folded image envelopes still do not support intersection partitions.
+
+畸变结果缓存按像素字节预算及最近使用顺序回收，小图片不会仅因超过 32 张就逐帧重新烘焙。相机平移和缩放复用未改变图片的结果；编辑图片、替换资源或切换场景时按对应内容更新缓存。
+
+Distortion results are retained within a pixel-byte budget and evicted in least-recently-used order. More than 32 small images no longer force rebaking on every frame. Camera pan and zoom reuse unchanged results; image edits, asset replacement and scene binding update the relevant caches.
+
+曲线扭曲大图的原始精度烘焙在后台逐张完成，避免松手后的首帧同步等待。计算期间沿用视口畸变绘制，完成后自动刷新为原始精度结果；继续编辑或切换场景会取消或丢弃过期结果。离屏输出仍同步生成最终像素。
+
+Large curved bitmap warps bake at native precision one at a time in the background. The viewport distortion renderer remains visible until the completed native result refreshes the view. Further edits or scene changes cancel or discard stale work. Offscreen output still generates final pixels synchronously.
+
+拖动图片的扭曲锚点或方向柄时，预览直接从原始图片按当前包络生成，网格精度随屏幕像素调整，不再固定为粗略的 5×5 网格。采样网格固定在世界像素坐标，避免包络边界变化时纹理采样跳动；透明度、裁剪孔洞和图片采样设置保留。屏幕外区域不参与预览像素计算，松手后的原始精度结果仍按原流程生成。
+
+Dragging bitmap distortion anchors or controls previews the current envelope directly from the source image, with mesh accuracy measured in screen pixels rather than a fixed 5×5 grid. A fixed world-pixel sampling lattice avoids texture phase jumps as envelope bounds change. Transparency, clipped holes and image sampling settings are preserved. Offscreen pixels are excluded from preview shading; release still produces the native-precision result.
+
 Bitmap picking applies the image mapping's inverse after skew, mirroring or free deformation, keeping the clickable region aligned with the visible image.
 
 时间轴局部刷新会限制分组栏的绘制边界，避免拖动播放头时边框污染相邻像素。状态栏帧数读数在连续拖动时保持布局稳定，字体或 DPI 改变时重新测量首选尺寸，避免文字被固定高度裁切。
@@ -191,7 +215,8 @@ VectorAnimationEngine-<version>-win-x64.exe
 
 主界面分为五个区域：
 
-- 顶部栏：主菜单、工程名称、FPS 和窗口控制。属性、时间轴与工作区颜色入口位于画布标题区的中间区域；切换工作区时保留相同高度位置；颜色入口显示色样、名称和 Hex，空间较窄时收紧为色样。
+- 顶部栏：主菜单、工程名称、FPS 和窗口控制。属性、时间轴布局按钮位于画布工具栏右侧、缩放按钮左侧；工作区颜色位于“编辑 → 设置 → 常规 → 外观”。
+- 横向主菜单为右上角重启、最小化、最大化／还原和关闭按钮预留独立空间。窗口变窄时菜单可通过溢出入口访问其余分类，工程标题和 FPS 按可用空间收紧，避免互相遮挡。悬停右上角按钮会显示重启、最小化、最大化／还原或关闭提示，最大化按钮的提示随窗口状态切换。The horizontal menu reserves space for the top-right window controls; narrow windows retain overflow access to menu categories and reduce title/FPS presentation to prevent overlap. Hovering a window button shows its action, with Maximize/Restore following the current window state.
 - 左侧悬浮工具栏：绘制、选择、变形、填充、擦除及 Vault。选择顶部工具栏布局后，工具栏会在切换工作区和调整窗口大小后按最终可用空间重新排列；场景工作区不会因隐藏的元件与吸附栏位置而误缩成紧凑图标。
 - 中央舞台：绘制、选择、预览和场景装配。
 - 右侧检查器：基础着色、对象、图层混合、场景和动画参数。在场景与动画的“镜头”分组或“全部”中选中相机时，显示相机管理面板和取景预览；选回普通图层恢复原检查器。
@@ -201,9 +226,9 @@ VectorAnimationEngine-<version>-win-x64.exe
 
 工作区标签和元件标签会随 Windows 显示缩放比例同步调整按钮尺寸；顶部工程标题按实际字体高度居中。在高 DPI 或大屏幕缩放环境中，图标放大时文字仍会保留足够显示空间，过长名称则使用省略号。
 
-属性、时间轴和工作区颜色入口在工作区标签所在的第一行内垂直居中，元件标签与吸附栏使用第二行。元件实例检查器的标签、输入框和面板高度随 DPI 同步调整；窄窗口中的透明度滑条为百分比数值保留空间。
+属性和时间轴布局按钮与缩放按钮在画布工具栏右侧垂直对齐，切换工作区及隐藏面板后仍可使用，也可按 `F1`／`F2` 切换相应面板。元件标签与吸附栏使用工作区标题的第二行。元件实例检查器的标签、输入框和面板高度随 DPI 同步调整；窄窗口中的透明度滑条为百分比数值保留空间。
 
-Properties, Timeline and workspace color controls are centered in the first workspace header row; symbol tabs and snapping occupy the second row. Symbol Instance labels, fields and panel height scale together with DPI, and the opacity slider reserves room for its percentage in narrow inspectors.
+Properties and Timeline layout buttons sit to the left of the zoom buttons on the right of the canvas toolbar. They remain available across workspaces and when their panels are hidden; `F1`/`F2` also toggle the panels. Workspace color is under Edit → Settings → General → Appearance. Symbol tabs and snapping occupy the second workspace header row. Symbol Instance labels, fields and panel height scale together with DPI, and the opacity slider reserves room for its percentage in narrow inspectors.
 
 底部状态栏中的“渲染 FPS”统计实际完成呈现的画面次数；即使时间轴帧号未变化，重复呈现也会计入。它与项目设置的“动画 FPS”是两个独立指标。
 
@@ -269,7 +294,9 @@ Light-theme selectors no longer produce black text ghosting. Expanding Harmony r
 - 检查器的“图层”和“着色”模块标题统一采用较小的常规字号和随背景变化的柔和颜色，靠近左侧边缘。图层与下方检查器之间使用两端贴齐面板边缘的模块分隔线，颜色与着色内部分组线一致、粗细为其 1.5 倍。标题、输入行及模块之间保留较宽松的间距。
 - 画布右上角吸附开关选中后显示与时间轴开关一致的圆角胶囊底色；未选中时跟随工具栏背景。
 - 舞台右键菜单按任务分组：`Delete`（删除嵌套实例）与 `Break Apart` 为一级命令；`Line / 线条` 收纳 `Convert Line(s) to Fill` 与 `Merge and Simplify Lines`；`Transform / 变换` 收纳水平／垂直翻转和 `Bring Forward`／`Send Backward`；`Symbol / 元件` 收纳 SVG 导出、`.V2DSymbol` 导出与导入；`Fracture / 破碎` 收纳 `Add Collision Terrain` 与 `Random Fracture`。分组在没有可用命令时不显示；3D 场景视图的 `Add light` 子菜单与绘制模式下的右键菜单共用同一套分组。
-- 画布标题区中间的工作区颜色入口仅色样方框可点击，名称与 Hex 在宽布局中直接显示、窄布局中通过悬停提示显示；入口没有外层边框和阴影。它只改变编辑背景，不写入工程内容，也不改变对象材质。点击色样后展开专业调色浮层，可使用 HSV 色域、Hue、RGB、Hex 和预设色；调整立即生效，点击外部或按 `Esc` 关闭时保留当前颜色并保存为应用设置。
+- 工作区颜色移至“编辑 → 设置 → 常规 → 外观”，显示色样和 Hex，点击颜色按钮展开专业调色浮层，可使用 HSV 色域、Hue、RGB、Hex 和预设色。调整实时预览，关闭调色浮层后保留在设置草稿中；点击设置的“保存”后持久化，取消或关闭设置恢复上次保存的颜色。它只改变编辑背景，不写入工程内容，也不改变对象材质。
+
+  Workspace color is under Edit → Settings → General → Appearance. The color button opens the HSV/RGB/Hex picker with presets and previews changes immediately. Closing the picker retains the draft; Save in Settings persists it, while Cancel or closing Settings restores the saved color. It affects only the editor background, not project content or object materials.
 
 镜头与导演工作区中，舞台、相机面板按钮或时间轴获得焦点时，Ctrl+Z 撤销最近的场景／镜头编辑；文字和数值编辑框获得焦点时优先保留控件自身的编辑按键。
 
@@ -281,7 +308,7 @@ Inspector numeric fields scroll their surrounding column by default. Type, use s
 
 ### 场景画布与背景 / Scene Canvas And Background
 
-在主菜单 `Project Files → Canvas & background… / 项目文件 → 画布与背景…`，或未选择对象时的文档信息面板点击 **Canvas & background… / 画布与背景…**，设置当前活动场景的画布。每个场景独立保存；基础绘制中的元件仍保持透明，画布设置不改变元件内容或编辑器外围的工作区底色。
+在左上角横向主菜单中选择 `File → Canvas & background… / 文件 → 画布与背景…`，或未选择对象时的文档信息面板点击 **Canvas & background… / 画布与背景…**，设置当前活动场景的画布。主菜单项目按传统横向菜单栏平铺显示，顶部文字采用较小的常规字号和柔和次级文字色，悬停／选中使用低对比中性底色，文字保持同一亮度；高对比度模式沿用系统选中色。顶部仅保留文件、编辑、视图、插入、控制和帮助六类；变换与设置合并到编辑，文本与导入合并到插入，面板和层级入口合并到视图。每个场景独立保存；基础绘制中的元件仍保持透明，画布设置不改变元件内容或编辑器外围的工作区底色。
 
 空场景尚未设置画布时，场景与动画工作区显示“尚未添加画布与背景”的轻量引导。可以打开设置，也可以点击“直接开始”；放入元件、创建镜头或图层、绘制实际内容或建立有效关键帧后，引导自动消失，删除或撤销内容不会反复弹回。平移、缩放和切换工具不会自动创建画布或背景。提示消失后，文档信息仍准确显示“未添加”，设置入口始终可用。
 
@@ -318,7 +345,7 @@ While scrubbing the playhead, the Stage, camera settings and micro-motion contin
 
 Dragging to a new timeline frame presents that Stage frame directly instead of waiting for a later idle paint. Holding the same frame does not trigger repeated painting to inflate the FPS counter. The bottom frame readout remains live in an independently painted region sized for the current timeline, avoiding per-frame status-bar layout. Horizontal playhead following repaints the frame grid, ruler and scrollbar rather than pinned layer names and tools. Validation covers bitmap scenes with camera motion/micro-motion and stationary artwork separately. The 120 FPS acceptance budget is approximately 8.33 ms for the complete frame transition; the existing strict 180 FPS check remains available. These targets are not achieved-performance guarantees for every project, input device or computer.
 
-Use **Project Files → Canvas & background…**, or **Canvas & background…** in document information, to configure the active scene. Canvas sizes and transparent/solid/image backgrounds are scene-owned and travel with saved projects. Presets, locked dimensions, proportional image sizing, fit modes, alignment, opacity and canvas-pixel offsets do not rescale artwork or rewrite animation. Applying commits once; Cancel leaves the project unchanged. The empty-scene guide dismisses on actual work or **Start creating**, while settings remain available. Editor checkerboards, outside dimming and borders stay out of camera previews; symbol SVG exports remain transparent and do not acquire scene backgrounds. Canvas settings support undo and redo without taking shortcuts away from text editors.
+Use **File → Canvas & background…** from the traditional horizontal top-left menu, or **Canvas & background…** in document information, to configure the active scene. Top-level menu labels use smaller regular type and subdued text, with a subtle neutral hover/selection surface and no bright text change. High-contrast mode uses system selection colours. The menu bar contains six categories: File, Edit, View, Insert, Control and Help. Edit includes transforms and settings, Insert includes text and imports, and View includes panels and hierarchy. Canvas sizes and transparent/solid/image backgrounds are scene-owned and travel with saved projects. Presets, locked dimensions, proportional image sizing, fit modes, alignment, opacity and canvas-pixel offsets do not rescale artwork or rewrite animation. Applying commits once; Cancel leaves the project unchanged. The empty-scene guide dismisses on actual work or **Start creating**, while settings remain available. Editor checkerboards, outside dimming and borders stay out of camera previews; symbol SVG exports remain transparent and do not acquire scene backgrounds. Canvas settings support undo and redo without taking shortcuts away from text editors.
 
 Preset cards show their names, dimensions and aspect-ratio illustrations. Color buttons include swatches, with a checkerboard for transparency, in both square and subtly rounded interface styles. Common canvas and background choices appear first; Advanced settings starts collapsed and contains opacity, proportional image sizing, offsets, alignment, source details and outside dimming. Collapsing never resets values, and the preview and action footer stay separate from the scrolling settings.
 
@@ -493,7 +520,7 @@ In 2D drawing, hovering over a reshapeable unselected line body or fill edge sho
 
 The black and white selection cursors share the toolbar's dart silhouette and keep their hotspot at the arrow tip. The arrow and operation marks use compact cursor proportions rather than toolbar display sizes. The dart rotates around its unchanged tip to a near-vertical left edge with a slight counterclockwise tilt, rather than copying the toolbar's angle; operation marks retain their orientation. Operation marks indicate movement, reshaping (a smooth upright open curve), endpoint / node movement, or node insertion. The reshaping mark uses a thicker, compact quarter-circle smoothly joining short horizontal and vertical ends; its body sits below the dart along the arrow's diagonal continuation, with its right end curving upward and a gap from the dart outline. Feedback follows the active drag; dedicated resize, text-width, spatial-gizmo and temporary-pan cursors remain unchanged. Cursors render at four times the target dimensions before high-quality downsampling to the display-DPI size, improving diagonal and curve antialiasing without changing their dimensions, placement or hotspot. Black darts have a single white outline, white darts a single black outline, and operation marks use black strokes with white edging, without extra gray or duplicate borders. Cursors are editor feedback only.
 
-选择工具组区分 `Black Arrow`（黑箭头，传统键位 `V`）与 `White Arrow`（白箭头，传统键位 `A`）。黑箭头默认分别选择填色与描边：点中填色只以 Animate 风格的细密黑白雪花点纹覆盖该填色，不连带高亮描边、不显示外接框或节点；点中描边只强调该段描边。点纹保留原色可辨，不覆盖孔洞和被不透明上层填色遮挡的区域，也不写入作品或导出。拖动沿用既有填色/描边分离与撤销流程。打散状态的填色、线条和描边可用黑箭头框选局部，沿框边切分并只选中框内部分；未编辑就取消选区会恢复临时切分。组、元件实例、文字、图片和整体 SVG 保持整体选择，以整体选框反馈，不因局部框选被拆开。黑白箭头共享线身弯曲、端点移动、曲率与节点插入等几何交互；黑箭头默认不显示悬停路径、节点或控制柄轮廓。黑箭头弯曲、插入节点和移动端点期间不显示雪花；松手后结束临时几何选中，不自动转为可移动的整条线，再次拖线身仍可继续弯曲。单击不拖动才选中描边并显示雪花，之后拖动已选主体才是移动；`Shift` 追加选择不启动弯曲。白箭头保留可见路径、锚点和控制柄的编辑反馈。上述区别跟随设置中的箭头角色，交换角色后也随之交换。选择多个对象不会自动建立组。
+选择工具组区分 `Black Arrow`（黑箭头，传统键位 `V`）与 `White Arrow`（白箭头，传统键位 `A`）。黑箭头默认分别选择填色与描边：点中填色只以 Animate 风格的细密黑白雪花点纹覆盖该填色，不连带高亮描边、不显示外接框或节点；点中描边只强调该段描边。点纹保留原色可辨，不覆盖孔洞和被不透明上层填色遮挡的区域，也不写入作品或导出。拖动沿用既有填色/描边分离与撤销流程。打散状态的填色、线条和描边可用黑箭头框选局部，沿框边切分并只选中框内部分；未编辑就取消选区会恢复临时切分。组、元件实例、文字、未打散图片和整体 SVG 保持整体选择，以整体选框反馈，不因局部框选被拆开。黑白箭头共享线身弯曲、端点移动、曲率与节点插入等几何交互；黑箭头默认不显示悬停路径、节点或控制柄轮廓。黑箭头弯曲、插入节点和移动端点期间不显示雪花；松手后结束临时几何选中，不自动转为可移动的整条线，再次拖线身仍可继续弯曲。单击不拖动才选中描边并显示雪花，之后拖动已选主体才是移动；`Shift` 追加选择不启动弯曲。白箭头保留可见路径、锚点和控制柄的编辑反馈。上述区别跟随设置中的箭头角色，交换角色后也随之交换。选择多个对象不会自动建立组。
 
 黑箭头普通点选填色或描边仅更新选区，不会因为边缘命中检查就把矩形、椭圆等转换为路径；实际拖动弯曲时才进入几何编辑。白箭头路径编辑仍沿原有流程准备几何。Black-arrow selection hit testing is read-only; primitive-to-path conversion is deferred until reshaping.
 
@@ -535,11 +562,21 @@ Black Arrow selects fills and strokes independently. An Animate-like, screen-pix
 
 默认工具栏依次提供三个独立的折叠按钮：“选择”收纳黑箭头与白箭头；“套索”收纳 `Polygon Lasso` 与 `Freehand Lasso`；“变换”收纳 `Free Transform`、`3D Transform`、`Distort` 与 `Gradient`，默认启用任意变形。套索不再挤在变换菜单里，渐变不单独占用工具栏按钮。各组保留上次启用的工具；点击工具组默认显示列表，同时启用当前工具。左侧还支持悬停展开，顶部还支持右键展开；点击列表内的工具后收起。3D 工具仍按原有上下文规则显示。
 
+顶部工具栏使用紧凑的图标按钮，工具名称由悬停提示和无障碍名称提供；工具区紧邻元件上下文，选择、变换、绘制、填充与资源入口通过留白分组。按钮采用固定较小高度，图标保持各自原始比例并居中。
+
 The default toolbar has three separate grouped buttons in order: Select contains Black Arrow and White Arrow; Lasso contains Polygon Lasso and Freehand Lasso; Transform contains Free Transform, 3D Transform, Distort and Gradient, defaulting to Free Transform. Lasso tools no longer share the Transform menu, and Gradient has no standalone button. Each group remembers its last active tool. Clicking a group opens its list by default and activates its current tool. Hover also opens groups on the left, and right-click remains available on top. Choosing a tool from the list closes it. Existing context rules still control 3D tool visibility.
+
+The top toolbar uses compact icon buttons, with tool names available through hover tips and accessible names. It sits beside the symbol context and uses whitespace to group selection, transform, drawing, paint and resource actions. Buttons use a fixed short height, while icons retain their native proportions and remain centered.
 
 开发模式下变更工具栏分组结构时，旧窗口会沿用保状态重启流程以重建工具按钮；新工具组尚未初始化时不会中断旧窗口布局或阻止重启。
 
 In development mode, toolbar group structure changes use the existing state-preserving restart to rebuild tool buttons. A group that has not yet been initialized in the old window does not interrupt its layout or block the restart.
+
+油漆桶工具使用倾斜桶身、提手和水滴的线性图标，桶身与水滴采用主题色半透明填充，复用工具栏统一的线宽、圆角和留白。The Fill tool uses a linear tilted bucket, handle and drop icon with semi-transparent theme-colored fills, sharing the toolbar’s stroke width, rounded joins and spacing.
+
+直线工具使用无端点标记的斜线图标；钢笔工具采用与笔刷一致的斜向笔杆、描边和浅色填充，并保留钢笔尖与中缝以区分工具。Line uses a diagonal stroke without endpoint markers. Pen shares the brush's diagonal handle, outline and tinted fill, with a split nib to identify it.
+
+套索工具图标采用带指针的绳圈造型：自由套索为圆弧轮廓，多边形套索为折线轮廓，颜色跟随界面主题。Freehand Lasso uses a curved rope-and-pointer icon; Polygon Lasso uses its angular variant. Both follow the interface theme.
 
 `Polygon Lasso` 与 `Freehand Lasso` 分别用于逐点绘制直线边界和拖动绘制自由边界；`Free Transform` 用于缩放、旋转和倾斜；`Distort` 用于可编辑三次贝塞尔包络扭曲。下文的 `Select` 路径编辑操作对应默认白箭头。
 
@@ -555,7 +592,7 @@ In development mode, toolbar group structure changes use the existing state-pres
   Click and marquee selection are not restricted to the active layer. Locked layers do not claim click hits, so exposed lower-layer content remains selectable through translucent locked layers. Opaque locked fills still occlude hidden content.
 
   Canvas dimensions do not restrict selection: visible images and drawing objects outside the canvas remain selectable by click and marquee after panning or zooming out.
-- 黑白箭头在空白处拖框均可截取打散形状的局部填色和描边；选择框穿过 Line 或 Pencil 时，会沿框边把描边拆成框内与框外的开放曲线，并只选中框内部分。图片、文字、整体 SVG 与元件仍按整体选择。Mixing Brush 只选择与框选范围实际着色相交的连通岛，外接矩形中的透明区域不会误选；按 `Shift` 追加选择。
+- 黑白箭头在空白处拖框均可截取打散形状的局部填色和描边；选择框穿过 Line 或 Pencil 时，会沿框边把描边拆成框内与框外的开放曲线，并只选中框内部分。未打散图片、文字、整体 SVG 与元件仍按整体选择；已打散图片按纹理填色局部切分。Mixing Brush 只选择与框选范围实际着色相交的连通岛，外接矩形中的透明区域不会误选；按 `Shift` 追加选择。
 - 框选期间清除先前悬停曲线的控制柄；框选切分重排对象或切换画布后，旧悬停目标失效，需重新悬停才显示对应曲线的控制柄，避免残留控制柄误指向其他线段。
   Marquee selection clears previous hover handles. Geometry changes or canvas switches invalidate old hover targets; hover again to show the current curve's controls instead of retaining handles for a reused object index.
 - 拖动已选对象：移动。指针悬停在已选直线、描边、填色或整体对象的主体上，以及整体移动期间，显示四向交叉箭头；移动已选边界描边或运动轨锚点时同样显示该光标。端点和曲率编辑使用十字光标，缩放手柄使用对应方向的双向箭头。
@@ -598,7 +635,7 @@ Distort 控制框：
 - 扭曲支持当前帧中的基础图形、文本、普通对象、导入 SVG、混色区域和嵌套实例，也可在 `Scene & Animation` 中用于场景实例。
 - 场景实例在投影 2D 视图中也会显示可编辑的扭曲包络；撤销变换后重新选择实例仍可直接扭曲。
   Scene instances expose an editable Distort envelope in projected 2D views, including after undoing a transform and reselecting the instance.
-- 位图支持包络扭曲：`Distort` 为图片放置对象显示扭曲包络，像素随包络变形，透明区域保留。扭曲参数可保存和撤销，不改变 Vault 中共享的原始图片素材。切回 `Select` 后可重新选中并整体移动，扭曲包络随图片一起平移；隐藏的原始角点不会拦截图片内部的点击。当前包络扭曲沿用软件栅格渲染路径；拖动扭曲柄时保留轻量网格预览，松手后生成完整结果并缓存。
+- 位图支持包络扭曲：`Distort` 为图片放置对象显示扭曲包络，像素随包络变形，透明区域保留。扭曲参数可保存和撤销，不改变 Vault 中共享的原始图片素材。切回 `Select` 后可重新选中并整体移动，扭曲包络随图片一起平移；隐藏的原始角点不会拦截图片内部的点击。曲线包络使用软件栅格渲染；拖动时直接按当前包络和屏幕精度绘制原图纹理，松手后生成原始精度结果并缓存。
 - 位图按原素材的像素精度生成一张透明的扭曲贴图，同时缓存选择轮廓和场景裁剪边界。缩放、平移、窗口尺寸、帧号、背景、舞台遮罩或对象透明度变化时，直接映射并绘制已有贴图，不重新计算图片扭曲；放大后的细节仍受原素材像素精度限制，`Point` 采样保持最近邻。图片内容、擦除范围、采样设置、对象位置/尺寸/旋转或包络变化时重新生成。结果缓存最多保留 32 项、合计 64 MiB；超出尺寸、内存或网格精度预算时使用原绘制路径，这些图片缩放时仍可能重算。首次生成大图的完整结果仍可能耗时。
 - 扭曲只保存源坐标框架、边界锚点和控制柄参数；不会拆散、隐藏或矢量化打包对象、文本和导入 SVG。复制、撤销、工程保存、素材 SVG 保存及实例关键帧都会保留这些参数。
 - Rectangle、Ellipse、Triangle、Polygon、Star、Path 和 Line 在扭曲后会按包络的实际映射结果重新拟合三次贝塞尔。填色边缘、描边、图层遮罩、选择轮廓和框选判断共用这份派生几何；Line 保持开放路径及原有端点样式，复合 Path 保持轮廓与孔洞。源对象和扭曲参数不会被改写。
@@ -672,9 +709,9 @@ When a closed boundary crosses itself into two filled faces, both faces remain, 
 
 ## 7. Fill、Stroke 与基础着色
 
-停靠着色面板和工作区颜色浮层随调随生效。独立的专业颜色对话框会实时预览，点击 `OK` 提交；点击 `Cancel`、窗口关闭按钮或按 `Esc` 恢复打开前的颜色。合法 RGB Hex 输入更新预览，不完整或非法输入保留最后有效颜色。对话框 `Reset` 将预览恢复原色。对象、灯光、图层和分组颜色沿用各自撤销机制，一次确认的颜色窗口编辑合并为一条记录。
+停靠着色面板随调随生效；设置中的工作区颜色浮层实时预览，随设置保存或取消。独立的专业颜色对话框会实时预览，点击 `OK` 提交；点击 `Cancel`、窗口关闭按钮或按 `Esc` 恢复打开前的颜色。合法 RGB Hex 输入更新预览，不完整或非法输入保留最后有效颜色。对话框 `Reset` 将预览恢复原色。对象、灯光、图层和分组颜色沿用各自撤销机制，一次确认的颜色窗口编辑合并为一条记录。
 
-Docked color editors and the workspace-color flyout apply changes directly. The modal professional color dialog previews changes, commits with OK and restores the opening color on Cancel, Escape or closing the window.
+Docked color editors apply changes directly. The workspace-color picker previews changes within Settings; Save persists the draft and Cancel restores the saved color. The modal professional color dialog previews changes, commits with OK and restores the opening color on Cancel, Escape or closing the window.
 
 取消图层或图层组调色不会新增撤销记录；原先未设置自定义颜色的图层组仍使用默认颜色。图层组管理窗口中的颜色子窗口也必须确认才更新暂存配置。
 
@@ -1285,7 +1322,7 @@ Objects clipped out by Scene masks do not block picking instances beneath them. 
 
 在 3D 视图中选择同一普通场景图层、当前帧有内容且层级连续的两个或更多实例后按 `F8`，可把它们组合为可复用的 3D 元件。新元件以所选实例当前帧位置包围盒的中心为枢轴，保留成员稳定 ID、XYZ 位置、旋转、缩放、外观和全部状态关键帧，并在原层级位置留下一个缩放为 100% 的根实例。一次 `Ctrl+Z` 会恢复原实例并移除刚创建的 3D 元件；跨图层、层级不连续或空白曝光上的选择不会被组合。
 
-`Hierarchy`（层级）默认隐藏，不再占用右侧检查器。点击左上角主菜单，选择 `Window → Hierarchy`（窗口 → 层级），可打开或隐藏独立浮动窗口；拖动标题栏移动窗口，拖动边框调整大小。关闭按钮或 `Esc` 只隐藏窗口，同一会话中再次打开会保留窗口位置、大小与树节点状态。切换工作区或工程时，层级内容继续同步当前编辑上下文。窗口跟随主工作台，不单独显示任务栏按钮。
+`Hierarchy`（层级）默认隐藏，不再占用右侧检查器。点击顶部 `View → Hierarchy / 视图 → 层级`，可打开或隐藏独立浮动窗口；拖动标题栏移动窗口，拖动边框调整大小。关闭按钮或 `Esc` 只隐藏窗口，同一会话中再次打开会保留窗口位置、大小与树节点状态。切换工作区或工程时，层级内容继续同步当前编辑上下文。窗口跟随主工作台，不单独显示任务栏按钮。
 
 在浮动 `Hierarchy` 中双击对象会聚焦该对象；双击普通图层会聚焦该层当前帧的可见对象，双击文件夹图层会连同可见后代图层一起聚焦。2D Front 会居中并在 2% 到 100% 的倍率范围内按边界适配，超大目标使用 2% 的最远视图；2D 参考方向和 3D 视图使用当前参考镜头平滑过渡。空图层、隐藏内容、根节点和占位项不会移动镜头。该操作保留当前投影与观察方向，只改变视图，不修改工程内容或创建撤销记录。
 
@@ -1358,8 +1395,8 @@ Instance playback FPS, mode, hold frame and opacity identify mixed selections se
 
 ### Vault
 
-左侧工具栏的 Vault 打开项目素材列表，抽屉与上方面板交接的顶边采用柔和分界线颜色。面板使用小号弱化标题、统一分类按钮和紧凑的主题搜索／标签筛选框；右侧标签图标用于管理选中素材的标签。导入、打开、文件夹、标签及素材列表图标采用统一的圆润线性风格，右上角操作图标保持一致的轮廓尺寸与圆角，新建文件夹使用与时间轴相同的文件夹图标。输入框、下拉框和按钮随主题及直角／微圆角偏好变化，搜索与列表之间保留清晰间距。
-The Vault panel uses a muted heading, consistent category buttons and compact themed search/tag filters. The tag icon manages tags for the selected asset; controls follow the theme and corner preference.
+左侧工具栏的 Vault 打开项目素材库。面板标题沿用右侧检查器页脚的 8.5pt 常规字重，去除副标题文案，并配合数量徽标、图标分类导航，以及 26 逻辑像素高的紧凑素材行（比时间轴默认图层行高 5 像素）：左侧显示素材真实内容的缩略图与名称，右侧显示元件帧数、图片尺寸、SVG 类型或文件夹内当前列出的项目数；元件缩略图显示当前帧内容，图片和 SVG 显示素材原貌；空内容或不可用内容保留状态图标。失效素材显示警告状态，已分配的标签保留颜色标记。卡片具有独立的悬停、选中和键盘焦点反馈，底部显示筛选后的素材数量与拖放提示。搜索框、标签筛选与右侧标签管理入口集中在分类下方；右上角保留新建／导入和打开／放置操作。文件夹展开、Ctrl／Shift 多选、拖放、悬停预览与右键操作沿用原有行为。颜色与边角随主题及直角／微圆角偏好变化。
+The Vault panel uses a muted heading, consistent category buttons and compact themed search/tag filters. Asset rows are 26 logical pixels tall, five pixels taller than default timeline layer rows; actual-content thumbnails, names and metadata share one line. Symbols show their current-frame content, while images and SVGs show their source appearance. Empty or unavailable content retains a status icon. The tag icon manages tags for the selected asset; controls follow the theme and corner preference.
 
 元件、图片与 SVG 素材均可重命名、分配目录及标签，并参与名称／标签筛选。素材列表用 `Ctrl` 追加选择、`Shift` 选择范围，右键已选行保留多选；普通刷新保留多选、展开目录及浏览位置。列表获得焦点时 `F2` 重命名，`Delete` 删除所选。复制、删除、移动目录与设置标签支持整批操作；批量标签窗口明确用勾选结果替换所有选中素材的标签。目录删除只将其素材和子目录提升到父目录，不删除素材；删除素材会先列明实例、放置关键帧及图片背景的影响，确认后作为一次可撤销操作，移除背景仍保留画布尺寸。至少保留一个普通元件。
 
@@ -1383,7 +1420,7 @@ Reopening Vault reuses unchanged asset rows while checking project changes and f
 - 分类栏包含 `基础元件`、`3D 元件`、`SVG 素材` 和 `图片`。基础元件显示普通可复用绘制元件；3D 元件显示在 3D 场景中通过 `F8` 组合得到的空间元件；两类元件均可打开或拖入场景复用。
 - `SVG 素材` 保存工程托管副本，双击、点击放置按钮或拖到舞台会创建共享素材引用。通过 `Import SVG...` 或拖文件直接导入舞台时，也会登记共享素材；同一来源再次放置会使用已有工程内容，不会自动从外部文件更新。原文件移动或删除不影响已导入的工程。
   SVG assets are stored in the project. Library placements share the asset; direct SVG import also registers a shared resource. Reimporting the same source uses the stored project content until an explicit update.
-- `图片` 保存位图素材：导入时图片字节会被复制进工程的 `.Vault/Images` 托管目录，源文件随后移动或删除都不影响工程（见 [11. SVG、图片与文本](#11-svg图片与文本)）。点击图片上传图标（导入图片）选择并验证图片，双击、点击使用按钮或拖到舞台会把它作为**一个整体对象**放置，可整体选择、移动、缩放和旋转，但不能 `Break Apart`。也可以从资源管理器把图片文件直接拖入素材库的资产列表区域导入素材。
+- `图片` 保存位图素材：导入时图片字节会被复制进工程的 `.Vault/Images` 托管目录，源文件随后移动或删除都不影响工程（见 [11. SVG、图片与文本](#11-svg图片与文本)）。点击图片上传图标（导入图片）选择并验证图片，双击、点击使用按钮或拖到舞台会把它作为**一个整体对象**放置，可整体选择、移动、缩放和旋转，并可用 `Break Apart` 转为可局部选择的纹理填色。也可以从资源管理器把图片文件直接拖入素材库的资产列表区域导入素材。
 - 图片和 SVG 的右键菜单提供 `从源文件更新`、`替换源文件...` 和 `创建独立副本`。更新会传播到所有引用位置，并保留各放置对象的位置、尺寸、旋转、畸变和动画；验证或读取失败时保留上一次有效内容。独立副本拥有新素材 ID，已有放置不会自动改用副本。搜索可匹配名称和路径；标签与素材文件夹仍只适用于元件。
   Images and SVG assets support Update from Source, Replace Source, and Create Independent Copy. Updates preserve placement and animation; failed updates retain the last valid content. An independent copy receives a new asset ID without rebinding existing placements.
 - 删除未使用的素材会直接移除库项目；正在使用的素材会列出直接使用位置、受影响的嵌套元件和场景。可选择同类素材替换引用后删除，或删除素材及全部使用位置，默认取消；更新、独立副本和删除均可一次撤销。引用数量按存储的放置对象及各关键帧统计，不等于某一帧可见的实例数量。
@@ -1443,11 +1480,13 @@ Converting content to a symbol preserves asset references, as does duplicating a
 
 在主菜单选择 `Import Image...`，或在 Vault 的 `图片` 分类中点击添加按钮，可一次多选图片导入素材库；也可把单张图片直接拖到 Basic Drawing 舞台的一个位置放下，或把一批图片拖入素材库的资产列表区域。支持 `PNG`、`JPEG`、`BMP`、`GIF`、`TIFF` 和 `WebP`。
 
-批量导入会先读取有效文件，再统一确认设置，最后写入素材库。独立进度窗口分别显示读取／写入阶段的已处理数量、总数与百分比；当前行显示文件名，悬停可查看完整路径。点击 `Cancel / 取消`、按 `Esc` 或关闭进度窗口会停止后续导入，已成功导入的素材保留；取消设置对话框也会停止整批导入。重复路径及在预览中移除的图片计为跳过，单个文件失败不会阻止后续文件，结束后统一显示成功、跳过、失败与未处理数量及最多 5 条错误详情。工程图片素材上限仍为 4096 张，导入 3000 张前需确认剩余额度足够；批量导入只添加素材，不自动把全部图片放到舞台。
+批量导入会先读取有效文件，再统一确认设置，最后写入素材库并把每张成功导入的图片直接放到当前舞台，图片会自动选中，位置默认在当前舞台视图中心。独立进度窗口分别显示读取／写入阶段的已处理数量、总数与百分比；当前行显示文件名，悬停可查看完整路径。点击 `Cancel / 取消`、按 `Esc` 或关闭进度窗口会停止后续导入，已成功导入的素材和舞台对象保留；取消设置对话框也会停止整批导入。重复路径及在预览中移除的图片计为跳过，单个文件失败不会阻止后续文件，结束后统一显示成功、跳过、失败与未处理数量及最多 5 条错误详情。工程图片素材上限仍为 4096 张，导入 3000 张前需确认剩余额度足够。
+
+如果导入图片远大于当前画布，选中舞台上的位图后打开右键菜单，在 `Transform / 变换` 中选择 `Fit Bitmap to Canvas / 位图适应画布`，即可保持比例缩小到画布范围内；操作支持一次撤销。
 
 拖放约定：
 
-- 拖入素材库只导入素材，不放置到舞台；拖入舞台会先导入素材（首次需要确认导入设置），再在落点放置一个位图对象。
+- 从主菜单导入或拖入素材库都会在导入素材后直接把成功导入的图片放置到舞台中心；拖入舞台会先导入素材（首次需要确认导入设置），再在落点放置一个位图对象。
 - 一次拖入多个文件时，素材库会共用第一个文件确认的导入设置，不再为每个文件重复弹出对话框。
 - 同一路径的图片（或同一路径的 SVG 链接）不会重复添加；已经导入过的文件直接复用现有素材。
 - 同一次拖入必须是同一种素材：图片、`.svg` 或 `.V2DSymbol` 各自一批。混入其它类型时整批拒绝，避免只导入选中内容的一部分。
@@ -1487,7 +1526,7 @@ Import advanced settings retain the scroll position. Crop fields show pixels. A 
 导入后的行为：
 
 - 图片字节会被复制进工程的 `.Vault/Images` 托管目录，源文件之后移动或删除都不影响工程渲染与打开；`SourcePath` 只作为诊断信息和 `重新定位...` 的目标保留。相同内容的图片共用同一份解码结果。
-- 放置结果是**一个整体位图对象**：可整体选择、移动、缩放、旋转，可复制粘贴并随工程保存；不支持 `Break Apart`，编辑器会明确拒绝而不是静默丢弃。
+- 放置结果是**一个整体位图对象**：可整体选择、移动、缩放、旋转，可复制粘贴并随工程保存；可用 `Break Apart` 转为纹理填色，再用框选或套索切分局部。
 - 点击图片后，右侧监视器显示该图片的来源、像素尺寸与导入设置，并可打开导入设置对话框；不同图片素材分别保存设置，同一素材的多个放置对象共用其导入设置。
 - 图片在 `Free Transform` 中的任意变形缩放遵循操作偏好「使用 Shift 启用等比缩放」：默认开启，此时默认自由缩放、按住 `Shift` 等比缩放；关闭后默认等比、按住 `Shift` 自由缩放，与矢量对象、文本和导入 SVG 一致。复制粘贴保留当前尺寸和擦除结果，排列命令与图层顺序同样作用于图片。
 - 选择工具直接拖动未扭曲图片的四角手柄时始终保持原始宽高比，并固定相对角位置；这条规则独立于自由变换工具的 `Shift` 操作偏好。扭曲后的图片继续使用实际边界和 `Free Transform` 流程。

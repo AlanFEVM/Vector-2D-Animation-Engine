@@ -366,6 +366,14 @@ internal sealed partial class VectorScene
                 ? new DrawingElementHit(new DrawingElementKey(i, DrawingElementKind.Fill, partIndex), 0, 0, 1)
                 : DrawingElementHit.None;
         }
+        if (TryGetBitmapObjectData(i, out var bitmap) && bitmap.IsBrokenApart)
+        {
+            if (!HitObject(sourceWorld, i, toleranceWorld)) return DrawingElementHit.None;
+            var bitmapPart = FillPartIndex(sourceWorld, i, frame, CollectTopologyCandidates(i, frame));
+            return bitmapPart >= 0
+                ? new DrawingElementHit(new DrawingElementKey(i, DrawingElementKind.Fill, bitmapPart), 0, 0, 1)
+                : DrawingElementHit.None;
+        }
         if (IsWholeObjectShape(shape))
         {
             var wholeObjectPoint = shape == VectorAnimationEngine.ShapeKind.ImportedSvg
@@ -1365,6 +1373,8 @@ internal sealed partial class VectorScene
     private PointF[][] ShapeBoundaryContours(int objectIndex)
     {
         if ((uint)objectIndex >= ObjectCount) return Array.Empty<PointF[]>();
+        if (TryGetBitmapObjectData(objectIndex, out var bitmap) && bitmap.IsBrokenApart)
+            return FillWorldContours(objectIndex).Select(ClosePolyline).ToArray();
         if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Path
             && TryGetPathWorldContours(objectIndex, out var pathContours))
         {

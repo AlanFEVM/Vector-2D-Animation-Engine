@@ -1,4 +1,4 @@
-﻿using System.Buffers;
+﻿﻿using System.Buffers;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -36,7 +36,6 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private const int MaxPathGradientBrushCount = 4_096;
     private const int MaxImportedSvgBitmapCacheEntries = 1024;
     private const long MaxImportedSvgBitmapCacheBytes = 512L * 1024 * 1024;
-    private const int MaxBitmapObjectCacheEntries = 512;
     private const long MaxBitmapObjectCacheBytes = 512L * 1024 * 1024;
     private const float FillEdgeCoverageWidthPixels = 0.8f;
     private readonly Dictionary<int, ID2D1SolidColorBrush> _brushCache = new(512);
@@ -59,6 +58,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private readonly Dictionary<ImportedSvgRasterKey, CachedImportedSvgBitmap> _importedSvgBitmapCache = new();
     private readonly Dictionary<(BitmapImageRasterKey Key, int Level), CachedImportedSvgBitmap> _bitmapObjectCache = new();
     private long _bitmapObjectCacheBytes;
+    private long _bitmapObjectCacheSequence;
     private SceneRenderOrderBuffer _renderOrder = new();
     private readonly SceneRenderOrderBuffer _underlayRenderOrder = new();
     private int _underlayDrawLimit;
@@ -543,6 +543,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
     private sealed record CachedImportedSvgBitmap(long PixelBytes, ID2D1Bitmap Bitmap) : IDisposable
     {
+        public long LastUse { get; set; }
         public void Dispose() => Bitmap.Dispose();
     }
 
@@ -1090,10 +1091,10 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
     private static bool RequiresSoftwareDistortion(StageControl stage)
     {
-        return stage.SceneHasDistortionsForRendering(stage.Scene)
-            || stage.SceneHasDistortionsForRendering(stage.UnderlayScene)
-            || stage.SceneHasDistortionsForRendering(stage.OnionSkinScene)
-            || stage.SceneHasDistortionsForRendering(stage.DragPreviewScene);
+        return stage.SceneRequiresSoftwareDistortion(stage.Scene)
+            || stage.SceneRequiresSoftwareDistortion(stage.UnderlayScene)
+            || stage.SceneRequiresSoftwareDistortion(stage.OnionSkinScene)
+            || stage.SceneRequiresSoftwareDistortion(stage.DragPreviewScene);
     }
 
     private bool CanReuseBaseFrame(StageControl stage)
@@ -2003,7 +2004,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         var deferredFillObjects = stage.SelectionFillDragFrontObjectsFor(scene);
         if (!stage.SelectionMoveFeedbackActive
             && (deferredFillObjects is null or { Count: 0 })
-            && TryDrawLayerObjectsBatched(stage, scene, layer, objects, start))
+            && (TryDrawAffineBitmapLayer(stage, scene, objects, start)
+                || TryDrawLayerObjectsBatched(stage, scene, layer, objects, start)))
         {
             return;
         }
@@ -2433,6 +2435,12 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         if (!stage.TryDecodeBitmapImage(data.ImageAssetId, out var raster)) return;
         raster = BitmapImageRasterizer.ApplyObjectClip(raster, data);
 
+        if (stage.TryGetBitmapAffineScreenFrame(scene, objectIndex, out var affineFrame))
+        {
+            DrawAffineBitmap(stage, scene, objectIndex, data, raster, affineFrame);
+            return;
+        }
+
         var nearestNeighbour = stage.BitmapImageSampling(data.ImageAssetId) == BitmapSampling.Point;
         // Pick a pre-filtered half-resolution copy that matches the on-screen size. Drawing a
         // minified bitmap straight from its full-resolution source aliases badly under plain
@@ -2489,12 +2497,21 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     {
         if (_target is null) throw new InvalidOperationException("Direct2D render target is not ready.");
         var cacheKey = (raster.Key, level);
-        if (_bitmapObjectCache.TryGetValue(cacheKey, out var cached)) return cached.Bitmap;
-        var pixelBytes = raster.Pixels.LongLength;
-        if (_bitmapObjectCache.Count >= MaxBitmapObjectCacheEntries
-            || _bitmapObjectCacheBytes > MaxBitmapObjectCacheBytes - pixelBytes)
+        if (_bitmapObjectCache.TryGetValue(cacheKey, out var cached))
         {
-            ClearBitmapObjectCache();
+            cached.LastUse = ++_bitmapObjectCacheSequence;
+            return cached.Bitmap;
+        }
+        var pixelBytes = raster.Pixels.LongLength;
+        // The byte budget bounds GPU memory. An entry-count flush made a working
+        // set of 1,000 tiny images re-upload in full on every frame.
+        while (_bitmapObjectCache.Count > 0
+            && _bitmapObjectCacheBytes > MaxBitmapObjectCacheBytes - pixelBytes)
+        {
+            var oldest = _bitmapObjectCache.MinBy(entry => entry.Value.LastUse);
+            _bitmapObjectCache.Remove(oldest.Key);
+            _bitmapObjectCacheBytes -= oldest.Value.PixelBytes;
+            oldest.Value.Dispose();
         }
 
         var pixelsHandle = GCHandle.Alloc(raster.Pixels, GCHandleType.Pinned);
@@ -2516,7 +2533,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             pixelsHandle.Free();
         }
 
-        _bitmapObjectCache[cacheKey] = new CachedImportedSvgBitmap(pixelBytes, bitmap);
+        _bitmapObjectCache[cacheKey] = new CachedImportedSvgBitmap(pixelBytes, bitmap)
+        { LastUse = ++_bitmapObjectCacheSequence };
         _bitmapObjectCacheBytes += pixelBytes;
         return bitmap;
     }

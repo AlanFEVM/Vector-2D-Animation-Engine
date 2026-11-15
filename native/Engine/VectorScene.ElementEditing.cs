@@ -184,6 +184,8 @@ internal sealed partial class VectorScene
     public DrawingFillPartGeometry[] GetFillParts(int objectIndex, int frame)
     {
         if ((uint)objectIndex >= ObjectCount) return Array.Empty<DrawingFillPartGeometry>();
+        if (TryGetBitmapObjectData(objectIndex, out var bitmap) && !bitmap.IsBrokenApart)
+            return [new DrawingFillPartGeometry(0, CloneContours(FillWorldContours(objectIndex)))];
         if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.MixingStroke
             && TryGetMixingBrushLocalRegion(objectIndex, out var mixingRegion))
         {

@@ -102,6 +102,8 @@ internal static class BitmapImageRasterizer
     internal static BitmapImageRaster ApplyObjectClip(BitmapImageRaster source, BitmapObjectData data)
     {
         if (data.VisibleContours is not { } contours) return source;
+        if (contours is [{ Length: 4 } full] && full[0] == new PointF(0, 0)
+            && full[1] == new PointF(1, 0) && full[2] == new PointF(1, 1) && full[3] == new PointF(0, 1)) return source;
         var clipKey = ClipKeys.GetValue(data, value => Convert.ToHexString(SHA256.HashData(
             System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(value.VisibleContours,
                 new System.Text.Json.JsonSerializerOptions { IncludeFields = true }))));
@@ -270,7 +272,9 @@ internal static class BitmapImageRasterizer
     {
         file.Refresh();
         if (!file.Exists || stamp != new SourceStamp(file.Length, file.LastWriteTimeUtc, file.CreationTimeUtc)) return;
-        if (SourceCache.Count >= MaxCacheEntries && !SourceCache.ContainsKey(sourceKey))
+        // Retain source stamps for the live pixel working set. Otherwise 1,000
+        // small images reread their files even though all pixels fit the budget.
+        if (SourceCache.Count >= Math.Max(MaxCacheEntries, RasterCache.Count) && !SourceCache.ContainsKey(sourceKey))
             SourceCache.Remove(SourceCache.Keys.First());
         SourceCache[sourceKey] = new SourceCacheEntry(stamp, rasterKey);
     }
@@ -543,7 +547,7 @@ internal static class BitmapImageRasterizer
     private static void EvictFor(long incomingBytes)
     {
         if (RasterCache.Count == 0) return;
-        if (RasterCache.Count < MaxCacheEntries && _cacheBytes <= MaxCacheBytes - incomingBytes) return;
+        if (_cacheBytes <= MaxCacheBytes - incomingBytes) return;
 
         // Oldest-first eviction keeps the small working set that a timeline actually
         // references, matching the SVG raster cache's bounded-memory guarantee.
@@ -552,7 +556,7 @@ internal static class BitmapImageRasterizer
             .ToArray();
         foreach (var item in ordered)
         {
-            if (RasterCache.Count < MaxCacheEntries && _cacheBytes <= MaxCacheBytes - incomingBytes) break;
+            if (_cacheBytes <= MaxCacheBytes - incomingBytes) break;
             if (!RasterCache.Remove(item.Key)) continue;
             _cacheBytes -= item.Value.Raster.Pixels.LongLength;
             Interlocked.Increment(ref _cacheEvictionCount);

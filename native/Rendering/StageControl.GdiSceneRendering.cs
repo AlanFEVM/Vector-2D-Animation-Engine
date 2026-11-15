@@ -886,7 +886,10 @@ internal sealed partial class StageControl : Control
         if (pass == SceneRenderPass.Stroke
             && scene.ShapeKind[objectIndex] is ShapeKind.Bitmap or ShapeKind.ImportedSvg
                 or ShapeKind.Text or ShapeKind.MixingStroke) return;
-        if (TryGetDistortedVectorGeometryForRendering(scene, objectIndex, distortions, out var geometry))
+        // A bitmap's editable boundary is not its material: broken-apart images
+        // must retain their texture while their envelope is being edited too.
+        if (scene.ShapeKind[objectIndex] != ShapeKind.Bitmap
+            && TryGetDistortedVectorGeometryForRendering(scene, objectIndex, distortions, out var geometry))
         {
             DrawDistortedVectorObject(target, scene, objectIndex, pass, distortions, geometry);
             return;
@@ -1009,7 +1012,9 @@ internal sealed partial class StageControl : Control
         SceneRenderPass pass,
         IReadOnlyList<DistortWarp> distortions)
     {
+        if (TryDrawAffineBitmap(target, scene, objectIndex, pass)) return;
         if (TryDrawCachedBitmapDistortion(target, scene, objectIndex, pass, distortions)) return;
+        if (TryDrawBitmapDistortionPreview(target, scene, objectIndex, pass, distortions)) return;
         DrawRasterDistortedObjectCore(target, scene, objectIndex, pass, distortions);
     }
 

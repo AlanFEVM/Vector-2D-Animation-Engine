@@ -91,7 +91,6 @@ internal sealed partial class MainForm
                 _timeline.FrameHeightPreset = updated.TimelineFrameHeight;
                 _timeline.AutoKeyframeEnabled = updated.TimelineAutoKeyframeEnabled;
                 _stage.BackColor = Color.FromArgb(updated.WorkspaceColorArgb);
-                _dashDock.SetWorkspaceColor(_stage.BackColor);
                 RefreshSceneOpticsText();
                 UpdateSceneDimensionButton();
                 _stage.Invalidate();

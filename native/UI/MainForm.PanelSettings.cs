@@ -12,6 +12,7 @@ internal sealed partial class MainForm
             CustomShortcutProfiles = profiles,
             Language = dialog.SelectedLanguage,
             ColorTheme = dialog.SelectedColorTheme,
+            WorkspaceColorArgb = dialog.SelectedWorkspaceColor.ToArgb(),
             ThemeHueDegrees = dialog.SelectedThemeHueDegrees,
             ThemeSaturationPercent = dialog.SelectedThemeSaturationPercent,
             ThemeBrightnessPercent = dialog.SelectedThemeBrightnessPercent,
@@ -59,6 +60,7 @@ internal sealed partial class MainForm
             AppHost.Current?.ApplyCodexBridgeSettings(settings);
         if (applyAppearance)
         {
+            PreviewWorkspaceColor(Color.FromArgb(settings.WorkspaceColorArgb));
             ApplyWindowCornerStyle(settings.WindowCornerStyle);
             ApplyThemePreview(settings.ColorTheme,
                 settings.ThemeHueDegrees, settings.ThemeSaturationPercent, settings.ThemeBrightnessPercent,

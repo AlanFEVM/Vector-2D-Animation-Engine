@@ -38,6 +38,7 @@ internal sealed partial class VectorScene
         var clearStroke = new HashSet<int>();
         var additions = new List<MaterializedPartAddition>();
         var mixingAdditions = new List<MixingMaterializedPartAddition>();
+        var bitmapAdditions = new List<BitmapTopologyAddition>();
         var mappedResults = new Dictionary<DrawingElementKey, DrawingElementKey>();
         var keyframesBySourceStack = new Dictionary<(ushort Layer, long Order), int>();
 
@@ -58,6 +59,12 @@ internal sealed partial class VectorScene
 
             var sourceKeys = group.ToArray();
             var shape = ShapeKind[source];
+            if (TryGetBitmapObjectData(source, out var bitmap) && bitmap.IsBrokenApart)
+            {
+                if (!PlanBitmapTopologyParts(source, sourceKeys, frame, bitmapAdditions, mappedResults, remove))
+                    return new MaterializeSelectedPartsResult(false, false, [], []);
+                continue;
+            }
             if (shape is VectorAnimationEngine.ShapeKind.Bitmap or VectorAnimationEngine.ShapeKind.ImportedSvg or VectorAnimationEngine.ShapeKind.Text)
             {
                 if (sourceKeys.Any(key => key.Kind != DrawingElementKind.Fill || key.PartIndex != 0))
@@ -428,7 +435,8 @@ internal sealed partial class VectorScene
         var changed = remove.Any(value => value)
             || clearStroke.Count > 0
             || additions.Count > 0
-            || mixingAdditions.Count > 0;
+            || mixingAdditions.Count > 0
+            || bitmapAdditions.Count > 0;
         if (!changed)
         {
             var identity = Enumerable.Range(0, oldObjectCount).ToArray();
@@ -511,6 +519,16 @@ internal sealed partial class VectorScene
                 {
                     mappedResults[addition.SourceKey] = new DrawingElementKey(index, DrawingElementKind.Fill, 0);
                 }
+            }
+
+            foreach (var addition in bitmapAdditions)
+            {
+                var index = AppendBitmapSelectionPart(addition.Part);
+                if (spatialIndexRemapped) AppendObjectToSpatialIndex(index);
+                AddObjectSummaryCells(index, affectedTileCells, TileColumns, TileRows);
+                AddObjectSummaryCells(index, affectedOverviewCells, OverviewColumns, OverviewRows);
+                if (addition.SourceKey.IsValid)
+                    mappedResults[addition.SourceKey] = new DrawingElementKey(index, DrawingElementKind.Fill, 0);
             }
 
             if (spatialIndexRemapped)
@@ -1061,11 +1079,18 @@ internal sealed partial class VectorScene
             var remove = new bool[oldObjectCount];
             var additions = new List<MarqueeMaterializedAddition>();
             var mixingAdditions = new List<MarqueeMixingMaterializedAddition>();
+            var bitmapAdditions = new List<BitmapSelectionAddition>();
             var selectedWholeObjects = new List<int>();
             foreach (var source in candidates)
             {
                 if ((uint)source >= oldObjectCount || !IsObjectSelectable(source, frame)) continue;
                 var shape = ShapeKind[source];
+                if (includeFills && canMaterializeParts
+                    && TryGetBitmapObjectData(source, out var bitmap) && bitmap.IsBrokenApart)
+                {
+                    PlanBitmapSelectionParts(source, bounds, selectionPolygon, bitmapAdditions, selectedWholeObjects, remove);
+                    continue;
+                }
                 if (selectionPolygon is not null && _objectDistortions.ContainsKey(source))
                 {
                     if (includeWholeObjectSelections
@@ -1186,6 +1211,12 @@ internal sealed partial class VectorScene
                 ObjectOrder[index] = item.Order;
                 ObjectSubOrder[index] = item.SubOrder;
                 ObjectKeyframeFrame[index] = item.KeyframeFrame;
+                if (item.Selected) selectedObjects.Add(index);
+            }
+
+            foreach (var item in bitmapAdditions)
+            {
+                var index = AppendBitmapSelectionPart(item);
                 if (item.Selected) selectedObjects.Add(index);
             }
 

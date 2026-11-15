@@ -230,7 +230,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         BackColor = Theme.Panel;
-        Padding = new Padding(12, 8, 12, 12);
+        Padding = new Padding(16, 12, 16, 8);
 
         Theme.StyleToolTip(_toolTip);
         BuildVaultWorkspace();
@@ -269,6 +269,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
         ArgumentNullException.ThrowIfNull(project);
         if (!ReferenceEquals(_project, project))
         {
+            ClearAssetThumbnails();
             if (_project is not null) _project.Changed -= ProjectChanged;
             HidePreview(clearContent: true);
             _project = project;
@@ -342,6 +343,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
             return;
         }
 
+        RefreshAssetThumbnailRevision();
         var fingerprint = CreateProjectRowsFingerprint();
         if (_projectRowsDirty || fingerprint != _projectRowsFingerprint)
         {
@@ -366,6 +368,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
             _projectObjectMenu.Dispose();
             _toolTip.Dispose();
             _preview?.Dispose();
+            ClearAssetThumbnails();
         }
 
         base.Dispose(disposing);
@@ -379,6 +382,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
             return;
         }
 
+        ClearAssetThumbnails();
         if (!Visible) return;
         RefreshProjectObjects();
     }
@@ -390,15 +394,16 @@ internal sealed partial class LibraryVaultPanel : UserControl
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 5,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 68));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
         Controls.Add(layout);
 
         var header = new TableLayoutPanel
@@ -406,6 +411,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 4,
+            RowCount = 1,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
@@ -413,21 +419,19 @@ internal sealed partial class LibraryVaultPanel : UserControl
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 36));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 32));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 32));
-        var title = InspectorModuleStyle.CreateTitle("Project Assets");
-        title.TextAlign = ContentAlignment.MiddleLeft;
-        title.AutoEllipsis = true;
-        header.Controls.Add(title, 0, 0);
+        header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        header.Controls.Add(BuildAssetHeading(), 0, 0);
         _vaultSummary.Dock = DockStyle.Fill;
-        _vaultSummary.ForeColor = Theme.SecondaryText;
-        _vaultSummary.BackColor = Theme.Panel;
-        _vaultSummary.Font = Theme.UiFont(8.5f);
-        _vaultSummary.TextAlign = ContentAlignment.MiddleRight;
+        _vaultSummary.ForeColor = Theme.AccentLabel;
+        _vaultSummary.BackColor = Theme.AccentSurface;
+        _vaultSummary.Font = Theme.UiFont(8.5f, FontStyle.Bold);
+        _vaultSummary.TextAlign = ContentAlignment.MiddleCenter;
         _vaultSummary.AutoEllipsis = true;
-        _vaultSummary.Margin = new Padding(0, 0, 4, 0);
+        _vaultSummary.Margin = new Padding(0, 5, 6, 11);
         _vaultSummary.AccessibleName = "Project asset count";
         header.Controls.Add(_vaultSummary, 1, 0);
         _newFolderButton.Dock = DockStyle.Fill;
-        _newFolderButton.Margin = new Padding(2);
+        _newFolderButton.Margin = new Padding(2, 0, 2, 8);
         _newFolderButton.Click += (_, _) => RequestPrimaryAssetCreation();
         header.Controls.Add(_newFolderButton, 2, 0);
         Theme.StyleToolbarButton(_newFolderButton);
@@ -436,7 +440,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
         _openButton = new SvgIconButton(SvgIconKind.AssetOpen)
         {
             Dock = DockStyle.Fill,
-            Margin = new Padding(2),
+            Margin = new Padding(2, 0, 2, 8),
             AccessibleName = "Open selected symbol"
         };
         _openButton.Click += (_, _) => OpenSelectedVaultItem();
@@ -448,10 +452,11 @@ internal sealed partial class LibraryVaultPanel : UserControl
         layout.Controls.Add(BuildAssetFilterBar(), 0, 2);
 
         _contentHost.Dock = DockStyle.Fill;
-        _contentHost.BackColor = Theme.ControlOutline;
+        _contentHost.BackColor = Theme.Panel;
         _contentHost.Margin = Padding.Empty;
-        _contentHost.Padding = new Padding(0, 1, 0, 0);
+        _contentHost.Padding = new Padding(0, 8, 0, 0);
         layout.Controls.Add(_contentHost, 0, 3);
+        layout.Controls.Add(BuildAssetFooter(), 0, 4);
         ConfigureContentLists();
 
         ActivateSource(VaultSource.Project, refresh: false);
@@ -667,6 +672,10 @@ internal sealed partial class LibraryVaultPanel : UserControl
             useCustomExpandButtons: true,
             animateRows: true,
             useSolidFocusCue: true);
+        _projectObjects.ItemHeight = Math.Max(1, (int)Math.Round(ProjectAssetRowHeight * DeviceDpi / 96f));
+        DpiChangedAfterParent += (_, _) =>
+            _projectObjects.ItemHeight = Math.Max(1, (int)Math.Round(ProjectAssetRowHeight * DeviceDpi / 96f));
+        _projectObjects.DrawNode += DrawAssetCard;
         _projectObjects.DrawNode += (_, e) =>
         {
             if (_dragOriginNode is null || e.Node is null) return;
@@ -1293,6 +1302,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
 
     private void RebuildProjectObjectRows(ProjectRowsFingerprint fingerprint)
     {
+        ClearAssetThumbnails();
         var selectedKeys = _multiSelectedNodes.Select(NodeIdentity).ToHashSet(StringComparer.Ordinal);
         var topKey = _projectObjects.TopNode is { } top ? NodeIdentity(top) : "";
         var expandedFolderIds = EnumerateProjectNodes()
@@ -1573,7 +1583,8 @@ internal sealed partial class LibraryVaultPanel : UserControl
 
     private void UpdateVaultSummary()
     {
-        _vaultSummary.Text = $"({ActiveAssetCategoryCount()})";
+        _vaultSummary.Text = ActiveAssetCategoryCount().ToString();
+        UpdateAssetFooter();
     }
 
     private void VaultSelectionChanged(ListView source)

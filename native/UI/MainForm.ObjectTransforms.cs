@@ -13,10 +13,10 @@ internal sealed partial class MainForm
         if (instances.Count > 0)
         {
             if (!TryGetSelectedSceneInstanceBounds(out var bounds)) return false;
-            geometry = new RectangleF(bounds.X + bounds.Width / 2, bounds.Y + bounds.Height / 2, bounds.Width, bounds.Height);
+            geometry = InspectorBoundsPixels(bounds);
             if (instances.Count == 1 && TryGetSelectedSceneInstanceFrame(out var frame))
             {
-                geometry = new RectangleF(frame.Center.X, frame.Center.Y,
+                geometry = InspectorCenterSizePixels(frame.Center,
                     MathF.Sqrt(frame.AxisX.X * frame.AxisX.X + frame.AxisX.Y * frame.AxisX.Y),
                     MathF.Sqrt(frame.AxisY.X * frame.AxisY.X + frame.AxisY.Y * frame.AxisY.Y));
                 rotation = instances[0].EvaluateState(_frame).RotationZ;
@@ -25,19 +25,32 @@ internal sealed partial class MainForm
         else if (selection.Length == 1)
         {
             var index = selection[0];
-            geometry = new RectangleF(_scene.X[index], _scene.Y[index], _scene.Width[index], _scene.Height[index]);
+            geometry = InspectorCenterSizePixels(new PointF(_scene.X[index], _scene.Y[index]),
+                _scene.Width[index], _scene.Height[index]);
             rotation = InspectorUsesBakedGeometry(index) ? 0 : _scene.Angle[index] * (180f / MathF.PI);
         }
         else if (selection.Length > 1)
         {
             var bounds = _scene.GetObjectWorldBounds(selection[0]);
             foreach (var index in selection.Skip(1)) bounds = RectangleF.Union(bounds, _scene.GetObjectWorldBounds(index));
-            geometry = new RectangleF(bounds.X + bounds.Width / 2, bounds.Y + bounds.Height / 2, bounds.Width, bounds.Height);
+            geometry = InspectorBoundsPixels(bounds);
         }
         else return false;
         return float.IsFinite(geometry.X) && float.IsFinite(geometry.Y)
             && float.IsFinite(geometry.Width) && float.IsFinite(geometry.Height) && float.IsFinite(rotation);
     }
+
+    private static RectangleF InspectorCenterSizePixels(PointF center, float width, float height) => new(
+        VectorUnits.ToPixels(center.X),
+        VectorUnits.ToPixels(center.Y),
+        VectorUnits.ToPixels(width),
+        VectorUnits.ToPixels(height));
+
+    private static RectangleF InspectorBoundsPixels(RectangleF worldBounds) => new(
+        VectorUnits.ToPixels(worldBounds.X + worldBounds.Width * 0.5f),
+        VectorUnits.ToPixels(worldBounds.Y + worldBounds.Height * 0.5f),
+        VectorUnits.ToPixels(worldBounds.Width),
+        VectorUnits.ToPixels(worldBounds.Height));
 
     private bool CanEditInspectorObjectTransform(int[] selection)
     {
@@ -94,7 +107,7 @@ internal sealed partial class MainForm
             if (field is ObjectTransformField.Width or ObjectTransformField.Height
                 && _scene.ShapeKind[index] is ShapeKind.Freeform or ShapeKind.BrushStroke)
             {
-                var stroke = _scene.Stroke[index];
+                var stroke = VectorUnits.ToPixels(_scene.Stroke[index]);
                 if (value <= stroke || current <= stroke) { UpdateInspector(); return; }
                 if (field == ObjectTransformField.Width) scaleX = (value - stroke) / (current - stroke);
                 else scaleY = (value - stroke) / (current - stroke);
@@ -112,7 +125,11 @@ internal sealed partial class MainForm
             UpdateInspector();
             return;
         }
-        var pivot = new PointF(geometry.X, geometry.Y);
+        // Inspector values are document pixels; scene and instance transforms use
+        // vector units internally. Convert only at this boundary.
+        moveX = VectorUnits.FromPixels(moveX);
+        moveY = VectorUnits.FromPixels(moveY);
+        var pivot = new PointF(VectorUnits.FromPixels(geometry.X), VectorUnits.FromPixels(geometry.Y));
         if (field == ObjectTransformField.Rotation && _inspectorGeometryGesture && relativeRotation)
             _inspectorGeometryLastRotation = value;
         if (instances.Count > 0)

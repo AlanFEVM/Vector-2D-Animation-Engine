@@ -1,4 +1,4 @@
-﻿namespace VectorAnimationEngine;
+﻿﻿namespace VectorAnimationEngine;
 
 internal enum HierarchyNodeKind
 {

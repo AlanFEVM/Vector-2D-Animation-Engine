@@ -9,6 +9,20 @@ internal sealed partial class VectorScene
 {
     internal bool HasObjectDistortions => _objectDistortions.Count > 0;
 
+    internal bool RequiresSoftwareDistortion
+    {
+        get
+        {
+            foreach (var (index, warps) in _objectDistortions)
+            {
+                if (ShapeKind[index] != VectorAnimationEngine.ShapeKind.Bitmap) return true;
+                foreach (var warp in warps)
+                    if (!warp.TryGetAffineTransform(out _)) return true;
+            }
+            return false;
+        }
+    }
+
     /// <summary>
     /// Valid objects use rebuilt vector geometry or the Stage raster distortion path.
     /// Bitmap pixels remain in their shared asset; the warp belongs to each placement.

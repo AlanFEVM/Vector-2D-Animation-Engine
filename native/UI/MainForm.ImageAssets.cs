@@ -235,6 +235,12 @@ internal sealed partial class MainForm
         };
         progress.ShowDialog(this);
         if (result is null) return;
+        // A file import is also a stage action: keep the asset in the project library
+        // and immediately create one editable placement for every imported file.
+        foreach (var assetId in result.ImportedAssetIds)
+        {
+            PlaceImageAsset(assetId);
+        }
         var summary = string.Format(
             UiLocalization.T("Imported: {0}\nSkipped: {1}\nFailed: {2}\nNot processed: {3}"),
             result.Imported, result.Skipped, result.Failed,
@@ -248,7 +254,8 @@ internal sealed partial class MainForm
     }
 
     private sealed record ImageImportBatchResult(
-        int Imported, int Skipped, int Failed, bool Cancelled, IReadOnlyList<string> Errors);
+        int Imported, int Skipped, int Failed, bool Cancelled, IReadOnlyList<string> Errors,
+        IReadOnlyList<string> ImportedAssetIds);
 
     private async Task<ImageImportBatchResult> ImportImageAssetsBatchAsync(
         IReadOnlyList<string> fileNames,
@@ -261,6 +268,7 @@ internal sealed partial class MainForm
         var failed = 0;
         var cancelled = false;
         var errors = new List<string>();
+        var importedAssetIds = new List<string>();
         var existingPaths = new HashSet<string>(_project.ImageAssets.SelectMany(asset => new[] { asset.OriginalSourcePath, asset.SourcePath }),
             StringComparer.OrdinalIgnoreCase);
         var prepared = new Dictionary<string, (ImageFileProbe Probe, string Sha256, ImageFilterMode SuggestedFilter)>(StringComparer.OrdinalIgnoreCase);
@@ -362,6 +370,7 @@ internal sealed partial class MainForm
                         if (asset is not null)
                         {
                             existingPaths.Add(fullPath);
+                            importedAssetIds.Add(asset.Id);
                             imported++;
                         }
                     }
@@ -389,7 +398,7 @@ internal sealed partial class MainForm
         {
             _libraryVaultPanel.EndProjectObjectUpdate();
         }
-        return new ImageImportBatchResult(imported, skipped, failed, cancelled, errors);
+        return new ImageImportBatchResult(imported, skipped, failed, cancelled, errors, importedAssetIds);
     }
 
     private static (ImageFileProbe Probe, string Sha256, ImageFilterMode SuggestedFilter) PrepareImageImport(string fullPath)
@@ -600,6 +609,56 @@ internal sealed partial class MainForm
         {
             Cursor = Cursors.Default;
         }
+    }
+
+    private bool CanFitBitmapToCanvas(int objectIndex)
+    {
+        if ((uint)objectIndex >= _scene.ObjectCount
+            || _scene.ShapeKind[objectIndex] != ShapeKind.Bitmap
+            || !_scene.TryGetBitmapObjectData(objectIndex, out _)) return false;
+        var canvasWidth = _stage.CanvasWorldWidth;
+        var canvasHeight = _stage.CanvasWorldHeight;
+        return canvasWidth > 0 && canvasHeight > 0
+            && (_scene.Width[objectIndex] > canvasWidth || _scene.Height[objectIndex] > canvasHeight);
+    }
+
+    private void FitSelectedBitmapsToCanvas()
+    {
+        if (_playing || HasActiveCanvasPointerInteraction() || IsShotDirectorContext()) return;
+        var targets = SelectedActiveDrawingObjectIndices()
+            .Where(index => CanFitBitmapToCanvas(index))
+            .ToArray();
+        if (targets.Length == 0) return;
+
+        var canvasWidth = _stage.CanvasWorldWidth;
+        var canvasHeight = _stage.CanvasWorldHeight;
+        if (canvasWidth <= 0 || canvasHeight <= 0) return;
+
+        var snapshot = CreateCanvasMutationSnapshot(targets);
+        var changed = false;
+        foreach (var objectIndex in targets)
+        {
+            var scale = Math.Min(canvasWidth / Math.Max(1f, _scene.Width[objectIndex]),
+                canvasHeight / Math.Max(1f, _scene.Height[objectIndex]));
+            if (!float.IsFinite(scale) || scale >= 1f) continue;
+            var width = Math.Max(1f, VectorUnits.Quantize(_scene.Width[objectIndex] * scale));
+            var height = Math.Max(1f, VectorUnits.Quantize(_scene.Height[objectIndex] * scale));
+            if (width >= _scene.Width[objectIndex] && height >= _scene.Height[objectIndex]) continue;
+            _scene.Width[objectIndex] = width;
+            _scene.Height[objectIndex] = height;
+            if (_scene.TryGetBitmapObjectData(objectIndex, out var data))
+            {
+                _scene.TryUpdateBitmapObject(objectIndex, data.WithPlacedSize(new SizeF(width, height)));
+            }
+            changed = true;
+        }
+
+        if (!changed) return;
+        PushUndoSnapshot(snapshot);
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+        _stage.Invalidate();
+        AppLog.Info($"Fit {targets.Length} bitmap placement(s) to the canvas.");
     }
 
     /// <summary>

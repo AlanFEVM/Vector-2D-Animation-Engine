@@ -4933,8 +4933,6 @@ internal static partial class Benchmark
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
         var drawResult = RequireMethod(typeof(StageControl), "DrawBitmapDistortResult",
             [typeof(Graphics), typeof(BitmapDistortRaster), typeof(BitmapSampling), typeof(float)]);
-        var core = RequireMethod(typeof(StageControl), "DrawRasterDistortedObjectCore",
-            [typeof(Graphics), typeof(VectorScene), typeof(int), typeof(SceneRenderPass), typeof(IReadOnlyList<DistortWarp>), typeof(bool)]);
         using var actual = new Bitmap(stage.Width, stage.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
         using var expected = new Bitmap(stage.Width, stage.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
         using var graphics = Graphics.FromImage(actual);
@@ -4960,16 +4958,15 @@ internal static partial class Benchmark
             object?[] distortionArguments = [scene, index, null];
             AssertTimeline(getDistortions.Invoke(stage, distortionArguments) is true, "Missing cache regression warp.");
             var distortions = (IReadOnlyList<DistortWarp>)distortionArguments[2]!;
-            if (stage.HasDistortPreview)
-            {
-                core.Invoke(stage, [target, scene, index, SceneRenderPass.Fill, distortions, false]);
-                return;
-            }
             var sourceRaster = decoded ?? throw new InvalidOperationException("Fresh distortion reference requires a decoded source.");
             if (scene.TryGetBitmapObjectData(index, out var bitmapData))
                 sourceRaster = BitmapImageRasterizer.ApplyObjectClip(sourceRaster, bitmapData);
-            var result = (BitmapDistortRaster?)rasterize.Invoke(null,
-                [sourceRaster, scene, index, distortions, sampling, 64L * 1024 * 1024]);
+            var result = stage.HasDistortPreview
+                ? BitmapDistortRasterizer.Rasterize(sourceRaster, scene.Width[index], scene.Height[index],
+                    scene.X[index], scene.Y[index], scene.Angle[index], distortions, sampling,
+                    16L * 1024 * 1024, viewportDensity: stage.WorldLengthToScreen(1), viewportBounds: stage.VisibleWorldBounds())
+                : (BitmapDistortRaster?)rasterize.Invoke(null,
+                    [sourceRaster, scene, index, distortions, sampling, 64L * 1024 * 1024]);
             AssertTimeline(result is not null, "Fresh native-pixel distortion reference exceeded its fixture budget.");
             drawResult.Invoke(stage, [target, result!, sampling, Color.FromArgb(scene.Argb[index]).A / 255f]);
         }
@@ -5245,31 +5242,41 @@ internal static partial class Benchmark
         }
         for (var index = 0; index < 36; index++) Paint(index);
         var cache = (System.Collections.IDictionary)RequireField(typeof(StageControl), "_distortResultCache").GetValue(stage)!;
-        AssertTimeline(cache.Count == 32
+        AssertTimeline(cache.Count == 36
             && (long)RequireField(typeof(StageControl), "_distortResultCacheBytes").GetValue(stage)! <= 64L * 1024 * 1024,
-            "Result cache did not enforce its entry/memory limit.");
+            "Small distorted images were evicted despite fitting the memory budget.");
         var builds = stage.LastGdiDistortResultBuilds;
-        Paint(35);
-        AssertTimeline(stage.LastGdiDistortResultBuilds == builds, "Result cache evicted the most recently used object.");
-        Paint(0);
-        AssertTimeline(stage.LastGdiDistortResultBuilds == builds + 1 && cache.Count == 32,
-            "Result cache did not rebuild its evicted oldest object within budget.");
+        for (var repetition = 0; repetition < 3; repetition++)
+            for (var index = 0; index < 36; index++) Paint(index);
+        AssertTimeline(stage.LastGdiDistortResultBuilds == builds,
+            "A repeated frame rebaked small images because of cache thrashing.");
+        // Exercise real byte pressure independently of native rasterization time.
+        var entry = cache[(scene, 0)]!;
+        var state = entry.GetType().GetProperty("State")!.GetValue(entry)!;
+        var store = RequireMethod(typeof(StageControl), "StoreDistortResult");
+        for (var index = 0; index < 5; index++)
+            store.Invoke(stage, [(scene, index), state, new BitmapDistortRaster(
+                new BitmapImageRaster(new BitmapImageRasterKey($"cache-pressure-{index}", 2048, 2048)), new RectangleF(0, 0, 300, 300))]);
+        AssertTimeline(cache.Count == 4 && !cache.Contains((scene, 0)) && cache.Contains((scene, 4))
+            && (long)RequireField(typeof(StageControl), "_distortResultCacheBytes").GetValue(stage)! == 64L * 1024 * 1024,
+            "Native distortion cache did not evict its least recently used results at the byte budget.");
         stage.BindScene(scene);
         AssertTimeline(cache.Count == 0 && (long)RequireField(typeof(StageControl), "_distortResultCacheBytes").GetValue(stage)! == 0,
             "Result cache eviction/lifecycle accounting retained memory.");
         var raw = scene.GetRawObjectWorldBounds(0);
-        var hugeWarp = new DistortWarp(TransformOverlayFrame.FromBounds(raw),
-            DistortEnvelope.FromBounds(new RectangleF(raw.Left * 5000, raw.Top * 5000, raw.Width * 5000, raw.Height * 5000)));
+        var hugeWarp = new DistortWarp(TransformOverlayFrame.FromBounds(raw), new DistortEnvelope(
+            new PointF(raw.Left * 5000, raw.Top * 5000), new PointF(raw.Right * 5000 + 1000, raw.Top * 5000),
+            new PointF(raw.Right * 5000, raw.Bottom * 5000), new PointF(raw.Left * 5000, raw.Bottom * 5000)));
         scene.SetObjectDistortions(0, [hugeWarp]);
         Paint(0);
         var attempts = stage.DistortResultBakeAttemptCount;
-        AssertTimeline(attempts > 0 && stage.LastGdiDistortResultBuilds == builds + 1,
+        AssertTimeline(attempts > 0 && stage.LastGdiDistortResultBuilds == builds,
             "Over-budget fixture silently reduced native pixel precision.");
         stage.Pan(1, 2); stage.ZoomAt(Point.Empty, 0.5f);
         Paint(0);
         AssertTimeline(stage.DistortResultBakeAttemptCount == attempts,
             "Camera navigation retried a rejected native-pixel result.");
-        Console.WriteLine("bitmap_distort_result_cache_budget=ok,entry_eviction=ok,lru_reuse=ok,lifecycle_accounting=ok");
+        Console.WriteLine("bitmap_distort_result_cache_budget=ok,small_working_set_reuse=ok,byte_eviction=ok,lru_reuse=ok,lifecycle_accounting=ok,rejected_bake_reuse=ok");
     }
 
     private static void RunDistortRasterPerformanceRegression()

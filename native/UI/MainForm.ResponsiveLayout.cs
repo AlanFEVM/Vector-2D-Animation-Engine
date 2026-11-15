@@ -247,7 +247,7 @@ internal sealed partial class MainForm
 
     private void LayoutTopBar()
     {
-        if (_topBar is null
+        if (_layingOutTopBar || _topBar is null
             || _restartWindowButton is null
             || _minimizeWindowButton is null
             || _maximizeButton is null
@@ -257,35 +257,74 @@ internal sealed partial class MainForm
             return;
         }
 
-        PositionWindowChromeButtons(
-            _topBar,
-            _restartWindowButton,
-            _minimizeWindowButton,
-            _maximizeButton,
-            _closeWindowButton);
-
-        if (_projectTitleLabel is { } title && _projectTitleEditor is { } editor)
+        _layingOutTopBar = true;
+        try
         {
-            var titleHeight = Math.Max(
-                ScaleResponsive(24, DeviceDpi / 96d),
-                title.PreferredHeight);
-            title.Height = titleHeight;
-            title.Top = Math.Max(0, (_topBar.ClientSize.Height - titleHeight) / 2);
-            editor.Top = Math.Max(0, (_topBar.ClientSize.Height - editor.PreferredHeight) / 2);
-        }
-
-        var fpsFits = (_projectTitleLabel?.Right ?? ScaleResponsive(274, DeviceDpi / 96d)) + ScaleResponsive(8, DeviceDpi / 96d)
-            <= _restartWindowButton.Left - _topPlaybackFps.Width - _topPlaybackFpsLabel.Width - 18;
-        _topPlaybackFps.Visible = fpsFits;
-        _topPlaybackFpsLabel.Visible = fpsFits;
-        if (fpsFits)
-        {
-            PositionTopPlaybackFpsControls(
+            PositionWindowChromeButtons(
                 _topBar,
                 _restartWindowButton,
-                _topPlaybackFpsLabel,
-                _topPlaybackFps);
+                _minimizeWindowButton,
+                _maximizeButton,
+                _closeWindowButton);
+
+            var scale = DeviceDpi / 96d;
+            var gap = ScaleResponsive(8, scale);
+            // Reserve the window controls first; MenuStrip otherwise docks over this entire row.
+            var contentRight = _restartWindowButton.Left - gap;
+            // A language change can move items out of overflow and update their preferred widths.
+            // Measure once more after layout so the final category is visible when space allows.
+            for (var pass = 0; pass < 2; pass++)
+            {
+                var menuWidth = _menuBar.Padding.Horizontal + gap + _menuBar.Items.Cast<ToolStripItem>()
+                    .Sum(item => item.GetPreferredSize(Size.Empty).Width + item.Margin.Horizontal);
+                _menuBar.SetBounds(gap, Math.Max(0, (_topBar.Height - _menuBar.Height) / 2),
+                    Math.Max(1, Math.Min(menuWidth, contentRight - gap)), _menuBar.Height);
+                _menuBar.PerformLayout();
+            }
+            var titleLeft = _menuBar.Right + gap;
+            if (_applicationMark is { } mark)
+            {
+                mark.Visible = contentRight - titleLeft >= ScaleResponsive(150, scale);
+                if (mark.Visible)
+                {
+                    mark.Left = titleLeft;
+                    mark.Top = Math.Max(0, (_topBar.Height - mark.Height) / 2);
+                    titleLeft = mark.Right + gap;
+                }
+            }
+
+            if (_projectTitleLabel is { } title && _projectTitleEditor is { } editor)
+            {
+                var titleWidth = Math.Max(0, Math.Min(ScaleResponsive(180, scale), contentRight - titleLeft));
+                title.Left = editor.Left = titleLeft;
+                title.Width = editor.Width = titleWidth;
+                title.Visible = !editor.Visible && titleWidth >= ScaleResponsive(60, scale);
+                var titleHeight = Math.Max(
+                    ScaleResponsive(24, DeviceDpi / 96d),
+                    title.PreferredHeight);
+                title.Height = titleHeight;
+                title.Top = Math.Max(0, (_topBar.ClientSize.Height - titleHeight) / 2);
+                editor.Top = Math.Max(0, (_topBar.ClientSize.Height - editor.PreferredHeight) / 2);
+            }
+
+            var fpsFits = (_projectTitleLabel?.Right ?? _menuBar.Right) + gap
+                <= _restartWindowButton.Left - _topPlaybackFps.Width - _topPlaybackFpsLabel.Width - 18;
+            _topPlaybackFps.Visible = fpsFits;
+            _topPlaybackFpsLabel.Visible = fpsFits;
+            if (fpsFits)
+            {
+                PositionTopPlaybackFpsControls(
+                    _topBar,
+                    _restartWindowButton,
+                    _topPlaybackFpsLabel,
+                    _topPlaybackFps);
+            }
+            _restartWindowButton.BringToFront();
+            _minimizeWindowButton.BringToFront();
+            _maximizeButton.BringToFront();
+            _closeWindowButton.BringToFront();
         }
+        finally { _layingOutTopBar = false; }
     }
 
     private void QueueResolutionAwareLayoutRefresh()

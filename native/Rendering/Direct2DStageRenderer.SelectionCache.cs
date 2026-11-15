@@ -18,6 +18,8 @@ internal sealed partial class Direct2DStageRenderer
     private PointF _selectionCommandCamera;
     private float _selectionCommandZoom;
     private bool _recordingSelectionCommands;
+    private VectorScene? _selectionObservedScene;
+    private long _selectionObservedGeometry;
     internal long SelectionCommandBuilds { get; private set; }
     internal long SelectionCommandReuses { get; private set; }
 
@@ -27,12 +29,26 @@ internal sealed partial class Direct2DStageRenderer
 
     private bool TryDrawCachedSelection(StageControl stage)
     {
+        var changingGeometry = ReferenceEquals(_selectionObservedScene, stage.Scene)
+            && _selectionObservedGeometry != stage.Scene.GeometryRevision;
+        _selectionObservedScene = stage.Scene;
+        _selectionObservedGeometry = stage.Scene.GeometryRevision;
         if (_target is not ID2D1DeviceContext context
             || stage.SelectionFeedbackSuppressed
             || stage.SelectedObjects.Count < 64
             || stage.UsesReferenceProjection
             || stage.MarqueeVisible
             || stage.HasDistortPreview)
+        {
+            ClearSelectionCommands();
+            return false;
+        }
+
+        // A transform changes every selected outline on every pointer frame.
+        // Recording a command list that cannot be replayed adds an EndDraw/
+        // target-switch round trip. Draw the same complete overlay directly;
+        // stable geometry (including camera pan and drag previews) keeps reuse.
+        if (stage.Capture && changingGeometry)
         {
             ClearSelectionCommands();
             return false;

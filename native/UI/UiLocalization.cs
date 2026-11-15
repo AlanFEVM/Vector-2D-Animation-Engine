@@ -32,6 +32,12 @@ internal static class UiLocalization
     private static readonly IReadOnlyDictionary<string, string> SimplifiedChinese =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
+            ["Symbol · Frames: {0}"] = "元件 · {0} 帧",
+            ["Assets: {0} · Drag to stage"] = "{0} 项素材 · 拖到舞台使用",
+            ["Folder · Items: {0}"] = "文件夹 · {0} 项",
+            ["No images"] = "暂无图片素材",
+            ["Try another search or tag"] = "试试其他关键词或标签",
+            ["Drop files here to import"] = "将素材文件拖到此处导入",
             ["Enter a valid number. Press Esc to restore the previous value."] = "请输入有效数值。按 Esc 恢复原值。",
             ["Enter a value from {0} to {1}."] = "请输入 {0} 到 {1} 之间的数值。",
             ["Reset camera transform"] = "重置相机变换",
@@ -139,7 +145,7 @@ internal static class UiLocalization
             ["Group outline width (px)"] = "整体选框粗细 (px)",
             ["Show group corner marks"] = "显示整体选框四角标记",
             ["Show group selection label"] = "显示整体选框标签",
-            ["Selection highlights only the clicked fill or stroke with a stipple pattern. Groups stay whole. Path editing exposes geometry handles. Shared symbols require entering their editor."] = "雪花点纹只覆盖点中的填色或描边，组保持整体选择；路径编辑显示几何手柄。共享元件必须进入编辑。",
+            ["Selection stipples fills and strokes, including broken-apart images. Marquee and lasso cut raw fills. Intact images and groups stay whole. Path editing shows handles. Shared symbols require entering their editor."] = "雪花点纹覆盖选中的填色和描边，包括已打散图片。框选和套索可切分原始填色；未打散图片与组保持整体选择。路径编辑显示手柄，共享元件须进入编辑。",
             ["Select fills or strokes independently; groups stay whole. Preferences: Settings > Selection and editing."] = "分别选择填色或描边，组保持整体。职能设置位于右上角“设置 > 选择与编辑”。",
             ["Black arrow: select fills or strokes independently. Configure arrow behavior in Settings > Selection and editing."] = "黑箭头分别选择填色或描边。可在右上角“设置 > 选择与编辑”自定义职能。",
             ["Configure black and white selection arrows"] = "配置黑白箭头的选择职能与反馈",
@@ -902,6 +908,10 @@ internal static class UiLocalization
             ["Eyedropper Tool"] = "吸管工具",
             ["Eyedropper"] = "吸管",
             ["File"] = "文件",
+            ["Insert"] = "插入",
+            ["Modify"] = "修改",
+            ["Control"] = "控制",
+            ["Debug"] = "调试",
             ["File Reference"] = "文件引用",
             ["Fill"] = "填色",
             ["Fill Tool"] = "填充工具",
@@ -1568,6 +1578,7 @@ internal static class UiLocalization
             // Image asset context menu (built with target-typed new(), so the dictionary is the
             // only place these are translated).
             ["Place"] = "放置",
+            ["Fit Bitmap to Canvas"] = "位图适应画布",
             ["Import Settings"] = "导入设置",
             ["Relink"] = "重新链接",
             ["Open an unlocked drawing layer in Basic Drawing or the 2D Front scene before placing an image."] = "放置图片前，请先在基础绘制或场景的二维正面视图中选择未锁定的绘制图层。",
