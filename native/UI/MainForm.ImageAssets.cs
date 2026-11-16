@@ -898,15 +898,19 @@ internal sealed partial class MainForm
     /// only ever see the scene, so asset lookup, file resolution and decoding stay in the
     /// project layer. The rasterizer caches by content hash, so repeated frames are cheap.
     /// </summary>
-    private BitmapImageRaster? ResolveBitmapImageRaster(string imageAssetId)
+    private BitmapImageRaster? ResolveBitmapImageRaster(string imageAssetId) =>
+        ResolveBitmapImageRasterForStage(imageAssetId, _stage);
+
+    private BitmapImageRaster? ResolveBitmapImageRasterForStage(string imageAssetId, StageControl stage)
     {
         var asset = FindImageAsset(imageAssetId);
         if (asset is null) return null;
-        var path = ResolveImageAssetPath(asset);
+        var path = ResolveImageAssetPath(asset, stage, out var source);
         if (path is null) return null;
         try
         {
-            return BitmapImageRasterizer.Decode(path, asset.ImportSettings);
+            return source is null ? BitmapImageRasterizer.Decode(path, asset.ImportSettings)
+                : BitmapImageRasterizer.Decode(source, asset.ImportSettings);
         }
         catch (Exception exception) when (exception is InvalidDataException or OutOfMemoryException or ArgumentException)
         {
@@ -927,7 +931,15 @@ internal sealed partial class MainForm
 
     private void BindStageBitmapImageResolvers(StageControl stage)
     {
-        stage.BitmapImageResolver = ResolveBitmapImageRaster;
+        stage.BitmapImageResolver = imageAssetId => ResolveBitmapImageRasterForStage(imageAssetId, stage);
+        stage.BitmapImageKeyResolver = imageAssetId =>
+        {
+            var asset = FindImageAsset(imageAssetId);
+            if (asset is null) return null;
+            var path = ResolveImageAssetPath(asset, stage, out var source);
+            return path is not null && BitmapImageRasterizer.TryGetSourceKey(source ?? new FileInfo(path),
+                asset.ImportSettings, out var key) ? key : null;
+        };
         stage.BitmapImageSamplingProvider = ResolveBitmapImageSampling;
     }
 
@@ -936,13 +948,54 @@ internal sealed partial class MainForm
     /// once the project has been saved, matching the loader; the original import path is
     /// only a fallback for a project that has never been saved.
     /// </summary>
-    private string? ResolveImageAssetPath(ImageAssetDefinition asset)
+    private string? ResolveImageAssetPath(ImageAssetDefinition asset) => ResolveImageAssetPath(asset, null, out _);
+
+    private string? ResolveImageAssetPath(ImageAssetDefinition asset, StageControl? stage, out FileInfo? source)
     {
-        if (File.Exists(asset.SourcePath))
+        var validatedPaths = stage?.PaintBitmapValidatedPaths;
+        source = null;
+        try
         {
-            ProjectTemporaryResources.RejectReparsePath(asset.SourcePath);
-            return asset.SourcePath;
+            if (!string.IsNullOrWhiteSpace(asset.SourcePath))
+            {
+                var file = new FileInfo(asset.SourcePath);
+                if (!string.IsNullOrWhiteSpace(asset.ProjectRelativePath)
+                    && stage?.PaintBitmapDirectoryFiles is { } directories)
+                {
+                    var directory = file.DirectoryName!;
+                    ProjectTemporaryResources.RejectReparsePath(directory, validatedPaths);
+                    if (!directories.TryGetValue(directory, out var entries))
+                    {
+                        // FindFirst/NextFile supplies size, timestamps and attributes
+                        // for the whole managed asset folder in one enumeration.
+                        // Keep this snapshot only for the current paint; cap unusual
+                        // folders and retain individual lookups on any I/O failure.
+                        entries = new(StringComparer.OrdinalIgnoreCase);
+                        try
+                        {
+                            foreach (var entry in new DirectoryInfo(directory).EnumerateFiles("*", new EnumerationOptions
+                                { AttributesToSkip = 0, IgnoreInaccessible = false }))
+                            {
+                                if (entries.Count >= 4096) { entries = null; break; }
+                                entries[entry.Name] = entry;
+                            }
+                        }
+                        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { entries = null; }
+                        directories[directory] = entries;
+                    }
+                    if (entries is not null && entries.TryGetValue(file.Name, out var enumerated)) file = enumerated;
+                }
+                if (file.Exists)
+                {
+                    if ((file.Attributes & FileAttributes.ReparsePoint) != 0)
+                        throw new InvalidDataException("Resource paths cannot contain filesystem reparse points.");
+                    ProjectTemporaryResources.RejectReparsePath(file.DirectoryName!, validatedPaths);
+                    source = file;
+                    return file.FullName;
+                }
+            }
         }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException) { }
         if (!string.IsNullOrWhiteSpace(_projectManifestPath)
             && !string.IsNullOrWhiteSpace(asset.ProjectRelativePath))
         {

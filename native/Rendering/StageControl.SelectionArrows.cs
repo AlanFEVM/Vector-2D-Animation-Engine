@@ -211,6 +211,7 @@ internal sealed partial class StageControl
 
     internal PointF[][] GetObjectArrowSelectionContours(int objectIndex)
     {
+        if (TryGetTranslatedBitmapMoveOutline(objectIndex, out var translated)) return translated;
         var contours = GetObjectBoundaryContoursForRendering(Scene, objectIndex);
         var shape = Scene.ShapeKind[objectIndex];
         return Scene.GetVisiblePathSelectionPolylines(objectIndex, Frame, contours,

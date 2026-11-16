@@ -5,6 +5,7 @@ internal sealed partial class LibraryVaultPanel
     private readonly ModernTextInput _assetSearchBox = new()
     {
         SearchAppearance = true,
+        QuietAppearance = true,
         PlaceholderText = UiLocalization.T("Search assets or tags..."),
         AccessibleName = "Search project assets"
     };
@@ -62,7 +63,7 @@ internal sealed partial class LibraryVaultPanel
             ColumnCount = 2,
             RowCount = 2,
             Margin = Padding.Empty,
-            Padding = new Padding(0, 2, 0, 10)
+            Padding = new Padding(0, 0, 0, 6)
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 32));
@@ -72,13 +73,15 @@ internal sealed partial class LibraryVaultPanel
         _assetSearchBox.Dock = DockStyle.Fill;
         _assetSearchBox.Margin = new Padding(0, 0, 0, 8);
         Theme.StyleTextBox(_assetSearchBox);
+        _assetSearchBox.Font = Theme.UiFont(9f);
         _assetSearchBox.TextChanged += (_, _) => QueueAssetFilterRefresh();
         layout.Controls.Add(_assetSearchBox, 0, 0);
         layout.SetColumnSpan(_assetSearchBox, 2);
 
-        _assetTagFilter.Dock = DockStyle.Fill;
+        _assetTagFilter.Anchor = AnchorStyles.Left;
         _assetTagFilter.Margin = new Padding(0, 0, 6, 2);
         Theme.StyleComboBox(_assetTagFilter);
+        Theme.StyleComboBoxSelection(_assetTagFilter, 8.5f, 24, quiet: true);
         _assetTagFilter.SelectedIndexChanged += (_, _) =>
         {
             if (_updatingAssetTagFilter) return;
@@ -103,20 +106,23 @@ internal sealed partial class LibraryVaultPanel
         void UpdateFilterMetrics()
         {
             var scale = DeviceDpi / 96f;
-            var gap = Math.Max(1, (int)Math.Ceiling(8 * scale));
+            var gap = Math.Max(1, (int)Math.Ceiling(2 * scale));
             var footer = Math.Max(1, (int)Math.Ceiling(2 * scale));
-            layout.Padding = new Padding(0, footer, 0, (int)Math.Ceiling(10 * scale));
+            layout.Padding = new Padding(0, 0, 0, (int)Math.Ceiling(6 * scale));
             _assetSearchBox.Margin = new Padding(0, 0, 0, gap);
             _assetTagFilter.Margin = new Padding(0, 0, (int)Math.Ceiling(6 * scale), footer);
             _manageTagsButton.Margin = new Padding(0, 0, 0, footer);
-            var buttonWidth = (int)Math.Ceiling(32 * scale);
+            var buttonWidth = (int)Math.Ceiling(24 * scale);
+            _assetTagFilter.Width = Math.Min((int)Math.Ceiling(132 * scale),
+                Math.Max(1, layout.ClientSize.Width - buttonWidth - _assetTagFilter.Margin.Horizontal));
             var searchRowHeight = _assetSearchBox.PreferredFieldHeight + gap;
-            var filterRowHeight = Math.Max(_assetTagFilter.Height, (int)Math.Ceiling(28 * scale)) + footer;
+            var filterRowHeight = Math.Max(_assetTagFilter.Height, (int)Math.Ceiling(24 * scale)) + footer;
             if (layout.ColumnStyles[1].Width != buttonWidth) layout.ColumnStyles[1].Width = buttonWidth;
             if (layout.RowStyles[0].Height != searchRowHeight) layout.RowStyles[0].Height = searchRowHeight;
             if (layout.RowStyles[1].Height != filterRowHeight) layout.RowStyles[1].Height = filterRowHeight;
         }
         _assetTagFilter.SizeChanged += (_, _) => UpdateFilterMetrics();
+        layout.SizeChanged += (_, _) => UpdateFilterMetrics();
         _assetSearchBox.FontChanged += (_, _) => UpdateFilterMetrics();
         DpiChangedAfterParent += (_, _) => UpdateFilterMetrics();
         UpdateFilterMetrics();

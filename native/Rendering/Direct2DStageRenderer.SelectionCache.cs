@@ -17,6 +17,7 @@ internal sealed partial class Direct2DStageRenderer
     private SelectionCommandKey _selectionCommandKey;
     private PointF _selectionCommandCamera;
     private float _selectionCommandZoom;
+    private PointF _selectionCommandBitmapMoveOffset;
     private bool _recordingSelectionCommands;
     private VectorScene? _selectionObservedScene;
     private long _selectionObservedGeometry;
@@ -25,17 +26,20 @@ internal sealed partial class Direct2DStageRenderer
 
     private readonly record struct SelectionCommandKey(
         StageControl Stage, VectorScene Scene, long Revision, long Geometry, long Summary,
-        long ActiveContent, int Frame, Size Size, float Pulse, float Rotation, ulong Layers, int ObjectAccent, int Dpi, float PatternZoom);
+        long ActiveContent, int Frame, Size Size, float Pulse, float Rotation, ulong Layers, int ObjectAccent, int Dpi, float PatternZoom,
+        SelectionArrowSettings ArrowSettings, bool BitmapMove);
 
     private bool TryDrawCachedSelection(StageControl stage)
     {
+        var bitmapMove = stage.UsesObjectSelectionOverlay
+            && stage.TryGetBitmapMoveSelectionTranslation(out _);
         var changingGeometry = ReferenceEquals(_selectionObservedScene, stage.Scene)
             && _selectionObservedGeometry != stage.Scene.GeometryRevision;
         _selectionObservedScene = stage.Scene;
         _selectionObservedGeometry = stage.Scene.GeometryRevision;
         if (_target is not ID2D1DeviceContext context
             || stage.SelectionFeedbackSuppressed
-            || stage.SelectedObjects.Count < 64
+            || stage.SelectedObjects.Count < 64 && !bitmapMove
             || stage.UsesReferenceProjection
             || stage.MarqueeVisible
             || stage.HasDistortPreview)
@@ -48,7 +52,7 @@ internal sealed partial class Direct2DStageRenderer
         // Recording a command list that cannot be replayed adds an EndDraw/
         // target-switch round trip. Draw the same complete overlay directly;
         // stable geometry (including camera pan and drag previews) keeps reuse.
-        if (stage.Capture && changingGeometry)
+        if (stage.Capture && changingGeometry && !bitmapMove)
         {
             ClearSelectionCommands();
             return false;
@@ -57,12 +61,13 @@ internal sealed partial class Direct2DStageRenderer
         var pulse = stage.UsesObjectSelectionOverlay ? 0 : stage.SelectionZoomPreviewActive && _selectionCommands is not null
             ? _selectionCommandKey.Pulse
             : stage.SelectionHighlightPulse;
-        var key = new SelectionCommandKey(stage, stage.Scene, stage.SelectionRenderRevision,
+        var key = new SelectionCommandKey(stage, stage.Scene,
+            bitmapMove ? stage.BitmapMoveSelectionRevision : stage.SelectionRenderRevision,
             stage.Scene.GeometryRevision, stage.Scene.SummaryRevision, stage.Scene.ActiveContentRevision,
             stage.Frame, stage.ClientSize, pulse, stage.PlanarCanvasRotation,
             StageControl.GetReference3DWorkspaceFrameLayerRenderState(stage.Scene, stage.Frame),
             stage.UsesObjectSelectionOverlay ? Theme.Accent.ToArgb() : 0, stage.DeviceDpi,
-            stage.UsesObjectSelectionOverlay ? stage.Zoom : 0);
+            stage.UsesObjectSelectionOverlay ? stage.Zoom : 0, stage.SelectionArrows, bitmapMove);
         if (_selectionCommands is null || key != _selectionCommandKey)
         {
             ClearSelectionCommands();
@@ -93,6 +98,8 @@ internal sealed partial class Direct2DStageRenderer
                 _selectionCommandKey = key;
                 _selectionCommandCamera = new PointF(stage.CameraX, stage.CameraY);
                 _selectionCommandZoom = stage.Zoom;
+                _selectionCommandBitmapMoveOffset = bitmapMove
+                    && stage.TryGetBitmapMoveSelectionTranslation(out var recordedOffset) ? recordedOffset : PointF.Empty;
                 SelectionCommandBuilds++;
             }
             catch
@@ -110,6 +117,9 @@ internal sealed partial class Direct2DStageRenderer
         else SelectionCommandReuses++;
 
         var dragOffset = stage.SelectionDragPreviewOffset;
+        if (bitmapMove && stage.TryGetBitmapMoveSelectionTranslation(out var bitmapOffset))
+            dragOffset = new PointF(dragOffset.X + bitmapOffset.X - _selectionCommandBitmapMoveOffset.X,
+                dragOffset.Y + bitmapOffset.Y - _selectionCommandBitmapMoveOffset.Y);
         var cos = MathF.Cos(stage.PlanarCanvasRotation);
         var sin = MathF.Sin(stage.PlanarCanvasRotation);
         var worldX = ((double)_selectionCommandCamera.X - stage.CameraX + dragOffset.X) / VectorUnits.UnitsPerPixel * stage.Zoom;

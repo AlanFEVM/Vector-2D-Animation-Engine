@@ -19,6 +19,9 @@ internal readonly record struct PencilStrokeProcessResult(
 
 internal static class FreehandStrokeProcessor
 {
+    internal const int MaximumBrushSmoothing = 100;
+    internal const float BrushSmoothingScale = 3f;
+
     private const double BrushCoordinateScale = 1000d;
     private const double BrushArcToleranceUnits = 0.5d;
     private const float VariableWidthCornerAlignment = 0.85f;
@@ -417,13 +420,8 @@ internal static class FreehandStrokeProcessor
     {
         if (source.Count <= 2) return source.ToArray();
 
-        smoothing = Math.Clamp(smoothing, 0, 100);
-        // Samples sit roughly two screen pixels apart, so a half-width of three to four samples is
-        // about a six to eight pixel window: wide enough to damp hand tremor and pointer noise,
-        // short enough to keep direction changes responsive. The previous index-blind blend only
-        // spanned one sample and barely attenuated the wobble at all, which left the stroke width
-        // and centreline trembling along long continuous strokes.
-        var radius = (int)MathF.Round(smoothing / 100f * 4f);
+        // Widen the local filter while keeping the user-facing range at 0–100%.
+        var radius = PressureSmoothingRadius(smoothing);
         if (radius <= 0) return source.ToArray();
 
         var current = source.ToArray();
@@ -473,6 +471,9 @@ internal static class FreehandStrokeProcessor
 
         return current;
     }
+
+    internal static int PressureSmoothingRadius(int smoothing) =>
+        (int)MathF.Round(Math.Clamp(smoothing, 0, MaximumBrushSmoothing) / 100f * 4f * BrushSmoothingScale);
 
     private static float CornerSmoothingAmount(IReadOnlyList<PressureBrushPoint> points, int index)
     {

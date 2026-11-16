@@ -72,7 +72,7 @@ internal sealed class DrawSettings
     public int PressureBrushSmoothing
     {
         get => _pressureBrushSmoothing;
-        set => _pressureBrushSmoothing = Math.Clamp(value, 0, 100);
+        set => _pressureBrushSmoothing = Math.Clamp(value, 0, FreehandStrokeProcessor.MaximumBrushSmoothing);
     }
 
     public int BrushFrequency

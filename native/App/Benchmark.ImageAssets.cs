@@ -312,6 +312,16 @@ internal static partial class Benchmark
             AssertTimeline(BitmapImageRasterizer.SourceReadCount == sourceReads
                 && BitmapImageRasterizer.CacheHitCount == hits + 64,
                 "Warm bitmap frames reopened or decoded the source image.");
+            typeof(BitmapImageRasterizer).GetMethod("EvictFor",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!
+                .Invoke(null, [512L * 1024 * 1024]);
+            AssertTimeline(BitmapImageRasterizer.TryGetSourceKey(new FileInfo(path), settings, out var evictedKey)
+                && evictedKey == raster.Key && BitmapImageRasterizer.SourceReadCount == sourceReads,
+                "Evicting CPU pixels lost the validated GPU source identity or reread image bytes.");
+            AssertTimeline(!BitmapImageRasterizer.TryGetSourceKey(new FileInfo(path), settings with { MaxSize = 256 }, out _),
+                "A changed import setting reused an incompatible GPU identity.");
+            raster = BitmapImageRasterizer.Decode(path, settings);
+            sourceReads = BitmapImageRasterizer.SourceReadCount;
 
             var scene = new VectorScene();
             scene.CreateEmpty();
@@ -373,6 +383,8 @@ internal static partial class Benchmark
                 replacement.Save(path, ImageFormat.Bmp);
             }
             File.SetLastWriteTimeUtc(path, previousWrite.AddSeconds(2));
+            AssertTimeline(!BitmapImageRasterizer.TryGetSourceKey(new FileInfo(path), settings, out _),
+                "Replacing a source kept the old GPU identity valid.");
             var replaced = BitmapImageRasterizer.Decode(path, settings);
             AssertTimeline(replaced.Key != raster.Key && replaced.Pixels[0] > 200 && replaced.Pixels[2] < 40,
                 "Replacing a bitmap with a same-sized source resurrected stale pixels.");
@@ -381,6 +393,8 @@ internal static partial class Benchmark
             AssertTimeline(!ReferenceEquals(replaced, cleared) && replaced.Key == cleared.Key,
                 "Clearing the bitmap cache retained a source alias or changed the content key.");
             File.Delete(path);
+            AssertTimeline(!BitmapImageRasterizer.TryGetSourceKey(new FileInfo(path), settings, out _),
+                "A deleted source retained a usable GPU identity.");
             var rejectedMissingSource = false;
             try { BitmapImageRasterizer.Decode(path, settings); }
             catch (InvalidDataException) { rejectedMissingSource = true; }

@@ -5,10 +5,10 @@ namespace VectorAnimationEngine;
 
 internal static partial class Theme
 {
-    internal static void StyleComboBoxSelection(ComboBox box, float fontSize, int height)
+    internal static void StyleComboBoxSelection(ComboBox box, float fontSize, int height, bool quiet = false)
     {
         if (StyledComboBoxes.TryGetValue(box, out var state) && state is ComboBoxSurfaceAdapter adapter)
-            adapter.SetSelectionStyle(fontSize, height);
+            adapter.SetSelectionStyle(fontSize, height, quiet);
     }
 
     private sealed class ComboBoxSurfaceAdapter : NativeWindow
@@ -17,11 +17,13 @@ internal static partial class Theme
         private bool _hovered;
         private float? _selectionFontSize;
         private int? _selectionHeight;
+        private bool _quiet;
 
-        internal void SetSelectionStyle(float fontSize, int height)
+        internal void SetSelectionStyle(float fontSize, int height, bool quiet)
         {
             _selectionFontSize = fontSize;
             _selectionHeight = height;
+            _quiet = quiet;
             RefreshSelectionHeight();
         }
 
@@ -116,12 +118,14 @@ internal static partial class Theme
         {
             var highContrast = SystemInformation.HighContrast;
             var active = _box.Focused || _box.DroppedDown;
+            var quiet = _quiet && !active && !_hovered && _box.Enabled && !highContrast;
             var background = highContrast ? SystemColors.Window
                 : !_box.Enabled ? DisabledSurface
+                : quiet ? _box.Parent?.BackColor ?? Panel
                 : _box.DroppedDown ? Mix(FieldFocus, AccentSurface, 0.28f)
                 : _box.Focused ? FieldFocus : _hovered ? FieldHover : _box.BackColor;
             var foreground = highContrast ? _box.Enabled ? SystemColors.WindowText : SystemColors.GrayText
-                : ReadableText(background, _box.Enabled ? Text : DisabledText);
+                : ReadableText(background, _box.Enabled ? quiet && _box.SelectedIndex <= 0 ? Muted : Text : DisabledText);
             var outline = highContrast ? active ? SystemColors.Highlight : SystemColors.WindowText
                 : ControlOutline;
             var scale = _box.DeviceDpi / 96f;
@@ -130,7 +134,7 @@ internal static partial class Theme
             using var border = new Pen(outline, Math.Max(1f, scale));
             // Reserve a pixel outside the stroke so its antialiasing cannot be
             // cut at the bottom/right edge, including partial native repaints.
-            PaintUiSurface(graphics, fill, border, Rectangle.Inflate(_box.ClientRectangle, -1, -1));
+            PaintUiSurface(graphics, fill, quiet ? null : border, Rectangle.Inflate(_box.ClientRectangle, -1, -1));
             var arrowWidth = (int)Math.Round(24 * scale);
             var padding = (int)Math.Round(7 * scale);
             var rtl = _box.RightToLeft == RightToLeft.Yes;

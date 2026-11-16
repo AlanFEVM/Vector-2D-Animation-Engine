@@ -594,8 +594,8 @@ internal static partial class Benchmark
         stage.BeginSelectionMoveFeedback([moving]);
         scene.X[moving] = 0;
         stage.Invalidate();
-        AssertTimeline(stage.SelectionMoveOrigins[moving].X[0] == -2500
-            && stage.SelectionMoveOrigins[moving].Argb[0] == color
+        AssertTimeline(stage.SelectionMoveOrigins[moving].Scene.X[0] == -2500
+            && stage.SelectionMoveOrigins[moving].Scene.Argb[0] == color
             && scene.ObjectOrder[moving] == order && scene.Argb[moving] == color,
             "Move feedback changed artwork or failed to freeze the original appearance.");
         AssertTimeline(Covers(above, new PointF(0, 0)) && !Covers(above, new PointF(1400, 0))

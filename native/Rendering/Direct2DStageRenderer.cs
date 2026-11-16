@@ -589,6 +589,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     internal double DiagnosticLodDetailMilliseconds { get; private set; }
     internal double DiagnosticSelectionMilliseconds { get; private set; }
     public double LastPresentMilliseconds { get; private set; }
+    internal double DiagnosticEndDrawMilliseconds { get; private set; }
+    internal double DiagnosticSwapChainPresentMilliseconds { get; private set; }
     public double LastReference3DGridMilliseconds { get; private set; }
     public double LastReference3DSceneMilliseconds { get; private set; }
     public double LastReference3DPlanLookupMilliseconds { get; private set; }
@@ -1038,7 +1040,10 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             LastCommandMilliseconds = Stopwatch.GetElapsedTime(commandStarted).TotalMilliseconds;
             var framePresentStarted = Stopwatch.GetTimestamp();
             var result = _target.EndDraw();
+            DiagnosticEndDrawMilliseconds = Stopwatch.GetElapsedTime(framePresentStarted).TotalMilliseconds;
+            var swapChainPresentStarted = Stopwatch.GetTimestamp();
             if (result.Success) _gpuDevice?.Present();
+            DiagnosticSwapChainPresentMilliseconds = Stopwatch.GetElapsedTime(swapChainPresentStarted).TotalMilliseconds;
             LastPresentMilliseconds = Stopwatch.GetElapsedTime(framePresentStarted).TotalMilliseconds;
             drawingStarted = false;
             if (result.Failure)
@@ -2002,10 +2007,10 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         }
 
         var deferredFillObjects = stage.SelectionFillDragFrontObjectsFor(scene);
-        if (!stage.SelectionMoveFeedbackActive
-            && (deferredFillObjects is null or { Count: 0 })
+        if ((deferredFillObjects is null or { Count: 0 })
             && (TryDrawAffineBitmapLayer(stage, scene, objects, start)
-                || TryDrawLayerObjectsBatched(stage, scene, layer, objects, start)))
+                || !stage.SelectionMoveFeedbackActive
+                    && TryDrawLayerObjectsBatched(stage, scene, layer, objects, start)))
         {
             return;
         }
@@ -2432,6 +2437,17 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         float screenHeight)
     {
         if (!scene.TryGetBitmapObjectData(objectIndex, out var data)) return;
+        if (!stage.TryGetBitmapAffineScreenFrame(scene, objectIndex, out var cachedFrame)
+            && !scene.TryGetObjectDistortionsView(objectIndex, out _))
+        {
+            var angle = scene.Angle[objectIndex] + stage.PlanarCanvasRotation;
+            var x = new GdiPointF(screenWidth * MathF.Cos(angle), screenWidth * MathF.Sin(angle));
+            var y = new GdiPointF(-screenHeight * MathF.Sin(angle), screenHeight * MathF.Cos(angle));
+            cachedFrame = new TransformOverlayFrame(new GdiPointF(screenCenter.X - (x.X + y.X) * .5f,
+                screenCenter.Y - (x.Y + y.Y) * .5f), x, y);
+        }
+        if (cachedFrame.AxisX != default && cachedFrame.AxisY != default
+            && TryDrawCachedAffineBitmap(stage, scene, objectIndex, data, cachedFrame)) return;
         if (!stage.TryDecodeBitmapImage(data.ImageAssetId, out var raster)) return;
         raster = BitmapImageRasterizer.ApplyObjectClip(raster, data);
 
@@ -2545,9 +2561,12 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     /// bilinear pass is already adequate and shrinking would only lose detail.
     /// </summary>
     private static int MinificationLevel(BitmapImageRaster raster, float screenWidth, float screenHeight)
+        => MinificationLevel(raster.PixelWidth, raster.PixelHeight, screenWidth, screenHeight);
+
+    private static int MinificationLevel(int pixelWidth, int pixelHeight, float screenWidth, float screenHeight)
     {
-        if (raster.PixelWidth <= 0 || raster.PixelHeight <= 0) return 0;
-        var scale = Math.Max(screenWidth / raster.PixelWidth, screenHeight / raster.PixelHeight);
+        if (pixelWidth <= 0 || pixelHeight <= 0) return 0;
+        var scale = Math.Max(screenWidth / pixelWidth, screenHeight / pixelHeight);
         if (!float.IsFinite(scale) || scale <= 0f || scale >= 0.5f) return 0;
         var level = (int)MathF.Floor(MathF.Log2(1f / scale));
         return Math.Clamp(level, 0, 8);

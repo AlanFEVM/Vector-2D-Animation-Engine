@@ -101,9 +101,9 @@ internal static class BrushStrokeBuilder
     internal static PointF[] ProcessTrajectory(IReadOnlyList<PointF> samples, int smoothing, float worldPerPixel)
     {
         ArgumentNullException.ThrowIfNull(samples);
-        smoothing = Math.Clamp(smoothing, 0, 100);
+        smoothing = Math.Clamp(smoothing, 0, FreehandStrokeProcessor.MaximumBrushSmoothing);
         worldPerPixel = NormalizeWorldPerPixel(worldPerPixel);
-        var amount = smoothing / 100f;
+        var amount = smoothing / 100f * FreehandStrokeProcessor.BrushSmoothingScale;
         var error = 1f + worldPerPixel * (0.01f + amount * amount * 0.8f);
         var raw = new List<PointF>(samples.Count);
         foreach (var sample in samples)
@@ -122,6 +122,12 @@ internal static class BrushStrokeBuilder
             {
                 var first = spanIndex * FitSpanLimit;
                 var span = raw.GetRange(first, Math.Min(FitSpanLimit + 1, raw.Count - first)).ToArray();
+                // Use a real neighbourhood filter before fitting. Repeated adjacent-point blends
+                // leave low-frequency hand wobble in the curve even with a larger fit tolerance.
+                if (smoothing > 0)
+                    span = FreehandStrokeProcessor.SmoothPressureProfile(
+                        span.Select(point => new PressureBrushPoint(point, 1)).ToArray(), smoothing)
+                        .Select(sample => sample.Point).ToArray();
                 var processed = smoothing == 0 ? span
                     : FreehandStrokeProcessor.Process(span, smoothing, Math.Max(0.25f, error * 0.1f));
                 if (processed.Length < 2) processed = span;
@@ -144,7 +150,7 @@ internal static class BrushStrokeBuilder
 
     internal static int PressureSmoothingSupport(int smoothing)
     {
-        var radius = (int)MathF.Round(Math.Clamp(smoothing, 0, 100) / 100f * 4f);
+        var radius = FreehandStrokeProcessor.PressureSmoothingRadius(smoothing);
         return radius == 0 ? 0 : 2 * Math.Max(radius, 2);
     }
 
@@ -174,10 +180,10 @@ internal static class BrushStrokeBuilder
         bool trajectoryPrepared = false)
     {
         if (source.Count == 0 || color.A == 0) return [];
-        smoothing = Math.Clamp(smoothing, 0, 100);
+        smoothing = Math.Clamp(smoothing, 0, FreehandStrokeProcessor.MaximumBrushSmoothing);
         worldPerPixel = NormalizeWorldPerPixel(worldPerPixel);
         var minimumDiameter = source.Min(sample => sample.Diameter);
-        var amount = smoothing / 100f;
+        var amount = smoothing / 100f * FreehandStrokeProcessor.BrushSmoothingScale;
         var outlineError = 1.5f + Math.Min(worldPerPixel * (0.01f + amount * amount * 0.25f), minimumDiameter * 0.04f);
         PressureBrushPoint[] profile;
         if (trajectoryPrepared) profile = source.ToArray();
@@ -211,7 +217,7 @@ internal static class BrushStrokeBuilder
                 var layerColor = Color.FromArgb(alpha, color.R, color.G, color.B);
                 foreach (var polygons in BuildSweep(profile, sweepProfile, tip, shape.IsRadiallySymmetric, continuous))
                 {
-                    var contours = FitContours(polygons, outlineError);
+                    var contours = FitContours(polygons, outlineError, smoothing > 0);
                     if (contours.Length > 0) regionsForLayer.Add(new Region(contours, polygons, layerColor));
                 }
             }
@@ -557,13 +563,13 @@ internal static class BrushStrokeBuilder
     private static double Cross(PointF first, PointF second, PointF third) =>
         ((double)second.X - first.X) * (third.Y - first.Y) - ((double)second.Y - first.Y) * (third.X - first.X);
 
-    private static PathBezierNode[][] FitContours(Paths64 polygons, float error)
+    private static PathBezierNode[][] FitContours(Paths64 polygons, float error, bool smoothJoins)
     {
         var source = polygons.Select(path => Clean(path.Select(point => new PointF(point.X, point.Y))))
             .Where(contour => contour.Length >= 3).ToArray();
         if (source.Length == 0) return [];
         if (source.Length > 256) return LinearFallback();
-        var fitted = source.Select(contour => FitClosed(contour, error)).ToArray();
+        var fitted = source.Select(contour => FitClosed(contour, error, smoothJoins)).ToArray();
         try
         {
             var sampledPoints = fitted.Select(SampleClosed).ToArray();
@@ -602,9 +608,10 @@ internal static class BrushStrokeBuilder
         PathBezierNode[][] LinearFallback() => source.Select(LinearClosed).ToArray();
     }
 
-    private static PathBezierNode[] FitClosed(PointF[] contour, float error)
+    private static PathBezierNode[] FitClosed(PointF[] contour, float error, bool smoothJoins)
     {
         var cuts = new SortedSet<int> { 0 };
+        var corners = new HashSet<PointF>();
         var minimumX = 0;
         var maximumX = 0;
         var minimumY = 0;
@@ -628,7 +635,11 @@ internal static class BrushStrokeBuilder
             if (immediate > 0.7072f) continue;
             var before = Neighbor(index, -1);
             var after = Neighbor(index, 1);
-            if (DirectionCosine(before, contour[index], after) <= 0.7072f) cuts.Add(index);
+            if (DirectionCosine(before, contour[index], after) <= 0.7072f)
+            {
+                cuts.Add(index);
+                corners.Add(contour[index]);
+            }
         }
         if (cuts.Count < 3)
         {
@@ -664,7 +675,10 @@ internal static class BrushStrokeBuilder
             result[0] = result[0] with { IncomingControl = result[^1].IncomingControl };
             result.RemoveAt(result.Count - 1);
         }
-        return result.Count >= 3 ? result.ToArray() : LinearClosed(contour);
+        if (result.Count < 3) return LinearClosed(contour);
+        var nodes = result.ToArray();
+        if (smoothJoins) SmoothContourJoins(nodes, corners, error);
+        return nodes;
 
         PointF Neighbor(int origin, int direction)
         {
@@ -678,6 +692,38 @@ internal static class BrushStrokeBuilder
                 if (travelled >= Math.Max(3, error * 2)) break;
             }
             return contour[cursor];
+        }
+    }
+
+    private static void SmoothContourJoins(PathBezierNode[] nodes, HashSet<PointF> corners, float error)
+    {
+        // FitOpen uses 75% of the error for sampled distance and 12.5% for flattening.
+        // Moving each control by at most 12.5% adds at most 9.375% error to a cubic
+        // (the two control weights sum to at most .75).
+        // Keep anchors, true corners, and topology checks intact; never round square tips.
+        var maximumMove = error * 0.125f;
+        for (var index = 0; index < nodes.Length; index++)
+        {
+            var node = nodes[index];
+            if (corners.Contains(node.Anchor)) continue;
+            var incomingLength = Distance(node.IncomingControl, node.Anchor);
+            var outgoingLength = Distance(node.Anchor, node.OutgoingControl);
+            if (incomingLength < 1 || outgoingLength < 1) continue;
+            var incoming = new PointF((node.Anchor.X - node.IncomingControl.X) / incomingLength,
+                (node.Anchor.Y - node.IncomingControl.Y) / incomingLength);
+            var outgoing = new PointF((node.OutgoingControl.X - node.Anchor.X) / outgoingLength,
+                (node.OutgoingControl.Y - node.Anchor.Y) / outgoingLength);
+            if (incoming.X * outgoing.X + incoming.Y * outgoing.Y < 0.5f) continue;
+            var direction = new PointF(incoming.X + outgoing.X, incoming.Y + outgoing.Y);
+            var length = Distance(PointF.Empty, direction);
+            direction = new PointF(direction.X / length, direction.Y / length);
+            var before = new PointF(node.Anchor.X - direction.X * incomingLength,
+                node.Anchor.Y - direction.Y * incomingLength);
+            var after = new PointF(node.Anchor.X + direction.X * outgoingLength,
+                node.Anchor.Y + direction.Y * outgoingLength);
+            if (Distance(before, node.IncomingControl) > maximumMove
+                || Distance(after, node.OutgoingControl) > maximumMove) continue;
+            nodes[index] = node with { IncomingControl = before, OutgoingControl = after };
         }
     }
 

@@ -1214,7 +1214,7 @@ internal sealed partial class MainForm : Form
         return tool switch
         {
             ToolMode.Pencil => Math.Clamp(pencilSmoothing, 0, 100),
-            ToolMode.Brush => Math.Clamp(brushSmoothing, 0, 100),
+            ToolMode.Brush => Math.Clamp(brushSmoothing, 0, FreehandStrokeProcessor.MaximumBrushSmoothing),
             ToolMode.Eraser => 52,
             _ => 0
         };

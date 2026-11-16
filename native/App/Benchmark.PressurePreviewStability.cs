@@ -42,7 +42,7 @@ internal static partial class Benchmark
                     "Pressure smoothing dropped a sample, shifted its pressure knot or delayed the current endpoint.");
                 previous = actual;
                 previousStableCount = (int)stable.GetValue(form)!;
-                AssertBrushGeometry(source.Count - previousStableCount <= 9,
+                AssertBrushGeometry(source.Count - previousStableCount <= 25,
                     "Pressure preview retained an unbounded refitting tail.");
             }
             for (var change = 0; change < 8; change++)

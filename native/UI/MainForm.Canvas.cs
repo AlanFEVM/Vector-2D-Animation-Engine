@@ -141,8 +141,10 @@ internal sealed partial class MainForm
 
     private void LayoutCanvasWelcome()
     {
-        var width = Math.Min((int)MathF.Round(364 * _stage.DeviceDpi / 96f), Math.Max(0, _stage.Width - 32));
-        var height = (int)MathF.Round(152 * _stage.DeviceDpi / 96f);
+        var scale = _stage.DeviceDpi / 96f;
+        var gap = (int)MathF.Round(24 * scale);
+        var width = Math.Min((int)MathF.Round(400 * scale), Math.Max(0, _stage.Width - gap * 2));
+        var height = Math.Min((int)MathF.Round(204 * scale), Math.Max(0, _stage.Height - gap * 2));
         _canvasWelcome.SetBounds(Math.Max(0, (_stage.Width - width) / 2),
             Math.Max(0, (_stage.Height - height) / 2), width, height);
     }

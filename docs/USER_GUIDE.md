@@ -310,7 +310,7 @@ Inspector numeric fields scroll their surrounding column by default. Type, use s
 
 在左上角横向主菜单中选择 `File → Canvas & background… / 文件 → 画布与背景…`，或未选择对象时的文档信息面板点击 **Canvas & background… / 画布与背景…**，设置当前活动场景的画布。主菜单项目按传统横向菜单栏平铺显示，顶部文字采用较小的常规字号和柔和次级文字色，悬停／选中使用低对比中性底色，文字保持同一亮度；高对比度模式沿用系统选中色。顶部仅保留文件、编辑、视图、插入、控制和帮助六类；变换与设置合并到编辑，文本与导入合并到插入，面板和层级入口合并到视图。每个场景独立保存；基础绘制中的元件仍保持透明，画布设置不改变元件内容或编辑器外围的工作区底色。
 
-空场景尚未设置画布时，场景与动画工作区显示“尚未添加画布与背景”的轻量引导。可以打开设置，也可以点击“直接开始”；放入元件、创建镜头或图层、绘制实际内容或建立有效关键帧后，引导自动消失，删除或撤销内容不会反复弹回。平移、缩放和切换工具不会自动创建画布或背景。提示消失后，文档信息仍准确显示“未添加”，设置入口始终可用。
+空场景尚未设置画布时，场景与动画工作区居中显示“画布与背景”轻量引导：底色与工作区一致，无外框，文字、图标及操作入口根据工作区底色调整明暗，修改工作区颜色时同步更新。可以点击“设置画布与背景”，也可以点击“直接开始”；放入元件、创建镜头或图层、绘制实际内容或建立有效关键帧后，引导自动消失，删除或撤销内容不会反复弹回。平移、缩放和切换工具不会自动创建画布或背景。提示消失后，文档信息仍准确显示“未添加”，设置入口始终可用。
 
 - **画布**：提供标准 `640 × 480`、高清 `1280 × 720`、全高清 `1920 × 1080`、4K `3840 × 2160`、竖屏 `1080 × 1920` 和方形 `1080 × 1080` 预设，也可输入 1–32768 像素的宽高，锁定比例或交换横竖。改变尺寸以场景原点为中心改变边界，不缩放、移动或删除已有对象，不改动关键帧或镜头位置；镜头“跟随场景”使用所设画布比例，独立画幅预设不变。
 - **背景**：可选无背景、纯色或图片。无背景在编辑器中以棋盘格表示透明；纯色支持自选颜色和不透明度。背景位于内容下方，不参与普通选择、擦除、图层遮罩或场景灯光。需要透视、受光或动画的背景图，应作为普通图片对象放入场景。
@@ -332,6 +332,22 @@ Parameter rows use 48% label / 52% input columns, with the same muted secondary 
 镜头预览及拖动时间轴时，未变化的位图复用解码缓存，不逐帧读取、解码和计算整张源图的哈希。源文件大小、修改时间、创建时间或导入设置变化时重新解析；缓存仍受原有内存预算限制，不降低图片分辨率，也不修改动画帧。
 
 Camera previews and timeline scrubbing reuse decoded bitmaps while the source file and import settings remain unchanged, avoiding full source reads, decoding and hashing on every frame. Changes to file size, modification time, creation time or import settings trigger a fresh lookup. Existing cache memory limits, image resolution and animation frames are preserved.
+
+全选位图拖动时，同一绘制帧中的原位半透明提示与移动后图片共享资源解析和已验证父目录；下一帧重新检查资源与目录，保留文件及导入设置变化的刷新行为。多个符合条件的普通位图共用一份原位快照，避免开始拖动时为每张图片分配完整场景与索引；每个提示仍保留独立位置、顺序和遮罩。符合条件的位图继续使用批量 GPU 绘制，未选对象的遮挡淡化、遮罩和复杂效果保留原有路径。150 FPS 对应每帧低于 6.67 ms 的验收目标，需结合实际工程、视口与硬件测量平均、P95 和最大耗时，不代表所有工程已达到该帧率。
+
+Dragging selected bitmaps shares asset resolution and validated parent directories within each paint, checking assets and directories again on the next frame so source and import-setting changes remain visible. Eligible ordinary bitmap origins share one snapshot instead of allocating a complete scene and index per image at drag start, while keeping individual positions, ordering and masks. Eligible bitmaps retain batched GPU drawing; unselected occluder fading, masks and complex effects retain their existing paths. The 150 FPS acceptance target requires frames below 6.67 ms, measured with the actual project, viewport and hardware using average, P95 and maximum timings; it is not an achieved frame-rate guarantee.
+
+拖动多个托管图片时，同一帧按目录获取文件元数据，下一帧重新读取；超大目录或目录读取失败时保留逐文件检查。无额外图层效果或遮罩、且全选普通位图只做整体平移时，可见选择轮廓复用平移前的计算结果；非整体平移或场景内容变化时回到原有轮廓计算。原位提示、图片像素、提交及撤销语义保持不变。
+
+Dragging multiple managed images reads file metadata by directory within each paint and refreshes it on the next paint; unusually large or unreadable directories retain individual file checks. When all ordinary bitmaps move together without layer effects or masks, visible selection contours reuse their original calculation with the common translation. Nonuniform movement or scene-content changes retain the original contour calculation. Origin feedback, image pixels, commit and undo behavior are preserved.
+
+位图的 CPU 像素缓存被淘汰后，已上传的 GPU 纹理仍可在源文件元数据和导入设置验证通过后直接复用，避免大批图片每帧重新读取和解码。对象裁剪、采样级别或源文件变化时重新查找相应纹理；CPU/GPU 内存预算保持不变。
+
+After CPU bitmap pixels are evicted, uploaded GPU textures can still be reused after validating source metadata and import settings, avoiding repeated source reads and decoding for large image sets. Object clipping, sampling-level and source changes select the corresponding texture again. CPU and GPU memory budgets remain unchanged.
+
+成叠的普通位图仅在确认前方图片完全不透明、无对象裁剪、轴对齐且覆盖整个下方对象（含边缘余量）时省去被遮住对象的绘制；部分可见图片仍完整绘制。原位半透明提示沿用相同叠放顺序和组透明度。此优化不删除对象、不改变选择轮廓或保存内容。
+
+Stacked ordinary bitmaps omit a covered draw only when proven opaque, unclipped, axis-aligned images in front cover the entire object with an edge margin. Partly visible images still draw in full. Translucent origins retain the same stacking and group opacity. Objects, selection contours and saved content remain intact.
 
 镜头工作区的“相机视图”和“锁定相机”在硬件可用、场景效果受支持时直接使用 Direct2D/GPU 绘制指令，避免每帧通过 GDI 录制位图、CPU 合成并整帧上传。镜头旋转、微动、视差、遮罩与场景背景沿用同一相机计算；需要软件合成的效果或设备不可用时仍走原有回退。180 FPS 是每帧约 5.56 ms 的性能验收目标，不是所有工程和硬件的保证值；应同时核对实际内容、视口、平均、P95 和最大耗时。
 
@@ -466,17 +482,21 @@ Switching scene dimensions rebuilds the current composition and rebinds the appr
 - Select 或 Free Transform 只选择实际命中的连通岛；`Shift` 可追加。移动、变形、删除或局部框选时会拆出所选岛，未选岛保持不变，操作仍可一次撤销。
 - Eraser 在启用 `Fill` 擦除时直接裁切区域网格，并把不再连接的剩余部分拆成独立区域。旧工程中的轨迹式 Mixing Brush 数据仍可读取和渲染。
 
-Brush 与 Pressure Brush 共用笔尖面板的 `Smooth`（0–100%）。该值控制轨迹和闭合轮廓的曲线拟合误差：较高数值在误差范围内减少可编辑贝塞尔段，而不只是防抖；0 保留更多手绘细节。连续模式沿拟合轨迹扫掠笔尖，圆形、椭圆形和形状笔尖不再依靠稀疏独立印章拼接；方形笔尖自身的真实角点仍保留。
+Brush 与 Pressure Brush 共用笔尖面板的 `Smooth`（0–100%，默认 70%），适用于软圆、传统和导入笔尖。百分比范围保持不变，内部平滑尺度扩大为原来的 3 倍：轨迹和轮廓允许更大的曲线拟合误差，压感笔刷同时扩大轨迹和宽度的局部平滑范围。较高数值在误差范围内减少可编辑贝塞尔段，而不只是防抖；0 保留更多手绘细节。连续模式沿拟合轨迹扫掠笔尖，圆形、椭圆形和形状笔尖不再依靠稀疏独立印章拼接；方形笔尖自身的真实角点仍保留。
 
-Brush and Pressure Brush share the tip panel's `Smooth` control (0–100%). Higher values fit fewer editable Bezier segments within a bounded error rather than only stabilizing the pointer; zero retains more gesture detail. Continuous mode sweeps the tip along a fitted trajectory instead of joining sparse stamps. Real corners of a square tip remain intentional.
+Brush and Pressure Brush share the tip panel's `Smooth` control (0–100%, default 70%) for soft round, traditional, and imported tips. The percentage range stays the same while the internal smoothing scale is tripled, allowing larger trajectory and outline fitting tolerances and widening the pressure brush's local position and width smoothing window. Higher values fit fewer editable Bezier segments within a bounded error rather than only stabilizing the pointer; zero retains more gesture detail. Continuous mode sweeps the tip along a fitted trajectory instead of joining sparse stamps. Real corners of a square tip remain intentional.
+
+普通笔刷在贝塞尔拟合前也使用有界邻域平滑，减少相邻点混合难以消除的连续抖动。平滑开启时，闭合轮廓会在拟合误差允许范围内对齐接头两侧的控制柄方向，减少分段连接的小折角；真实角点、笔触端点及孔洞/岛屿检查仍保留。0% 不启用新增的邻域平滑和接头调整。
+
+The ordinary brush also applies bounded neighborhood smoothing before Bezier fitting to reduce broader hand wobble. With smoothing enabled, closed contours align the handle directions at joins within the fitting error allowance to reduce small tangent kinks. Real corners, stroke endpoints, and hole/island checks remain intact. At 0%, the additional neighborhood filter and join adjustment are disabled.
 
 预览保留完整轨迹和压力，不按整笔长度重新抽取固定数量的点；预览更新受节流保护。Direct2D 与 GDI 复用既有预览、Path/贝塞尔填色与软边透明层接口；最终笔触仍为可编辑的闭合 Path，不引入新的绘制后端。关闭 `Continuous` 时保留独立盖章效果，由 `Freq` 控制间距。
 
 Previews retain the complete trajectory and pressure without selecting a fixed sample count over the growing stroke; updates are throttled. Both renderers reuse the existing preview and editable Path/Bezier fill interfaces, including soft-layer opacity. Turning `Continuous` off keeps separate stamps with spacing controlled by `Freq`.
 
-压感笔刷持续绘画时，轨迹和宽度按相邻采样局部平滑，不再按不断变化的整笔总长度重新分配压力；已经稳定的笔迹不会随新采样来回摆动。平滑只重算笔尖附近最多 8 个采样的影响范围，并保留当前笔尖端点。形状笔尖的未稳定尾段会替换旧预览，而不是叠加旧宽度；松笔使用相同的压力和平滑流程，不改写既有图形或底层绘制后端。
+压感笔刷持续绘画时，轨迹和宽度按相邻采样局部平滑，不再按不断变化的整笔总长度重新分配压力；已经稳定的笔迹不会随新采样来回摆动。平滑只重算笔尖附近的有界影响范围：100% 时最多 24 个采样（原来最多 8 个），并保留当前笔尖端点。较高平滑值会让可调整的笔尖尾段更长。形状笔尖的未稳定尾段会替换旧预览，而不是叠加旧宽度；松笔使用相同的压力和平滑流程，不改写既有图形或底层绘制后端。
 
-Continuous pressure strokes smooth positions and widths locally without redistributing pressure over the changing total stroke length. Completed samples stay fixed; only the tip's bounded smoothing neighborhood can change (up to eight samples of look-ahead). Shape-tip previews replace their mutable tail instead of accumulating obsolete widths, and committed strokes use the same pressure processing. Existing artwork and render backends are unchanged.
+Continuous pressure strokes smooth positions and widths locally without redistributing pressure over the changing total stroke length. Completed samples stay fixed; only the tip's bounded smoothing neighborhood can change (up to 24 samples of look-ahead at 100%, previously eight). Higher smoothing values leave a longer mutable tail. Shape-tip previews replace their mutable tail instead of accumulating obsolete widths, and committed strokes use the same pressure processing. Existing artwork and render backends are unchanged.
 
 Brush 和 Pressure Brush 仍保存为闭合 Path 填色。普通同色笔刷填色相交或边界距离小于 `10 vu` 时可能自动合并；未接触的岛屿之间不会自动补成填色。
 
@@ -1425,8 +1445,9 @@ Reopening Vault reuses unchanged asset rows while checking project changes and f
   Images and SVG assets support Update from Source, Replace Source, and Create Independent Copy. Updates preserve placement and animation; failed updates retain the last valid content. An independent copy receives a new asset ID without rebinding existing placements.
 - 删除未使用的素材会直接移除库项目；正在使用的素材会列出直接使用位置、受影响的嵌套元件和场景。可选择同类素材替换引用后删除，或删除素材及全部使用位置，默认取消；更新、独立副本和删除均可一次撤销。引用数量按存储的放置对象及各关键帧统计，不等于某一帧可见的实例数量。
   Deleting an asset in use shows its usage locations and affected symbols/scenes. Replace references with an asset of the same type, or delete all uses; Cancel is the default. Updates, independent copies and deletions support a single undo.
-- 顶部搜索框采用现代紧凑外观，带左侧搜索图标、舒展的文字留白及随主题变化的圆角／直角边缘；按素材名称、类型、说明和已分配的标签名称搜索。
-- 标签下拉框：独立按某个标签筛选；可与文字搜索叠加，进一步缩小结果。
+- 顶部搜索框与面板背景融合，保留左侧搜索图标，悬停或聚焦时显示输入底色与边框；按素材名称、类型、说明和已分配的标签名称搜索。
+- 标签筛选以紧凑下拉框靠左显示，右侧保留小尺寸标签管理按钮；可与文字搜索叠加，进一步缩小结果。默认“全部标签”使用次级文字色，选中具体标签后显示正常文字色。
+  Search and tag filters blend into the asset panel at rest and show field surfaces on hover or focus. The compact tag selector keeps the management button on the right; search and tag filtering can be combined.
 - 右键素材时会先收起悬停预览；展开 `Set Tags` 后可直接从已有项目标签中勾选或取消勾选，每次选择后子菜单会保持打开，便于连续设置多个标签。
 - 选中素材后点击标签管理图标，或右键选择 `Manage Tags...`：新增、重命名、改色或删除项目标签，并为当前素材分配或取消分配标签。删除项目标签会同时从所有素材移除该标签。
 - 标签管理器中的 `Add` 会立即创建并分配一个随机颜色的 `New tag`；重名时自动追加序号。选中标签后可直接使用管理器内的 R、G、B 滑杆或数值框调整颜色。

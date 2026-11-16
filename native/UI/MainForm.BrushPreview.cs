@@ -38,7 +38,7 @@ internal sealed partial class MainForm
 
     private PressureBrushPoint[] ProcessBrushPressurePreview()
     {
-        var smoothing = Math.Clamp(_freehandBrushSmoothing, 0, 100);
+        var smoothing = Math.Clamp(_freehandBrushSmoothing, 0, FreehandStrokeProcessor.MaximumBrushSmoothing);
         if (_brushPreviewPressureProfile.Count > _brushAreaPressureProfile.Count
             || _brushPreviewPressureSmoothing != smoothing)
         {

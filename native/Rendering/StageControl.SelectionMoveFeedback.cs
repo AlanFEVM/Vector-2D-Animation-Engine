@@ -11,37 +11,80 @@ internal sealed partial class StageControl
 
     private VectorScene? _selectionMoveScene;
     private int _selectionMoveFrame;
-    private readonly Dictionary<int, VectorScene> _selectionMoveOrigins = [];
+    internal readonly record struct SelectionMoveOrigin(VectorScene Scene, int ObjectIndex, bool SharedBitmapScene);
+    private readonly Dictionary<int, SelectionMoveOrigin> _selectionMoveOrigins = [];
     private readonly Dictionary<int, PointF[][][]> _selectionMoveOriginClips = [];
     private readonly Dictionary<(int ObjectIndex, SceneRenderPass Pass), PathsD> _selectionMoveCoverage = [];
     private readonly Dictionary<(int ObjectIndex, SceneRenderPass Pass), PointF[][]> _selectionMoveOcclusion = [];
     private long _selectionMoveCoverageRevision = -1;
     private float _selectionMoveCoverageZoom;
+    private Dictionary<int, PointF[][]>? _bitmapMoveOutlineContours;
+    private long _bitmapMoveOutlineGeometry;
+    private long _bitmapMoveOutlineSummary;
+    private long _bitmapMoveOutlineContent;
+    private long _bitmapMoveOutlineCheckedRevision = -1;
+    private bool _bitmapMoveOutlineTranslationValid;
+    private PointF _bitmapMoveOutlineOffset;
+    internal long BitmapMoveSelectionRevision { get; private set; }
 
     internal bool SelectionMoveFeedbackActive => ReferenceEquals(_selectionMoveScene, Scene)
         && _selectionMoveFrame == Frame && _selectionMoveOrigins.Count > 0
         && !UsesReferenceProjection;
 
-    internal IReadOnlyDictionary<int, VectorScene> SelectionMoveOrigins => _selectionMoveOrigins;
+    internal IReadOnlyDictionary<int, SelectionMoveOrigin> SelectionMoveOrigins => _selectionMoveOrigins;
     internal PointF[][][] SelectionMoveOriginClips(int objectIndex) => _selectionMoveOriginClips[objectIndex];
 
     internal void BeginSelectionMoveFeedback(IEnumerable<int> objectIndices)
     {
         ClearSelectionFillDragFront(invalidate: false);
+        BitmapMoveSelectionRevision++;
         if (UsesReferenceProjection) return;
-        foreach (var objectIndex in objectIndices.Distinct()
+        var ordered = objectIndices.Distinct()
             .Where(index => (uint)index < Scene.ObjectCount && Scene.IsObjectActive(index, Frame))
             .OrderByDescending(index => Scene.ObjectLayer[index])
-            .ThenBy(index => Scene.ObjectOrder[index]).ThenBy(index => Scene.ObjectSubOrder[index]))
+            .ThenBy(index => Scene.ObjectOrder[index]).ThenBy(index => Scene.ObjectSubOrder[index]).ToArray();
+        // One immutable snapshot for ordinary bitmaps avoids allocating a full
+        // spatial index and LOD grid for every selected image on pointer down.
+        // Keep source-to-snapshot indices explicit; clips and ordering still
+        // belong to each original object, including across interleaved shapes.
+        var bitmaps = ordered.Where(index => Scene.ShapeKind[index] == ShapeKind.Bitmap
+            && !Scene.TryGetObjectDistortionsView(index, out _)
+            && Scene.LayerOpacity[Scene.ObjectLayer[index]] == 1f
+            && Scene.IsLayerEffectivelyVisible(Scene.ObjectLayer[index])
+            && !Scene.IsLayerEffectivelyOutlined(Scene.ObjectLayer[index])
+            && !Scene.GetLayerSymbolFilters(Scene.ObjectLayer[index]).HasEnabled).ToArray();
+        var bitmapScene = bitmaps.Length > 1 ? Scene.CreateClipboardScene(bitmaps) : null;
+        var bitmapIndices = bitmaps.Select((source, index) => (source, index))
+            .ToDictionary(item => item.source, item => item.index);
+        foreach (var objectIndex in ordered)
         {
-            if (VectorScene.CreateObjectPreviewScene(Scene, objectIndex) is not { } origin) continue;
-            origin.LayerOpacity[0] = Scene.LayerOpacity[Scene.ObjectLayer[objectIndex]];
+            SelectionMoveOrigin origin;
+            if (bitmapScene is not null && bitmapIndices.TryGetValue(objectIndex, out var bitmapIndex))
+                origin = new(bitmapScene, bitmapIndex, true);
+            else
+            {
+                if (VectorScene.CreateObjectPreviewScene(Scene, objectIndex) is not { } preview) continue;
+                preview.LayerOpacity[0] = Scene.LayerOpacity[Scene.ObjectLayer[objectIndex]];
+                origin = new(preview, 0, false);
+            }
             _selectionMoveOrigins.Add(objectIndex, origin);
             _selectionMoveOriginClips.Add(objectIndex, SelectionMoveClipContours(objectIndex)
                 .Select(contours => contours.Select(contour => contour.ToArray()).ToArray()).ToArray());
         }
         _selectionMoveScene = Scene;
         _selectionMoveFrame = Frame;
+        if (bitmapScene is not null && bitmaps.Length == Scene.ObjectCount
+            && Scene.LayerCount == 1 && !Scene.HasDisplayLayerEffects
+            && !HasSceneCompositionMaskClips(Scene)
+            && bitmaps.All(index => !Scene.ObjectHidden[index] && ObjectArrowUsesBounds(index)))
+        {
+            Scene.PrepareSelectionOutlineBatch(ordered, Frame);
+            _bitmapMoveOutlineContours = ordered.ToDictionary(index => index,
+                index => GetObjectArrowSelectionContours(index));
+            _bitmapMoveOutlineGeometry = Scene.GeometryRevision;
+            _bitmapMoveOutlineSummary = Scene.SummaryRevision;
+            _bitmapMoveOutlineContent = Scene.ActiveContentRevision;
+        }
         RequestStageFrame(basePresentationChanged: true, preserveSelectionRenderCache: true);
     }
 
@@ -54,7 +97,52 @@ internal sealed partial class StageControl
         _selectionMoveCoverage.Clear();
         _selectionMoveOcclusion.Clear();
         _selectionMoveCoverageRevision = -1;
+        _bitmapMoveOutlineContours = null;
+        _bitmapMoveOutlineCheckedRevision = -1;
+        _bitmapMoveOutlineTranslationValid = false;
         return active;
+    }
+
+    internal bool TryGetBitmapMoveSelectionTranslation(out PointF translation)
+    {
+        translation = PointF.Empty;
+        if (!SelectionMoveFeedbackActive || _bitmapMoveOutlineContours is null
+            || _bitmapMoveOutlineGeometry != Scene.GeometryRevision
+            || _bitmapMoveOutlineSummary != Scene.SummaryRevision
+            || _bitmapMoveOutlineContent != Scene.ActiveContentRevision
+            || _selectionMoveOrigins.Count != Scene.ObjectCount
+            || HasDistortPreview || HasSceneCompositionMaskClips(Scene)) return false;
+        if (_bitmapMoveOutlineCheckedRevision != SelectionGeometryRevision)
+        {
+            _bitmapMoveOutlineCheckedRevision = SelectionGeometryRevision;
+            _bitmapMoveOutlineTranslationValid = true;
+            PointF? offset = null;
+            foreach (var (source, origin) in _selectionMoveOrigins)
+            {
+                var next = new PointF(Scene.X[source] - origin.Scene.X[origin.ObjectIndex],
+                    Scene.Y[source] - origin.Scene.Y[origin.ObjectIndex]);
+                if (offset is { } previous && previous != next)
+                {
+                    _bitmapMoveOutlineTranslationValid = false;
+                    break;
+                }
+                offset = next;
+            }
+            _bitmapMoveOutlineOffset = offset ?? PointF.Empty;
+        }
+        if (!_bitmapMoveOutlineTranslationValid) return false;
+        translation = _bitmapMoveOutlineOffset;
+        return true;
+    }
+
+    private bool TryGetTranslatedBitmapMoveOutline(int objectIndex, out PointF[][] contours)
+    {
+        contours = [];
+        if (!TryGetBitmapMoveSelectionTranslation(out var translation)
+            || !_bitmapMoveOutlineContours!.TryGetValue(objectIndex, out var original)) return false;
+        contours = original.Select(contour => contour.Select(point =>
+            new PointF(point.X + translation.X, point.Y + translation.Y)).ToArray()).ToArray();
+        return true;
     }
 
     internal PointF[][] GetSelectionMoveOcclusionContours(int objectIndex, SceneRenderPass pass)
@@ -173,7 +261,7 @@ internal sealed partial class StageControl
         var bounds = RectangleF.Empty;
         foreach (var origin in _selectionMoveOrigins.Values)
         {
-            var world = origin.GetObjectWorldBounds(0);
+            var world = origin.Scene.GetObjectWorldBounds(origin.ObjectIndex);
             var topLeft = WorldToScreen(world.Left, world.Top);
             var bottomRight = WorldToScreen(world.Right, world.Bottom);
             var screen = RectangleF.FromLTRB(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
@@ -193,8 +281,11 @@ internal sealed partial class StageControl
                             using var path = SelectionMoveScreenPath(clip);
                             surface.SetClip(path, CombineMode.Intersect);
                         }
-                        Scene = entry.Value;
-                        DrawSceneGdi(surface, entry.Value, int.MaxValue, forceObjectRenderer: true);
+                        Scene = entry.Value.Scene;
+                        if (entry.Value.SharedBitmapScene)
+                            DrawObjectUnclipped(surface, entry.Value.ObjectIndex, SceneRenderPass.Fill);
+                        else
+                            DrawSceneGdi(surface, entry.Value.Scene, int.MaxValue, forceObjectRenderer: true);
                     }
                     finally
                     {

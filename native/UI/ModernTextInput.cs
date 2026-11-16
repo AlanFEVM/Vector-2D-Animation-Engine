@@ -67,6 +67,9 @@ internal sealed class ModernTextInput : UserControl
 
     public bool ShowFocusIndicator { get; set; } = true;
 
+    // Quiet utility fields blend into their host until the user interacts.
+    public bool QuietAppearance { get; set; }
+
     public string PlaceholderText { get => _editor.PlaceholderText; set => _editor.PlaceholderText = value; }
 
     public int MaxLength { get => _editor.MaxLength; set => _editor.MaxLength = value; }
@@ -76,7 +79,7 @@ internal sealed class ModernTextInput : UserControl
     public void SelectAll() => _editor.SelectAll();
 
     internal int PreferredFieldHeight => Math.Max(
-        (int)Math.Ceiling((SearchAppearance ? 34 : Theme.ControlHeightCompact) * DeviceDpi / 96f),
+        (int)Math.Ceiling((SearchAppearance && !QuietAppearance ? 34 : Theme.ControlHeightCompact) * DeviceDpi / 96f),
         (_editor?.PreferredHeight ?? Font.Height) + (int)Math.Ceiling(10f * DeviceDpi / 96f));
 
     public override Size GetPreferredSize(Size proposedSize) =>
@@ -134,15 +137,17 @@ internal sealed class ModernTextInput : UserControl
     {
         base.OnPaint(e);
         var highContrast = SystemInformation.HighContrast;
+        var quiet = QuietAppearance && !ContainsFocus && !_hovered && Enabled && !highContrast;
         var surface = highContrast ? SystemColors.Window
             : !Enabled ? Theme.DisabledSurface
+            : quiet ? Parent?.BackColor ?? Theme.Panel
             : Theme.Mix(Theme.PanelStrong, Theme.Field, ContainsFocus ? 0.35f : _hovered ? 0.45f : 0.60f);
         _editor.BackColor = surface;
         _editor.ForeColor = highContrast ? Enabled ? SystemColors.WindowText : SystemColors.GrayText
             : Enabled ? ForeColor : Theme.DisabledText;
         e.Graphics.Clear(Parent?.BackColor ?? Theme.Panel);
         using var fill = new SolidBrush(surface);
-        using var border = new Pen(Theme.ControlOutline, Math.Max(1f, DeviceDpi / 96f));
+        using var border = new Pen(quiet ? surface : Theme.ControlOutline, Math.Max(1f, DeviceDpi / 96f));
         // Leave a full device pixel outside the entire stroke, including the
         // square-corner path at fractional DPI. The child editor stays inside.
         var surfaceBounds = Rectangle.Inflate(ClientRectangle, -1, -1);

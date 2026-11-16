@@ -125,6 +125,7 @@ internal static partial class Benchmark
         var scene = new VectorScene(); scene.CreateEmpty();
         var rasters = new Dictionary<string, BitmapImageRaster>();
         var sampling = BitmapSampling.Linear;
+        var rasterResolutions = 0;
         for (var i = 0; i < 64; i++)
         {
             var id = $"layer-pixels-{i}";
@@ -150,7 +151,8 @@ internal static partial class Benchmark
         using var host = new Form { ClientSize = new Size(640, 480), ShowInTaskbar = false,
             StartPosition = FormStartPosition.Manual, Location = new Point(-3000, -3000) };
         using var stage = new StageControl(scene) { Dock = DockStyle.Fill,
-            BitmapImageResolver = id => rasters.GetValueOrDefault(id), BitmapImageSamplingProvider = _ => sampling };
+            BitmapImageResolver = id => { rasterResolutions++; return rasters.GetValueOrDefault(id); },
+            BitmapImageSamplingProvider = _ => sampling };
         host.Controls.Add(stage); host.Show(); Application.DoEvents(); PaintStage(stage);
         var renderer = (Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!;
         var settings = SceneShotSettings.Default with { Kind = SceneShotCameraKind.TwoD,
@@ -161,14 +163,22 @@ internal static partial class Benchmark
             foreach (var filter in new[] { BitmapSampling.Point, BitmapSampling.Linear })
             {
                 sampling = filter;
+                stage.BitmapImageKeyResolver = null;
                 Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_LAYER", "1");
                 AssertTimeline(renderer.TryCapturePlanarShotPreview(stage, settings, new Size(640, 480), null, out var reference)
                     && reference is not null, "Bitmap layer reference did not use a GPU readback.");
                 using (reference)
                 {
                     Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_LAYER", null);
+                    stage.BitmapImageKeyResolver = id => rasters.TryGetValue(id, out var value) ? value.Key : null;
+                    AssertTimeline(renderer.TryCapturePlanarShotPreview(stage, settings, new Size(640, 480), null, out var warm)
+                        && warm is not null, "Bitmap GPU cache warmup produced no readback.");
+                    warm!.Dispose();
+                    var resolutionsBefore = rasterResolutions;
                     AssertTimeline(renderer.TryCapturePlanarShotPreview(stage, settings, new Size(640, 480), null, out var actual)
                         && actual is not null, "Bitmap layer did not produce a GPU readback.");
+                    AssertTimeline(rasterResolutions == resolutionsBefore,
+                        "Warm GPU bitmaps unnecessarily resolved full CPU pixels.");
                     using (actual)
                     {
                         var delta = 0;
@@ -191,6 +201,90 @@ internal static partial class Benchmark
             Console.WriteLine("bitmap_layer=ok,gpu_readback=ok,mirror_skew_rotation=ok,alpha_holes=ok");
         }
         finally { Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_LAYER", previous); }
+    }
+
+    private static void RunBitmapOpaqueOcclusionRegression()
+    {
+        var root = CreateTemporaryDirectory("bitmap-opaque-occlusion");
+        var policy = Environment.GetEnvironmentVariable("VECTOR_DISABLE_BITMAP_OCCLUSION");
+        try
+        {
+            var path = Path.Combine(root, "opaque.png");
+            using (var image = new Bitmap(512, 384))
+            {
+                using var graphics = Graphics.FromImage(image);
+                graphics.Clear(Color.Coral);
+                graphics.FillRectangle(Brushes.Navy, 0, 0, 64, 48);
+                image.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            }
+            BitmapImageRasterizer.ClearCache();
+            var settings = BitmapImageImportSettings.Default;
+            BitmapImageRasterizer.Decode(path, settings);
+            var scene = new VectorScene(); scene.CreateEmpty();
+            scene.AddBitmapObject(0, PointF.Empty, new BitmapObjectData
+                { ImageAssetId = "opaque", PlacedSize = new SizeF(1200, 800) });
+            scene.AddBitmapObject(0, new PointF(-350, 0), new BitmapObjectData
+                { ImageAssetId = "opaque", PlacedSize = new SizeF(1000, 1000) });
+            scene.AddBitmapObject(0, new PointF(350, 0), new BitmapObjectData
+                { ImageAssetId = "opaque", PlacedSize = new SizeF(1000, 1000) });
+            scene.AddBitmapObject(0, new PointF(0, 100), new BitmapObjectData
+                { ImageAssetId = "opaque", PlacedSize = new SizeF(1500, 500),
+                    VisibleContours = [[new(0, 0), new(1, 0), new(1, 1), new(0, 1)],
+                        [new(.4f, .2f), new(.6f, .2f), new(.6f, .8f), new(.4f, .8f)]] });
+            scene.Argb[3] = Color.FromArgb(180, Color.White).ToArgb();
+            using var host = new Form { ClientSize = new Size(640, 480), ShowInTaskbar = false,
+                StartPosition = FormStartPosition.Manual, Location = new Point(-3000, -3000) };
+            using var stage = new StageControl(scene) { Dock = DockStyle.Fill,
+                BitmapImageResolver = _ => BitmapImageRasterizer.Decode(path, settings),
+                BitmapImageKeyResolver = _ => BitmapImageRasterizer.TryGetSourceKey(new FileInfo(path), settings, out var key) ? key : null };
+            host.Controls.Add(stage); host.Show(); Application.DoEvents(); PaintStage(stage);
+            var renderer = (Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!;
+            var shot = SceneShotSettings.Default with { Kind = SceneShotCameraKind.TwoD,
+                Projection = CameraProjection.Orthographic, OrthographicSize = 2200, X = 0, Y = 0, RotationDegrees = 0 };
+            var maximumDelta = 0;
+            foreach (var sample in new[] { BitmapSampling.Point, BitmapSampling.Linear })
+            foreach (var offset in new[] { PointF.Empty, new PointF(3.125f, -2.75f) })
+            {
+                stage.BitmapImageSamplingProvider = _ => sample;
+                scene.X[2] = 350 + offset.X; scene.Y[2] = offset.Y;
+                scene.RebuildGeometryIndex();
+                Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_OCCLUSION", "1");
+                AssertTimeline(renderer.TryCapturePlanarShotPreview(stage, shot, new Size(640, 480), null, out var reference)
+                    && reference is not null, "Occlusion reference GPU capture failed.");
+                using (reference)
+                {
+                    Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_OCCLUSION", null);
+                    var reads = BitmapImageRasterizer.SourceReadCount;
+                    typeof(BitmapImageRasterizer).GetMethod("EvictFor",
+                        System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!
+                        .Invoke(null, [512L * 1024 * 1024]);
+                    AssertTimeline(renderer.TryCapturePlanarShotPreview(stage, shot, new Size(640, 480), null, out var actual)
+                        && actual is not null, "Occlusion GPU capture failed after CPU eviction.");
+                    using (actual)
+                    {
+                        for (var y = 0; y < actual!.Height; y++)
+                        for (var x = 0; x < actual.Width; x++)
+                        {
+                            var a = actual.GetPixel(x, y); var b = reference!.GetPixel(x, y);
+                            maximumDelta = Math.Max(maximumDelta, Math.Max(Math.Abs(a.A - b.A), Math.Max(Math.Abs(a.R - b.R),
+                                Math.Max(Math.Abs(a.G - b.G), Math.Abs(a.B - b.B)))));
+                        }
+                    }
+                    AssertTimeline(BitmapImageRasterizer.SourceReadCount == reads,
+                        "A live GPU texture reread its evicted CPU source.");
+                    var covered = (HashSet<int>)RequireField(typeof(Direct2DStageRenderer), "_coveredBitmaps").GetValue(renderer)!;
+                    AssertTimeline(covered.Contains(0), "The occlusion pixel oracle did not exercise full coverage by multiple images.");
+                }
+            }
+            AssertTimeline(maximumDelta == 0, $"Opaque coverage changed visible pixels (delta={maximumDelta}).");
+            Console.WriteLine($"bitmap_opaque_occlusion_pixel_delta={maximumDelta} cpu_eviction_source_reads=0");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_OCCLUSION", policy);
+            BitmapImageRasterizer.ClearCache();
+            DeleteTemporaryDirectory(root);
+        }
     }
 
     private static void RunBitmapBackgroundDistortionRegression()
@@ -583,6 +677,269 @@ internal static partial class Benchmark
         top[0] = top[0] with { OutgoingControl = new PointF(top[0].OutgoingControl.X, -140) };
         var curve = new DistortWarp(source, new DistortEnvelope(top, envelope.Right, envelope.Bottom, envelope.Left));
         AssertTimeline(!curve.TryGetAffineTransform(out _), "Curved bitmap entered the affine path.");
+    }
+
+    private static void RunBitmapMoveFeedbackRegression()
+    {
+        const double budget = 1000d / 150;
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var rasters = new Dictionary<string, BitmapImageRaster>();
+        var fixture = Environment.GetEnvironmentVariable("VECTOR_BENCH_BITMAP_DRAG_PROJECT");
+        using var resolverHost = string.IsNullOrWhiteSpace(fixture) ? null : new MainForm();
+        Func<string, BitmapImageRaster?> resolve = id => rasters.GetValueOrDefault(id);
+        Func<string, StageControl, BitmapImageRaster?>? stageResolver = null;
+        Func<string, BitmapSampling> sampling = _ => BitmapSampling.Linear;
+        if (!string.IsNullOrWhiteSpace(fixture))
+        {
+            var (project, manifest) = ProjectPackageStore.OpenPackage(fixture);
+            RequireField(typeof(MainForm), "_project").SetValue(resolverHost, project);
+            RequireField(typeof(MainForm), "_projectManifestPath").SetValue(resolverHost, manifest);
+            stageResolver = RequireMethod(typeof(MainForm), "ResolveBitmapImageRasterForStage")
+                .CreateDelegate<Func<string, StageControl, BitmapImageRaster?>>(resolverHost);
+            sampling = RequireMethod(typeof(MainForm), "ResolveBitmapImageSampling")
+                .CreateDelegate<Func<string, BitmapSampling>>(resolverHost);
+            scene = project.DrawingObjects.Single().Scene;
+            foreach (var asset in project.ImageAssets)
+                rasters[asset.Id] = BitmapImageRasterizer.Decode(asset.SourcePath, asset.ImportSettings);
+        }
+        else
+        {
+            for (var i = 0; i < 43; i++)
+            {
+                var id = $"move-feedback-{i}";
+                var raster = new BitmapImageRaster(new BitmapImageRasterKey(id, 512, 256));
+                for (var p = 0; p < raster.Pixels.Length; p += 4)
+                {
+                    raster.Pixels[p] = 40; raster.Pixels[p + 1] = (byte)(80 + i);
+                    raster.Pixels[p + 2] = 180; raster.Pixels[p + 3] = 220;
+                }
+                rasters.Add(id, raster);
+                scene.AddBitmapObject(0, new PointF((i % 7 - 3) * 2400, (i / 7 - 3) * 1400),
+                    new BitmapObjectData { ImageAssetId = id, PlacedSize = new SizeF(3000, 1800) });
+            }
+        }
+        scene.CompleteDeferredBuild();
+        var indices = Enumerable.Range(0, scene.ObjectCount).ToArray();
+        AssertTimeline(indices.Length > 0 && indices.All(i => scene.ShapeKind[i] == ShapeKind.Bitmap),
+            "Bitmap movement fixture must contain visible bitmap objects.");
+        using var host = new Form { ClientSize = new Size(1920, 1080), ShowInTaskbar = false };
+        var lookups = 0;
+        var resolveMilliseconds = 0d;
+        using var stage = new StageControl(scene) { Dock = DockStyle.Fill,
+            BitmapImageSamplingProvider = sampling };
+        if (resolverHost is not null)
+            RequireMethod(typeof(MainForm), "BindStageBitmapImageResolvers").Invoke(resolverHost, [stage]);
+        stage.BitmapImageResolver = id =>
+        {
+            lookups++;
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            var raster = stageResolver is null ? resolve(id) : stageResolver(id, stage);
+            resolveMilliseconds += System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            return raster;
+        };
+        host.Controls.Add(stage);
+        host.Show();
+        var artworkBounds = indices.Select(scene.GetObjectWorldBounds).Aggregate(RectangleF.Union);
+        var visibleWidth = Math.Max(24000, Math.Max(artworkBounds.Width + 4000,
+            (artworkBounds.Height + 2000) * stage.Width / stage.Height));
+        stage.SetVisibleWorldWidth(visibleWidth);
+        stage.RestoreViewState(stage.CaptureViewState() with
+        {
+            CameraX = artworkBounds.Left + artworkBounds.Width * 0.5f,
+            CameraY = artworkBounds.Top + artworkBounds.Height * 0.5f,
+            Zoom = stage.Width * VectorUnits.UnitsPerPixel / visibleWidth
+        });
+        Console.WriteLine($"bitmap_selection_move_bounds={artworkBounds} visible_width={visibleWidth} hidden={indices.Count(i => scene.ObjectHidden[i])} active={indices.Count(i => scene.IsObjectActive(i, 0))}");
+        stage.SetSelectionState(indices, indices[^1], [], default);
+        stage.ConfigureSelectionArrows(new SelectionArrowSettings(), objectSelection: true);
+        Application.DoEvents();
+        var samples = new List<double>();
+        stage.Capture = true;
+        var originStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+        var originAllocated = GC.GetAllocatedBytesForCurrentThread();
+        stage.BeginSelectionMoveFeedback(indices);
+        var originMilliseconds = System.Diagnostics.Stopwatch.GetElapsedTime(originStarted).TotalMilliseconds;
+        var originBytes = GC.GetAllocatedBytesForCurrentThread() - originAllocated;
+        var ordinaryBitmaps = indices.Where(index => !scene.TryGetObjectDistortionsView(index, out _)
+            && scene.LayerOpacity[scene.ObjectLayer[index]] == 1f
+            && scene.IsLayerEffectivelyVisible(scene.ObjectLayer[index])
+            && !scene.IsLayerEffectivelyOutlined(scene.ObjectLayer[index])
+            && !scene.GetLayerSymbolFilters(scene.ObjectLayer[index]).HasEnabled).ToArray();
+        if (ordinaryBitmaps.Length > 1)
+            AssertTimeline(ordinaryBitmaps.Select(index => stage.SelectionMoveOrigins[index].Scene).Distinct().Count() == 1,
+                "Ordinary bitmap origins still allocate a complete scene per selected image.");
+        var origins = indices.Select(index => new PointF(scene.X[index], scene.Y[index])).ToArray();
+        Console.WriteLine(FormattableString.Invariant(
+            $"bitmap_selection_move_origin_setup_ms={originMilliseconds:0.###} allocated_bytes={originBytes}"));
+        var session = scene.BeginTransformSession(indices);
+        try
+        {
+            for (var frame = -8; frame < 100; frame++)
+            {
+                var phase = frame + 9;
+                lookups = 0;
+                resolveMilliseconds = 0;
+                var started = System.Diagnostics.Stopwatch.GetTimestamp();
+                scene.ApplyTranslationSessionForPreview(session, phase * 16, phase * 8);
+                PaintStage(stage);
+                var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                if (frame == -1) Console.WriteLine(FormattableString.Invariant(
+                    $"bitmap_selection_move_warm total_ms={elapsed:0.###} resolve_ms={resolveMilliseconds:0.###} render_ms={stage.LastFrameRenderMilliseconds:0.###} commands_ms={stage.LastDirect2DCommandMilliseconds:0.###} present_ms={stage.LastDirect2DPresentMilliseconds:0.###} cache_ms={stage.LastDirect2DCacheMaintenanceMilliseconds:0.###}"));
+                AssertTimeline(stage.LastFrameUsedDirect2D && stage.LastStats.DrawnObjects >= indices.Length
+                    && stage.SelectionMoveFeedbackActive && stage.SelectionMoveOrigins.Count == indices.Length,
+                    $"Bitmap movement omitted artwork, origin feedback or hardware rendering: frame={frame}, hardware={stage.LastFrameUsedDirect2D}, drawn={stage.LastStats.DrawnObjects}/{indices.Length}, feedback={stage.SelectionMoveFeedbackActive}, origins={stage.SelectionMoveOrigins.Count}.");
+                AssertTimeline(lookups <= rasters.Count,
+                    "Origin feedback and moving artwork resolved the same asset repeatedly within a paint.");
+                foreach (var index in indices)
+                {
+                    var origin = stage.SelectionMoveOrigins[index];
+                    AssertTimeline(origin.Scene.X[origin.ObjectIndex] == origins[index].X
+                        && origin.Scene.Y[origin.ObjectIndex] == origins[index].Y
+                        && origin.Scene.TryGetBitmapObjectData(origin.ObjectIndex, out var originalData)
+                        && scene.TryGetBitmapObjectData(index, out var movedData)
+                        && originalData.ImageAssetId == movedData.ImageAssetId,
+                        "A shared bitmap origin changed position, texture, or source-object mapping during dragging.");
+                }
+                if (frame >= 0) samples.Add(elapsed);
+            }
+            samples.Sort();
+            Console.WriteLine(FormattableString.Invariant(
+                $"bitmap_selection_move objects={indices.Length} viewport=1920x1080 origins=enabled warmup=8 samples=100 fixture={(string.IsNullOrWhiteSpace(fixture) ? "synthetic" : "package")} average_ms={samples.Average():0.###} p95_ms={samples[94]:0.###} max_ms={samples[^1]:0.###} fps={1000 / samples.Average():0.###}"));
+            Console.WriteLine($"bitmap_selection_move_budget_met={(samples.Average() < budget && samples[94] < budget && samples[^1] < budget).ToString().ToLowerInvariant()}");
+        }
+        finally
+        {
+            stage.ClearSelectionFillDragFront();
+            stage.Capture = false;
+        }
+        PaintStage(stage);
+        AssertTimeline(!stage.SelectionMoveFeedbackActive, "Bitmap movement retained origin feedback after release.");
+    }
+
+    private static void RunBitmapPointerMoveRegression()
+    {
+        var fixture = Environment.GetEnvironmentVariable("VECTOR_BENCH_BITMAP_DRAG_PROJECT");
+        if (string.IsNullOrWhiteSpace(fixture)) return;
+        var (project, manifest) = ProjectPackageStore.OpenPackage(fixture);
+        using var form = new MainForm { ClientSize = new Size(2560, 1400), ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual, Location = Point.Empty };
+        form.Show();
+        form.ClientSize = new Size(2560, 1400);
+        RequireMethod(typeof(MainForm), "LoadProjectDocument").Invoke(form, [project, manifest]);
+        var tabs = RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        tabs.GetType().GetProperty("SelectedView")!.SetValue(tabs, WorkspaceView.BasicDrawing);
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        form.ClientSize = new Size(form.ClientSize.Width + 1920 - stage.Width,
+            form.ClientSize.Height + 1080 - stage.Height);
+        form.PerformLayout();
+        var indices = Enumerable.Range(0, scene.ObjectCount).ToArray();
+        RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.ObjectSelect]);
+        RequireMethod(typeof(MainForm), "SetSelection", [typeof(IEnumerable<int>), typeof(bool), typeof(bool), typeof(bool)])
+            .Invoke(form, [indices, false, false, true]);
+        var bounds = indices.Select(scene.GetObjectWorldBounds).Aggregate(RectangleF.Union);
+        var viewWidth = Math.Max(bounds.Width, bounds.Height * stage.Width / stage.Height) * 1.25f;
+        stage.RestoreViewState(stage.CaptureViewState() with
+        {
+            CameraX = bounds.Left + bounds.Width * 0.5f,
+            CameraY = bounds.Top + bounds.Height * 0.5f,
+            Zoom = stage.Width * VectorUnits.UnitsPerPixel / viewWidth
+        });
+        Application.DoEvents();
+        PaintStage(stage);
+        var before = indices.Select(i => new PointF(scene.X[i], scene.Y[i])).ToArray();
+        var primary = indices[^1];
+        var start = Point.Round(stage.WorldToScreen(scene.X[primary], scene.Y[primary]));
+        var down = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var move = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var flush = RequireMethod(typeof(MainForm), "FlushLineDragPreview");
+        var up = RequireMethod(typeof(MainForm), "StageMouseUp");
+        down.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, start.X, start.Y, 0)]);
+        var samples = new List<double>();
+        var end = start;
+        var gcCounts = new[] { GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2) };
+        var allocatedStart = GC.GetAllocatedBytesForCurrentThread();
+        var loopAllocated = 0L;
+        var loopGc = "";
+        var warmSourceReads = 0L;
+        try
+        {
+            for (var sample = -8; sample < 100; sample++)
+            {
+                end = new Point(start.X + 6 + (sample + 8) % 20, start.Y + 6);
+                var rendered = stage.RenderedFrameCount;
+                var started = System.Diagnostics.Stopwatch.GetTimestamp();
+                move.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, end.X, end.Y, 0)]);
+                flush.Invoke(form, null);
+                var inputMilliseconds = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                if (stage.RenderedFrameCount == rendered) PaintStage(stage);
+                var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                AssertTimeline(stage.LastFrameUsedDirect2D && stage.LastStats.DrawnObjects >= indices.Length
+                    && stage.SelectionMoveFeedbackActive && stage.SelectedObjects.Count == indices.Length,
+                    "The editor pointer path lost the bitmap selection, origin feedback or hardware presentation.");
+                if (sample == -8)
+                {
+                    Console.WriteLine(FormattableString.Invariant($"bitmap_pointer_first_move_ms={elapsed:0.###}"));
+                    var firstOrigin = stage.SelectionMoveOrigins.Values.First();
+                    Console.WriteLine($"bitmap_pointer_frame={stage.Frame} shared_origins={stage.SelectionMoveOrigins.Values.Count(origin => origin.SharedBitmapScene)} origin_layer_effects={firstOrigin.Scene.HasDisplayLayerEffects} origin_active_at_stage_frame={firstOrigin.Scene.IsObjectActive(firstOrigin.ObjectIndex, stage.Frame)}");
+                }
+                if (sample == -1) Console.WriteLine(FormattableString.Invariant($"bitmap_pointer_warm input_ms={inputMilliseconds:0.###} render_ms={stage.LastFrameRenderMilliseconds:0.###} present_ms={stage.LastDirect2DPresentMilliseconds:0.###}"));
+                if (sample == -1) warmSourceReads = BitmapImageRasterizer.SourceReadCount;
+                if (sample == -1)
+                {
+                    var gpu = RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!;
+                    var entries = (System.Collections.IDictionary)RequireField(typeof(Direct2DStageRenderer), "_bitmapObjectCache").GetValue(gpu)!;
+                    Console.WriteLine($"bitmap_pointer_gpu_cache_entries={entries.Count} bytes={RequireField(typeof(Direct2DStageRenderer), "_bitmapObjectCacheBytes").GetValue(gpu)} source_reads={BitmapImageRasterizer.SourceReadCount} evictions={BitmapImageRasterizer.CacheEvictionCount}");
+                    var timings = (Direct2DStageRenderer)gpu;
+                    Console.WriteLine(FormattableString.Invariant($"bitmap_pointer_gpu_end_draw_ms={timings.DiagnosticEndDrawMilliseconds:0.###} swap_chain_present_ms={timings.DiagnosticSwapChainPresentMilliseconds:0.###}"));
+                }
+                if (sample >= 0) samples.Add(elapsed);
+            }
+            loopAllocated = GC.GetAllocatedBytesForCurrentThread() - allocatedStart;
+            Console.WriteLine($"bitmap_pointer_warm_source_reads={BitmapImageRasterizer.SourceReadCount - warmSourceReads}");
+            loopGc = $"{GC.CollectionCount(0) - gcCounts[0]}/{GC.CollectionCount(1) - gcCounts[1]}/{GC.CollectionCount(2) - gcCounts[2]}";
+            var renderer = (Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!;
+            Console.WriteLine($"bitmap_pointer_selection_commands={renderer.SelectionCommandBuilds}/{renderer.SelectionCommandReuses} uniform={stage.TryGetBitmapMoveSelectionTranslation(out _)}");
+            var outlineCacheField = RequireField(typeof(StageControl), "_bitmapMoveOutlineContours");
+            var outlineCache = outlineCacheField.GetValue(stage);
+            var translated = indices.ToDictionary(i => i, i => stage.GetObjectArrowSelectionContours(i)
+                .SelectMany(contour => contour).OrderBy(point => point.X).ThenBy(point => point.Y).ToArray());
+            var maximumOutlineError = 0f;
+            try
+            {
+                outlineCacheField.SetValue(stage, null);
+                foreach (var index in indices)
+                {
+                    var exhaustive = stage.GetObjectArrowSelectionContours(index).SelectMany(contour => contour)
+                        .OrderBy(point => point.X).ThenBy(point => point.Y).ToArray();
+                    AssertTimeline(exhaustive.Length == translated[index].Length,
+                        "Bitmap movement outline reuse changed visible outline topology.");
+                    for (var point = 0; point < exhaustive.Length; point++)
+                        maximumOutlineError = Math.Max(maximumOutlineError, Math.Max(
+                            Math.Abs(exhaustive[point].X - translated[index][point].X),
+                            Math.Abs(exhaustive[point].Y - translated[index][point].Y)));
+                }
+            }
+            finally { outlineCacheField.SetValue(stage, outlineCache); }
+            AssertTimeline(maximumOutlineError <= 0.02f,
+                "Bitmap movement outline reuse changed the exhaustive visible contours.");
+            Console.WriteLine(FormattableString.Invariant($"bitmap_pointer_outline_oracle_max_world_error={maximumOutlineError:0.######}"));
+        }
+        finally { up.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, end.X, end.Y, 0)]); }
+        samples.Sort();
+        const double budget = 1000d / 150;
+        Console.WriteLine(FormattableString.Invariant(
+            $"bitmap_pointer_move objects={indices.Length} viewport={stage.Width}x{stage.Height} path=StageMouseMove+Flush+present warmup=8 samples=100 average_ms={samples.Average():0.###} p95_ms={samples[94]:0.###} max_ms={samples[^1]:0.###} fps={1000 / samples.Average():0.###}"));
+        Console.WriteLine($"bitmap_pointer_move_budget_met={(samples.Average() < budget && samples[94] < budget && samples[^1] < budget).ToString().ToLowerInvariant()}");
+        Console.WriteLine($"bitmap_pointer_move_gc={loopGc} allocated_bytes={loopAllocated}");
+        AssertTimeline(indices.Any(i => scene.X[i] != before[i].X || scene.Y[i] != before[i].Y)
+            && !stage.SelectionMoveFeedbackActive, "The editor pointer drag did not commit and clear its origin feedback.");
+        AssertTimeline(RequireMethod(typeof(MainForm), "UndoLastEdit").Invoke(form, null) is true,
+            "The editor bitmap drag created no undo step.");
+        AssertTimeline(indices.All(i => scene.X[i] == before[i].X && scene.Y[i] == before[i].Y),
+            "Undo failed to restore every bitmap after the measured editor pointer drag.");
+        Console.WriteLine("bitmap_pointer_move_commit_undo=ok");
     }
 
     private static void RunThousandBitmapInteractionRegression()

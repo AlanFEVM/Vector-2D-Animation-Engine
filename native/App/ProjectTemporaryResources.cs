@@ -9,12 +9,27 @@ internal static class ProjectTemporaryResources
     private static readonly Dictionary<string, FileStream> Leases = new(StringComparer.OrdinalIgnoreCase);
     private static readonly string Parent = Path.Combine(Path.GetTempPath(), "Vector2DAnimationEngine", "Projects");
 
-    internal static void RejectReparsePath(string path)
+    internal static void RejectReparsePath(string path) => RejectReparsePath(path, null);
+
+    // The caller owns this short-lived, read-only resolution batch. Do not use
+    // it for writes or persist it between paints: directories may be replaced.
+    internal static void RejectReparsePath(string path, ISet<string>? validatedPaths)
     {
+        List<string>? checkedPaths = validatedPaths is null ? null : [];
         for (var current = Path.GetFullPath(path); current is not null; current = Path.GetDirectoryName(current))
-            if ((File.Exists(current) || Directory.Exists(current))
-                && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
-                throw new InvalidDataException("Resource paths cannot contain filesystem reparse points.");
+        {
+            if (validatedPaths?.Contains(current) == true) break;
+            if (File.Exists(current) || Directory.Exists(current))
+            {
+                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException("Resource paths cannot contain filesystem reparse points.");
+                checkedPaths?.Add(current);
+            }
+        }
+        // Publish only after the entire ancestry passed. A rejected ancestor
+        // must never leave a trusted descendant behind for the next asset.
+        if (checkedPaths is not null)
+            foreach (var checkedPath in checkedPaths) validatedPaths!.Add(checkedPath);
     }
 
     internal static string Ensure(string projectId)

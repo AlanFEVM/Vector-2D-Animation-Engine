@@ -6,6 +6,8 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class Direct2DStageRenderer
 {
+    private readonly int[] _singleBitmapOrigin = [0];
+
     private void DrawSelectionMoveObject(StageControl stage, int objectIndex, SceneRenderPass pass)
     {
         var contours = stage.GetSelectionMoveOcclusionContours(objectIndex, pass);
@@ -53,12 +55,35 @@ internal sealed partial class Direct2DStageRenderer
         {
             try
             {
+                var origins = stage.SelectionMoveOrigins.Values;
+                var first = origins.First();
+                if (!first.Scene.HasDisplayLayerEffects
+                    && origins.All(origin => origin.SharedBitmapScene && ReferenceEquals(origin.Scene, first.Scene))
+                    && stage.SelectionMoveOrigins.Keys.All(index => stage.SelectionMoveOriginClips(index).Length == 0)
+                    && TryDrawAffineBitmapLayer(stage, first.Scene,
+                        origins.Select(origin => origin.ObjectIndex).ToArray(), 0)) return;
                 foreach (var entry in stage.SelectionMoveOrigins)
                 {
                     DrawOriginClipped(stage.SelectionMoveOriginClips(entry.Key), 0, () =>
                     {
-                        stage.Scene = entry.Value;
-                        try { DrawScene(stage, int.MaxValue, forceObjectRenderer: true); }
+                        var origin = entry.Value.Scene;
+                        _singleBitmapOrigin[0] = entry.Value.ObjectIndex;
+                        // A simple bitmap origin needs no scene collection or
+                        // binding. Keep the enclosing origin-opacity and clip
+                        // layers; complex layers retain the complete scene path.
+                        if (!origin.HasDisplayLayerEffects
+                            && origin.ShouldRenderLayerContent(0)
+                            && origin.IsObjectActive(entry.Value.ObjectIndex, stage.Frame)
+                            && origin.LayerOpacity[0] == 1f
+                            && !origin.GetLayerSymbolFilters(0).HasEnabled
+                            && TryDrawAffineBitmapLayer(stage, origin, _singleBitmapOrigin, 0)) return;
+                        stage.Scene = origin;
+                        try
+                        {
+                            if (entry.Value.SharedBitmapScene)
+                                DrawObjectUnclipped(stage, entry.Value.ObjectIndex, SceneRenderPass.Fill);
+                            else DrawScene(stage, int.MaxValue, forceObjectRenderer: true);
+                        }
                         finally { stage.Scene = source; }
                     });
                 }

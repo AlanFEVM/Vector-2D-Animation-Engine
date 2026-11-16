@@ -136,7 +136,7 @@ internal sealed class BrushTipPanel : UserControl
             if (!_updating) HardnessChanged?.Invoke(this, EventArgs.Empty);
         };
         AddSettingRow("Hard", _hardness, _hardnessValue);
-        ConfigureSlider(_pressureSmoothing, 0, 100, 70, 20);
+        ConfigureSlider(_pressureSmoothing, 0, FreehandStrokeProcessor.MaximumBrushSmoothing, 70, 20);
         _pressureSmoothing.AccessibleName = "Brush curve smoothing";
         _pressureSmoothing.AccessibleDescription = "Fit smoother curves with fewer editable segments";
         _pressureSmoothing.ValueChanged += (_, _) =>

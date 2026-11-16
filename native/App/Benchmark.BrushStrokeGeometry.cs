@@ -9,6 +9,7 @@ internal static partial class Benchmark
     {
         RunBrushGeometryCurvedTips();
         RunBrushGeometrySmoothing();
+        RunBrushCurveSmoothnessRegression();
         RunBrushGeometrySinglePoints();
         RunBrushGeometryPressure();
         RunBrushGeometryPreparedProfileAndTrajectory();
@@ -467,6 +468,56 @@ internal static partial class Benchmark
         var otherIds = BrushStrokeBuilder.AddStroke(otherFrequency, 0, points, 100, Color.Black, shape, 100, 25, frequency: 24);
         AssertBrushGeometrySamePaths(smooth, smoothIds, otherFrequency, otherIds,
             "Continuous swept geometry must not depend on the stamp frequency.");
+    }
+
+    private static void RunBrushCurveSmoothnessRegression()
+    {
+        var samples = Enumerable.Range(0, 129).Select(index =>
+            new PointF(index * 50, MathF.Sin(index * 0.35f) * 80)).ToArray();
+        var trajectory = BrushStrokeBuilder.ProcessTrajectory(samples, 100, 1);
+        double originalWobble = 0;
+        double filteredWobble = 0;
+        for (var index = 24; index < samples.Length - 24; index++)
+        {
+            originalWobble += samples[index].Y * samples[index].Y;
+            var error = BrushGeometryPolylineDistance(new PointF(samples[index].X, 0), trajectory);
+            filteredWobble += error * error;
+        }
+        AssertBrushGeometry(filteredWobble < originalWobble * 0.25
+            && trajectory[0] == VectorUnits.Quantize(samples[0])
+            && trajectory[^1] == VectorUnits.Quantize(samples[^1]),
+            "Brush smoothing retained broad hand wobble or moved a stroke endpoint.");
+
+        var smoothJoins = RequireMethod(typeof(BrushStrokeBuilder), "SmoothContourJoins",
+            [typeof(PathBezierNode[]), typeof(HashSet<PointF>), typeof(float)],
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+        PathBezierNode[] original =
+        [
+            new(new PointF(0, 0), new PointF(-30, -3), new PointF(30, -3)),
+            new(new PointF(100, 0), new PointF(70, -3), new PointF(130, -3)),
+            new(new PointF(200, 0), new PointF(170, -30), new PointF(230, -30))
+        ];
+        var nodes = original.ToArray();
+        var corners = new HashSet<PointF> { original[1].Anchor };
+        smoothJoins.Invoke(null, [nodes, corners, 32f]);
+        var incoming = new PointF(nodes[0].Anchor.X - nodes[0].IncomingControl.X,
+            nodes[0].Anchor.Y - nodes[0].IncomingControl.Y);
+        var outgoing = new PointF(nodes[0].OutgoingControl.X - nodes[0].Anchor.X,
+            nodes[0].OutgoingControl.Y - nodes[0].Anchor.Y);
+        AssertBrushGeometry(Math.Abs(incoming.X * outgoing.Y - incoming.Y * outgoing.X) < 0.001f
+            && incoming.X * outgoing.X + incoming.Y * outgoing.Y > 0
+            && nodes[0].Anchor == original[0].Anchor
+            && nodes[1] == original[1] && nodes[2] == original[2],
+            "Smooth contour joins retained a tangent kink, moved an anchor or rounded a real corner.");
+        for (var index = 0; index < nodes.Length; index++)
+            AssertBrushGeometry(BrushGeometryDistance(nodes[index].IncomingControl, original[index].IncomingControl) <= 4
+                && BrushGeometryDistance(nodes[index].OutgoingControl, original[index].OutgoingControl) <= 4,
+                "Contour tangent alignment exceeded its reserved fitting error.");
+        nodes = original.ToArray();
+        smoothJoins.Invoke(null, [nodes, corners, 1f]);
+        AssertBrushGeometry(nodes.SequenceEqual(original),
+            "Contour alignment ignored a tight error bound.");
+        Console.WriteLine("brush_curve_smoothness=ok,broad_wobble=attenuated,tangents=aligned,corners=preserved");
     }
 
     private static void RunBrushGeometrySinglePoints()

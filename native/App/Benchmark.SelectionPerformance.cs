@@ -48,6 +48,9 @@ internal static partial class Benchmark
         try
         {
             Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", null);
+            RunBitmapOpaqueOcclusionRegression();
+            RunBitmapMoveFeedbackRegression();
+            RunBitmapPointerMoveRegression();
             RunThousandBitmapInteractionRegression();
             RunLargeSelectionFrameRateRegressionCore();
             Console.Out.Flush();

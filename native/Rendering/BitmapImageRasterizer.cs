@@ -98,8 +98,28 @@ internal static class BitmapImageRasterizer
     private static long _cacheMissCount;
     private static long _cacheEvictionCount;
     private static readonly ConditionalWeakTable<BitmapObjectData, string> ClipKeys = new();
+    private static readonly HashSet<BitmapImageRasterKey> OpaqueSources = [];
 
-    internal static BitmapImageRaster ApplyObjectClip(BitmapImageRaster source, BitmapObjectData data)
+    internal static bool IsKnownOpaqueSource(BitmapImageRasterKey key)
+    {
+        lock (CacheSync) return OpaqueSources.Contains(key);
+    }
+
+    internal static bool TryGetSourceKey(FileInfo file, BitmapImageImportSettings settings, out BitmapImageRasterKey key)
+    {
+        key = default;
+        if (!settings.IsValid || !file.Exists) return false;
+        var stamp = new SourceStamp(file.Length, file.LastWriteTimeUtc, file.CreationTimeUtc);
+        lock (CacheSync)
+        {
+            if (!SourceCache.TryGetValue(new(file.FullName.ToUpperInvariant(), settings), out var source)
+                || source.Stamp != stamp) return false;
+            key = source.RasterKey;
+            return true;
+        }
+    }
+
+    internal static BitmapImageRasterKey ObjectClipKey(BitmapImageRasterKey source, BitmapObjectData data)
     {
         if (data.VisibleContours is not { } contours) return source;
         if (contours is [{ Length: 4 } full] && full[0] == new PointF(0, 0)
@@ -107,7 +127,15 @@ internal static class BitmapImageRasterizer
         var clipKey = ClipKeys.GetValue(data, value => Convert.ToHexString(SHA256.HashData(
             System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(value.VisibleContours,
                 new System.Text.Json.JsonSerializerOptions { IncludeFields = true }))));
-        var key = source.Key with { ContentSha256 = source.Key.ContentSha256 + ":clip:" + clipKey };
+        return source with { ContentSha256 = source.ContentSha256 + ":clip:" + clipKey };
+    }
+
+    internal static BitmapImageRaster ApplyObjectClip(BitmapImageRaster source, BitmapObjectData data)
+    {
+        if (data.VisibleContours is not { } contours) return source;
+        if (contours is [{ Length: 4 } full] && full[0] == new PointF(0, 0)
+            && full[1] == new PointF(1, 0) && full[2] == new PointF(1, 1) && full[3] == new PointF(0, 1)) return source;
+        var key = ObjectClipKey(source.Key, data);
         lock (CacheSync)
         {
             if (RasterCache.TryGetValue(key, out var cached))
@@ -201,7 +229,15 @@ internal static class BitmapImageRasterizer
     /// can downscale and pad to a power of two; they never upscale, because enlarging an
     /// imported source destroys detail the renderer cannot recover.
     /// </summary>
-    internal static BitmapImageRaster Decode(string fullPath, BitmapImageImportSettings settings)
+    internal static BitmapImageRaster Decode(string fullPath, BitmapImageImportSettings settings) =>
+        DecodeSource(fullPath, settings, null);
+
+    // A render lookup has just read these attributes to validate the resource
+    // path. Reuse that per-lookup metadata, never a stamp from an earlier frame.
+    internal static BitmapImageRaster Decode(FileInfo source, BitmapImageImportSettings settings) =>
+        DecodeSource(source.FullName, settings, source);
+
+    private static BitmapImageRaster DecodeSource(string fullPath, BitmapImageImportSettings settings, FileInfo? sourceMetadata)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fullPath);
         if (!settings.IsValid)
@@ -211,7 +247,7 @@ internal static class BitmapImageRasterizer
 
         Interlocked.Increment(ref _decodeCallCount);
         fullPath = Path.GetFullPath(fullPath);
-        var file = ValidateSourceFile(fullPath);
+        var file = ValidateSourceFile(fullPath, sourceMetadata);
         var stamp = new SourceStamp(file.Length, file.LastWriteTimeUtc, file.CreationTimeUtc);
         var sourceKey = new SourceCacheKey(fullPath.ToUpperInvariant(), settings);
         lock (CacheSync)
@@ -257,6 +293,14 @@ internal static class BitmapImageRasterizer
             }
 
             ApplyAlphaSource(raster.Pixels, settings.AlphaSource);
+            var opaque = true;
+            for (var offset = 3; offset < raster.Pixels.Length; offset += 4)
+                if (raster.Pixels[offset] != 255) { opaque = false; break; }
+            if (opaque)
+            {
+                if (OpaqueSources.Count >= MaxCacheEntries) OpaqueSources.Remove(OpaqueSources.First());
+                OpaqueSources.Add(key);
+            }
 
             var cacheBytes = raster.Pixels.LongLength;
             EvictFor(cacheBytes);
@@ -285,6 +329,7 @@ internal static class BitmapImageRasterizer
         {
             RasterCache.Clear();
             SourceCache.Clear();
+            OpaqueSources.Clear();
             _cacheBytes = 0;
         }
     }
@@ -314,9 +359,9 @@ internal static class BitmapImageRasterizer
         return (width, height);
     }
 
-    private static FileInfo ValidateSourceFile(string fullPath)
+    private static FileInfo ValidateSourceFile(string fullPath, FileInfo? source = null)
     {
-        var file = new FileInfo(fullPath);
+        var file = source ?? new FileInfo(fullPath);
         if (!file.Exists)
         {
             throw new InvalidDataException("The image file no longer exists.");

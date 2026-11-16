@@ -1273,6 +1273,32 @@ internal sealed partial class StageControl : Control
     /// which case the renderer draws nothing rather than a placeholder.
     /// </summary>
     internal Func<string, BitmapImageRaster?>? BitmapImageResolver { get; set; }
+    internal Func<string, BitmapImageRasterKey?>? BitmapImageKeyResolver { get; set; }
+    private readonly Dictionary<string, BitmapImageRasterKey?> _paintBitmapKeys = new(StringComparer.Ordinal);
+
+    internal bool TryGetBitmapImageKey(string assetId, out BitmapImageRasterKey key)
+    {
+        key = default;
+        if (BitmapImageKeyResolver is null) return false;
+        if (!_paintInProgress || !_paintBitmapKeys.TryGetValue(assetId, out var resolved))
+        {
+            resolved = BitmapImageKeyResolver(assetId);
+            if (_paintInProgress) _paintBitmapKeys[assetId] = resolved;
+        }
+        if (resolved is not { } value) return false;
+        key = value;
+        return true;
+    }
+
+    // Origin feedback, artwork and software fallback share one asset lookup per
+    // paint. Never retain it across paints: file/settings/provider changes must
+    // be observed on the next frame, and idle stages must not pin decoded pixels.
+    private readonly Dictionary<string, BitmapImageRaster?> _paintBitmapImages = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _paintBitmapValidatedPaths = new(StringComparer.OrdinalIgnoreCase);
+    internal ISet<string>? PaintBitmapValidatedPaths => _paintInProgress ? _paintBitmapValidatedPaths : null;
+    private readonly Dictionary<string, Dictionary<string, FileInfo>?> _paintBitmapDirectoryFiles = new(StringComparer.OrdinalIgnoreCase);
+    internal Dictionary<string, Dictionary<string, FileInfo>?>? PaintBitmapDirectoryFiles =>
+        _paintInProgress && SelectionMoveFeedbackActive && SelectedObjects.Count >= 8 ? _paintBitmapDirectoryFiles : null;
 
     /// <summary>
     /// Host-supplied sampling mode for an image asset, derived from its import filter mode.
@@ -1284,7 +1310,11 @@ internal sealed partial class StageControl : Control
     {
         raster = null!;
         if (string.IsNullOrWhiteSpace(imageAssetId) || BitmapImageResolver is null) return false;
-        var resolved = BitmapImageResolver(imageAssetId);
+        if (!_paintInProgress || !_paintBitmapImages.TryGetValue(imageAssetId, out var resolved))
+        {
+            resolved = BitmapImageResolver(imageAssetId);
+            if (_paintInProgress) _paintBitmapImages[imageAssetId] = resolved;
+        }
         if (resolved is null) return false;
         raster = resolved;
         return true;
@@ -3225,6 +3255,10 @@ internal sealed partial class StageControl : Control
         finally
         {
             _paintInProgress = false;
+            _paintBitmapImages.Clear();
+            _paintBitmapKeys.Clear();
+            _paintBitmapValidatedPaths.Clear();
+            _paintBitmapDirectoryFiles.Clear();
         }
 
         if (rendered)
