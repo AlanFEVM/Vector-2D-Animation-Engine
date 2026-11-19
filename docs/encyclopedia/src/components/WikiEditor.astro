@@ -1,0 +1,47 @@
+---
+const title = Astro.locals.starlightRoute.entry.data.title;
+---
+<span data-wiki-actions hidden><button data-open-editor="rich">普通编辑</button><button data-open-editor="source">源码编辑</button></span>
+<dialog id="wiki-editor" aria-labelledby="edit-heading">
+  <header><h2 id="edit-heading">编辑：{title}</h2><button data-close aria-label="关闭">×</button></header>
+  <nav aria-label="编辑模式"><button data-mode="rich">普通编辑</button><button data-mode="source">源码编辑</button><button data-mode="preview">预览</button></nav>
+  <div data-format><button data-command="strong" title="加粗" aria-label="加粗"><b>B</b></button><button data-command="em" title="斜体" aria-label="斜体"><i>I</i></button><button data-command="heading" title="二级标题">H2</button><button data-command="paragraph" title="正文">¶</button></div>
+  <div data-rich></div><textarea data-source aria-label="Markdown 源码" spellcheck="false" hidden></textarea><div data-preview hidden></div>
+  <footer><output aria-live="polite"></output><button data-cancel>取消</button><button data-save>保存</button></footer>
+</dialog>
+<script>
+  const actions = document.querySelector<HTMLElement>('[data-wiki-actions]');
+  const api = '/_wiki/article?page=' + encodeURIComponent(location.pathname.replace(/\/?$/, '/'));
+  if (actions && location.hostname === '127.0.0.1') {
+    fetch(api).then(async response => {
+      if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) return;
+      actions.hidden = false;
+      actions.addEventListener('click', async event => {
+        const button = (event.target as Element).closest<HTMLButtonElement>('[data-open-editor]');
+        if (button) (await import('../wiki-editor')).openEditor(api, button.dataset.openEditor!);
+      });
+    }).catch(() => {});
+  }
+</script>
+<style is:global>
+  [data-wiki-actions][hidden], #wiki-editor [hidden] { display:none; }
+  .wiki-page-tools { flex-wrap:wrap; }
+  .wiki-page-tools [data-wiki-actions] { padding:0; }
+  [data-wiki-actions] button { border:0; padding:8px; background:transparent; color:#0645ad; cursor:pointer; }
+  #wiki-editor { box-sizing:border-box; position:fixed; inset:0; margin:auto; width:min(56rem,96vw); height:min(46rem,94dvh); max-height:94dvh; padding:0; border:1px solid #87969f; color:#17232b; background:#fff; }
+  #wiki-editor[open] { display:flex; flex-direction:column; }
+  #wiki-editor::backdrop { background:#10182088; }
+  #wiki-editor header, #wiki-editor nav, #wiki-editor footer, #wiki-editor [data-format] { position:static; display:flex; align-items:center; gap:6px; padding:8px 14px; border-bottom:1px solid #c9d0d5; background:#eff4f6; }
+  #wiki-editor header { justify-content:space-between; }
+  #wiki-editor h2 { font-size:18px; margin:0; }
+  #wiki-editor button { cursor:pointer; background:white; border:1px solid #b4bec4; color:#243740; border-radius:3px; padding:4px 10px; }
+  #wiki-editor [aria-pressed=true], #wiki-editor [data-save] { background:#16604e; border-color:#16604e; color:white; }
+  #wiki-editor button:disabled { opacity:.55; cursor:wait; }
+  #wiki-editor [data-rich], #wiki-editor textarea, #wiki-editor [data-preview] { flex:1; min-height:0; overflow:auto; padding:16px 20px; width:100%; }
+  #wiki-editor textarea { resize:none; font:14px/1.65 Consolas,monospace; border:0; background:white; color:#17232b; }
+  #wiki-editor .ProseMirror { min-height:100%; outline:none; white-space:pre-wrap; overflow-wrap:anywhere; }
+  #wiki-editor :is(.ProseMirror,[data-preview]) > * { margin-block:0 .7em; }
+  #wiki-editor img { max-width:100%; }
+  #wiki-editor footer { border-block:1px solid #c9d0d5 0; }
+  #wiki-editor output { flex:1; font-size:13px; }
+</style>

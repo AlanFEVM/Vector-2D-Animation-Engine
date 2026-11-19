@@ -1,0 +1,28 @@
+{
+  "name": "vector2d-encyclopedia",
+  "private": true,
+  "type": "module",
+  "version": "0.0.1",
+  "scripts": {
+    "predev": "node scripts/sync-manual.mjs",
+    "dev": "astro dev",
+    "prebuild": "node scripts/sync-manual.mjs",
+    "build": "astro build",
+    "preview": "node scripts/wiki-server.mjs",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.43.1",
+    "astro": "^7.3.6",
+    "mdast-util-from-markdown": "^2.1.0",
+    "prosemirror-commands": "^1.7.2",
+    "prosemirror-history": "^1.5.1",
+    "prosemirror-keymap": "^1.2.3",
+    "prosemirror-markdown": "^1.13.9",
+    "prosemirror-model": "^1.25.13",
+    "prosemirror-state": "^1.4.4",
+    "prosemirror-view": "^1.42.9",
+    "sharp": "^0.35.3",
+    "sirv": "^3.0.2"
+  }
+}

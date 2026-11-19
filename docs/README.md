@@ -4,6 +4,8 @@ This directory separates current product behavior from version-specific history.
 
 ## Current Documentation
 
+- [机制百科（Starlight 预览）](encyclopedia/README.md)：机制分类索引与本地预览方式。
+
 - [中文图文使用手册（HTML）](manual/index.html): practical workflows with real application screenshots; [portable single-file edition](manual/用户使用手册-单文件版.html).
 
 - [User Guide](USER_GUIDE.md): current source behavior, workflows, shortcuts, troubleshooting, and limitations.

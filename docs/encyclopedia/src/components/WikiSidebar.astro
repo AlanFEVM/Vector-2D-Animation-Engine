@@ -1,0 +1,20 @@
+---
+const community = { title: '社区', items: [['百科首页', '/'], ['编辑手册', '/edit-guide/'], ['图文使用手册', '/manual/'], ['加入 QQ 群', '/#加入-qq-群']] };
+const authorProject = { title: '作者与项目', items: [['作者与贡献', '/#作者与贡献'], ['项目来历', '/#项目来历'], ['创作定位', '/#创作定位'], ['核心理念', '/#核心理念'], ['当前阶段', '/#当前阶段']] };
+---
+<div class="wiki-sidebar">
+  <a href="/" class="wiki-brand"><img src="/vector2d.ico" alt="" width="64" height="64" /><strong>VECTOR 2D</strong><span>机制百科</span></a>
+  <div class="wiki-side-scroll wiki-community-scroll">
+    <details open class="wiki-portal"><summary>{community.title}</summary><ul>{community.items.map(([label, href]) => <li><a href={href} aria-current={href === Astro.url.pathname ? 'page' : undefined}>{label}</a></li>)}</ul></details>
+  </div>
+  <div class="wiki-side-scroll wiki-author-scroll">
+    <details open class="wiki-portal"><summary>{authorProject.title}</summary><ul>{authorProject.items.map(([label, href]) => <li><a href={href} aria-current={href === Astro.url.pathname ? 'page' : undefined}>{label}</a></li>)}</ul></details>
+  </div>
+</div>
+<script>
+  document.querySelector('.wiki-sidebar')?.addEventListener('click', (event) => {
+    if ((event.target as HTMLElement).closest('a') && matchMedia('(max-width: 49.99em)').matches) {
+      document.querySelector<HTMLElement>('#starlight__sidebar')?.hidePopover();
+    }
+  });
+</script>

@@ -1,0 +1,10 @@
+---
+import WikiEditor from './WikiEditor.astro';
+import HomeIntro from './HomeIntro.astro';
+
+const title = Astro.locals.starlightRoute.entry.data.title;
+---
+<div class="wiki-page-tools"><span>页面</span><WikiEditor /><a href="/entry-template/">词条模板</a><a href="/edit-guide/">编辑手册</a><a href="/manual/">使用手册</a><span class="wiki-language">简体中文</span></div>
+<h1 id="_top">{title}</h1>
+<p class="wiki-subtitle">来自 Vector 2D 机制百科</p>
+{Astro.url.pathname === '/' && <HomeIntro />}

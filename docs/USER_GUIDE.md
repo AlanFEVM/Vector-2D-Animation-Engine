@@ -5,6 +5,11 @@
 
 面向创作者的操作入门请阅读 [中文图文使用手册（HTML）](manual/index.html)，包含实机截图、绘制与动画步骤，以及可离线传递的单文件版本。
 
+打开本地百科词条后，使用“普通编辑”修改排版后的正文，或使用“源码编辑”修改 Markdown。两种模式都支持预览；保存后更新本地词条和搜索索引。 / In the local wiki, edit the formatted article or its Markdown source, preview it, and save to update the article and search index.
+
+手册右上角的“机制百科”可打开本地百科预览，首页包含项目来历与定位介绍、作者与贡献信息、社区入口和搜索；启动方式见 [百科说明](encyclopedia/README.md)。具体机制正文尚未编写。
+The manual's top-right Wiki link opens the local encyclopedia preview. Its homepage contains the project origin and positioning, author and contribution information, community entry points and search. See the [preview instructions](encyclopedia/README.md) to start it. Detailed mechanism articles are not yet written.
+
 开启“吸附”和“紧贴”后，绘制线段或拖动线段端点时，会轻吸附到水平、15°、30°、45°、60°、垂直及其镜像方向。角度偏差不超过 4° 且端点修正距离在当前屏幕吸附容差内时才生效，远离目标方向后自由绘制；拖动端点以线段另一端为基准。对象／辅助线吸附与 C 键端点连接优先，Shift 或显式角度吸附仍按角度步长约束。
 With Snap and Tight Fit enabled, line drawing and endpoint drags gently snap to horizontal, 15°, 30°, 45°, 60°, vertical and mirrored directions. Both a 4° angular limit and the current screen tolerance apply. Endpoint drags use the opposite endpoint as origin. Object/guide snapping and C endpoint connection take priority; Shift and explicit angle snapping retain the configured angle step.
 
