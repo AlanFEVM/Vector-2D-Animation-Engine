@@ -103,6 +103,7 @@ a:hover { text-decoration: underline; }
   .wiki-controls-images { width: min(100%, 36rem); }
   .wiki-section-images:has(img[src='/images/main-menu-and-project-name.png']) { width: min(100%, 32rem); }
   .wiki-timeline-images { width: 100%; }
+  .sl-markdown-content table :is(th, td):first-child { white-space: normal; min-width: 7rem; }
 }
 .wiki-page-tools { display: flex; gap: 0; align-items: center; font-size: 13px; border-bottom: 1px solid #a8b3bc; min-height: 42px; margin-bottom: 14px; }
 .wiki-page-tools > a, .wiki-page-tools > span { padding: 9px 15px; }

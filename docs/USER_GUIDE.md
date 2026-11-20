@@ -7,6 +7,8 @@
 
 打开本地百科词条后，使用“普通编辑”修改排版后的正文，或使用“源码编辑”修改 Markdown。两种模式都支持预览；保存后更新本地词条和搜索索引。 / In the local wiki, edit the formatted article or its Markdown source, preview it, and save to update the article and search index.
 
+百科的工作区介绍在简介下方显示本页目录和工作区、启动画面两张配图；目录可收起，配图可点击在当前页放大，支持切换实际大小与适应窗口、打开原图；按 Esc、点击关闭或遮罩返回正文，并保留阅读位置。 / The wiki workspace article shows a collapsible table of contents and two images below its introduction: the workspace and startup screen. Click an article figure to preview it in place, switch between actual size and fit, or open the original. Press Esc, use Close, or click the backdrop to return without losing your reading position.
+
 手册右上角的“机制百科”可打开本地百科预览，首页包含项目来历与定位介绍、作者与贡献信息、社区入口和搜索；启动方式见 [百科说明](encyclopedia/README.md)。具体机制正文尚未编写。
 The manual's top-right Wiki link opens the local encyclopedia preview. Its homepage contains the project origin and positioning, author and contribution information, community entry points and search. See the [preview instructions](encyclopedia/README.md) to start it. Detailed mechanism articles are not yet written.
 

@@ -1,0 +1,82 @@
+---
+---
+<dialog class="wiki-image-viewer" aria-labelledby="wiki-image-caption">
+  <header>
+    <p id="wiki-image-caption"></p>
+    <div class="wiki-image-actions">
+      <button type="button" data-image-scale aria-pressed="false">实际大小</button>
+      <a data-image-original target="_blank" rel="noopener">打开原图 ↗</a>
+      <button type="button" data-image-close autofocus aria-label="关闭图片预览">关闭 ×</button>
+    </div>
+  </header>
+  <div class="wiki-image-stage"><img alt="" /></div>
+</dialog>
+<script>
+  const viewer = document.querySelector<HTMLDialogElement>('.wiki-image-viewer');
+  if (viewer) {
+    const image = viewer.querySelector<HTMLImageElement>('img')!;
+    const caption = viewer.querySelector<HTMLElement>('#wiki-image-caption')!;
+    const original = viewer.querySelector<HTMLAnchorElement>('[data-image-original]')!;
+    const scale = viewer.querySelector<HTMLButtonElement>('[data-image-scale]')!;
+    const stage = viewer.querySelector<HTMLElement>('.wiki-image-stage')!;
+    let source: HTMLAnchorElement | undefined;
+    const fit = () => {
+      viewer.classList.remove('wiki-image-actual');
+      scale.setAttribute('aria-pressed', 'false');
+      scale.textContent = '实际大小';
+      stage.scrollTo(0, 0);
+    };
+    document.querySelectorAll<HTMLAnchorElement>('.wiki-body figure a[href]').forEach(link => {
+      const thumbnail = link.querySelector<HTMLImageElement>('img');
+      if (!thumbnail || link.href !== thumbnail.src) return;
+      link.title = `放大查看：${thumbnail.alt || '图片'}`;
+      link.setAttribute('aria-haspopup', 'dialog');
+      link.addEventListener('click', event => {
+        if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        source = link;
+        fit();
+        image.src = link.href;
+        image.alt = thumbnail.alt;
+        caption.textContent = link.closest('figure')?.querySelector('figcaption')?.textContent || thumbnail.alt || '图片预览';
+        original.href = link.href;
+        viewer.showModal();
+        document.documentElement.classList.add('wiki-image-open');
+      });
+    });
+    scale.addEventListener('click', () => {
+      const actual = viewer.classList.toggle('wiki-image-actual');
+      scale.setAttribute('aria-pressed', String(actual));
+      scale.textContent = actual ? '适应窗口' : '实际大小';
+      stage.scrollTo(0, 0);
+    });
+    viewer.querySelector('[data-image-close]')!.addEventListener('click', () => viewer.close());
+    viewer.addEventListener('click', event => {
+      const bounds = viewer.getBoundingClientRect();
+      if (event.target === viewer && (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom)) viewer.close();
+    });
+    viewer.addEventListener('close', () => {
+      document.documentElement.classList.remove('wiki-image-open');
+      image.removeAttribute('src');
+      source?.focus({ preventScroll: true });
+    });
+  }
+</script>
+<style is:global>
+  html.wiki-image-open { overflow: hidden; }
+  .wiki-body figure a:has(> img) { cursor: zoom-in; }
+  .wiki-image-viewer { position: fixed; inset: 0; box-sizing: border-box; margin: auto; padding: 0; width: min(90rem, 96vw); height: 92dvh; max-width: 96vw; max-height: 92dvh; border: 1px solid #87969f; color: #17232b; background: #f8fafb; box-shadow: 0 16px 64px #0006; }
+  .wiki-image-viewer[open] { display: flex; flex-direction: column; }
+  .wiki-image-viewer::backdrop { background: #101820cc; }
+  .wiki-image-viewer header { position: static; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding: 12px 16px; border-bottom: 1px solid #c6ced4; }
+  .wiki-image-viewer header p { flex: 1 1 12rem; margin: 0; overflow-wrap: anywhere; font-weight: 700; }
+  .wiki-image-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+  .wiki-image-actions button { padding: 6px 10px; border: 1px solid #a8b3bc; border-radius: 3px; background: white; color: #17232b; font: inherit; cursor: pointer; }
+  .wiki-image-actions button:hover { background: #e0eaf6; }
+  .wiki-image-actions a { color: #0645ad; }
+  .wiki-image-stage { display: flex; flex: 1; align-items: center; justify-content: center; min-height: 0; padding: 16px; overflow: auto; background: #dce4e9; }
+  .wiki-image-stage img { display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain; }
+  .wiki-image-actual .wiki-image-stage { display: block; }
+  .wiki-image-actual .wiki-image-stage img { max-width: none; max-height: none; margin: auto; }
+  @media print { .wiki-image-viewer { display: none !important; } }
+</style>

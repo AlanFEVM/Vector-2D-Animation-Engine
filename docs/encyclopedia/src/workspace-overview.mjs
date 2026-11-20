@@ -47,7 +47,9 @@ export default function workspaceOverview({ fileURL }) {
           className: ['wiki-section-images', 'not-content'],
           ariaLabel: caption,
         }, [element('figure', {}, [
-          element('img', { src, alt: caption, decoding: 'async' }, []),
+          element('a', { href: src, target: '_blank', rel: ['noopener'], ariaLabel: `查看原图：${caption}` }, [
+            element('img', { src, alt: caption, decoding: 'async' }, []),
+          ]),
           element('figcaption', {}, [text(caption)]),
         ])]));
         if (captionNode) context.removeNode(captionNode);
@@ -64,7 +66,9 @@ export default function workspaceOverview({ fileURL }) {
           className: ['wiki-section-images', 'wiki-tool-images', 'not-content'],
           ariaLabel: '工具栏示例',
         }, [element('figure', {}, [
-          element('img', { src: toolbarImagePath, alt: '左侧工具栏', decoding: 'async' }, []),
+          element('a', { href: toolbarImagePath, target: '_blank', rel: ['noopener'], ariaLabel: '查看原图：左侧工具栏' }, [
+            element('img', { src: toolbarImagePath, alt: '左侧工具栏', decoding: 'async' }, []),
+          ]),
           element('figcaption', {}, toolbarCaption ? [...toolbarCaption.children] : [text('左侧工具栏')]),
         ])]));
         if (toolbarCaption) context.removeNode(toolbarCaption);
@@ -93,7 +97,9 @@ export default function workspaceOverview({ fileURL }) {
           className: ['wiki-section-images', ...(className ? [className] : []), 'not-content'],
           ariaLabel: caption,
         }, [element('figure', {}, [
-          element('img', { src, alt: caption, decoding: 'async' }, []),
+          element('a', { href: src, target: '_blank', rel: ['noopener'], ariaLabel: `查看原图：${caption}` }, [
+            element('img', { src, alt: caption, decoding: 'async' }, []),
+          ]),
           element('figcaption', {}, captionNode ? [...captionNode.children] : [text(caption)]),
         ])]));
         if (captionNode) context.removeNode(captionNode);
