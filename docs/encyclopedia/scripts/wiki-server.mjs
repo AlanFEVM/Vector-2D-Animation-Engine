@@ -6,12 +6,14 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import sirv from 'sirv';
 import { fromMarkdown } from 'mdast-util-from-markdown';
+import { wikiSections } from '../src/wiki-sections.mjs';
 
 const root = new URL('../', import.meta.url);
 const port = Number(process.env.WIKI_PORT || 4321);
 const host = `127.0.0.1:${port}`;
 const serve = sirv(fileURLToPath(new URL('dist/', root)), { dev: true });
 const pages = new Map([['/', 'index.md'], ['/edit-guide/', 'edit-guide.md'], ['/entry-template/', 'entry-template.md']]);
+for (const { slug } of wikiSections) pages.set(`/${slug}/`, `${slug}.md`);
 const revision = (s) => createHash('sha256').update(s).digest('hex');
 const run = promisify(execFile);
 let busy = false;
