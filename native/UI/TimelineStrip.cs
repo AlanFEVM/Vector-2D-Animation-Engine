@@ -4652,6 +4652,12 @@ internal sealed partial class TimelineStrip : Control
             if (layerIndex >= 0) return drawingScene.IsLayerEffectivelyVisible(layerIndex);
         }
 
+        // Block-chunk rows map to real drawing layers, so the eye state must follow them too.
+        if (_context is SceneBlockChunkTimeline chunk && ChunkTrackLayerIndex(trackIndex) is var chunkLayer && chunkLayer >= 0)
+        {
+            return chunk.Scene.DrawingScene!.IsLayerEffectivelyVisible(chunkLayer);
+        }
+
         if (_drawingObjectDefinition is not null)
         {
             return _drawingObjectDefinition.Instances
