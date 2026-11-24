@@ -651,6 +651,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     public bool TryRender(StageControl stage, out RenderStats stats)
     {
         stats = default;
+        DrewBlockTilesThisFrame = false;
+        BlockTileSourceProbeMilliseconds = 0;
         LastCacheMaintenanceMilliseconds = 0;
         LastLodBitmapSubmissions = 0;
         LastLodBitmapBuilds = 0;
@@ -696,7 +698,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         LastReference3DWorkspaceStoreMilliseconds = 0;
         ResetReference3DCpuRasterMetrics();
         ApplyReference3DOpticalSurfaceBitmapCacheInvalidation();
-        if (RequiresSoftwareLayerCompositing(stage) || RequiresSoftwareDistortion(stage))
+        if (RequiresSoftwareLayerCompositing(stage))
         {
             stage.Reference3DGpuOpticsEnabled = false;
             ClearBaseFrameCache();
@@ -714,6 +716,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         {
             EnsureTarget(stage);
             if (_target is null) return false;
+            if (RequiresSoftwareDistortion(stage)) return false;
             if (stage.ShotWorkspacePreviewActive && _target is not ID2D1DeviceContext) return false;
             try
             {
@@ -734,8 +737,14 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             // input/paint when the playback producer is under load.
             var fastPlayback = stage.PlaybackActive
                 && stage.RendersReferenceProjection;
+            var blockTiles = !stage.ShotWorkspacePreviewActive ? PrepareBlockTiles(stage) : null;
+            PointF blockOrigin = default;
+            var blockScale = 0f;
+            if (blockTiles is not null && !TryGetBlockTileView(stage, blockTiles, out blockOrigin, out blockScale))
+                blockTiles = null;
             var cacheMaintenanceStarted = Stopwatch.GetTimestamp();
-            if (!fastPlayback && !stage.ShotWorkspacePreviewActive) PrepareReference3DWorkspaceFrameCache(stage);
+            if (blockTiles is null && !fastPlayback && !stage.ShotWorkspacePreviewActive)
+                PrepareReference3DWorkspaceFrameCache(stage);
             if (!fastPlayback)
             {
                 PrepareFreehandGeometryCache(
@@ -771,7 +780,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             // is therefore safe to reuse here. It must be restored before
             // BeginDraw so the normal base-frame path can draw one bitmap and
             // still replay the scene-pass bookkeeping.
-            if (!fastPlayback && stage.RendersReferenceProjection && !CanReuseBaseFrame(stage))
+            if (blockTiles is null && !fastPlayback && stage.RendersReferenceProjection && !CanReuseBaseFrame(stage))
             {
                 TryRestoreReference3DWorkspaceFrame(stage, out _);
             }
@@ -784,7 +793,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             stage.BeginScenePassOrder();
             if (stage.RendersReferenceProjection)
             {
-                if (stage.InstanceMovePreviewObjects is null && CanReuseBaseFrame(stage))
+                if (blockTiles is null && stage.InstanceMovePreviewObjects is null && CanReuseBaseFrame(stage))
                 {
                     DrawBaseFrame();
                     ReplayBaseScenePassOrder(stage);
@@ -802,10 +811,15 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                     LastReference3DGridMilliseconds +=
                         Stopwatch.GetElapsedTime(referenceGridStarted).TotalMilliseconds;
                     var referenceSceneStarted = Stopwatch.GetTimestamp();
-                    stats = DrawReference3DScene(stage);
+                    if (blockTiles is not null)
+                    {
+                        stage.RecordEditableScenePass();
+                        stats = DrawBlockTiles(stage, blockTiles, blockOrigin, blockScale);
+                    }
+                    else stats = DrawReference3DScene(stage);
                     LastReference3DSceneMilliseconds +=
                         Stopwatch.GetElapsedTime(referenceSceneStarted).TotalMilliseconds;
-                    if (stage.InstanceMovePreviewObjects is not null || _reference3DCpuRasterUsedThisFrame
+                    if (blockTiles is not null || stage.InstanceMovePreviewObjects is not null || _reference3DCpuRasterUsedThisFrame
                         || stage.Reference3DPlaybackActive)
                     {
                         // A continuously changing playback frame is not reused
@@ -847,6 +861,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                             stage.Scene = editableScene;
                         }
                     }
+                    DrawBlockChunkEditingMask(stage);
+                    DrawBlockLayerHighlight(stage);
                     DrawReference3DSelection(stage);
                     DrawTransformOverlay(stage);
                     DrawDistortOverlay(stage);
@@ -881,7 +897,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
             var objectDrawLimit = ObjectDrawLimit(stage.Zoom);
             RenderStats editableStats;
-            if (CanReuseBaseFrame(stage))
+            if (blockTiles is null && CanReuseBaseFrame(stage))
             {
                 DrawBaseFrame();
                 ReplayBaseScenePassOrder(stage);
@@ -950,13 +966,12 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 var editableLimit = Math.Max(0, objectDrawLimit - underlayStats.DrawnObjects - onionSkinStats.DrawnObjects);
                 DrawSelectionMoveOrigins(stage);
                 stage.RecordEditableScenePass();
-                editableStats = DrawScene(
-                    stage,
-                    editableLimit,
-                    forceObjectRenderer: forceEditableObjectRenderer);
+                editableStats = blockTiles is not null
+                    ? DrawBlockTiles(stage, blockTiles, blockOrigin, blockScale)
+                    : DrawScene(stage, editableLimit, forceObjectRenderer: forceEditableObjectRenderer);
                 if (layeredUnderlay) underlayStats = underlayStats with { DrawnObjects = _underlayDrawnObjects };
                 stats = RenderStats.Combine(RenderStats.Combine(onionSkinStats, underlayStats), editableStats);
-                if (stage.PlaybackActive)
+                if (blockTiles is not null || stage.PlaybackActive)
                 {
                     // Playback never reuses this mutable frame. Copying the
                     // render target would force a GPU/CPU synchronization on
@@ -1007,6 +1022,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
             if (!stage.PlaybackActive)
             {
+                DrawBlockChunkEditingMask(stage);
+                DrawBlockLayerHighlight(stage);
                 if (!stage.MarqueeLodPreviewActive) DrawActiveMaskOutline(stage);
                 DrawLayerContentHighlight(stage);
                 var selectionStarted = Stopwatch.GetTimestamp();
@@ -1094,12 +1111,13 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             || stage.DragPreviewScene?.RequiresIsolatedLayerCompositing == true;
     }
 
-    private static bool RequiresSoftwareDistortion(StageControl stage)
+    private bool RequiresSoftwareDistortion(StageControl stage, bool allowGpuBitmaps = true)
     {
-        return stage.SceneRequiresSoftwareDistortion(stage.Scene)
-            || stage.SceneRequiresSoftwareDistortion(stage.UnderlayScene)
-            || stage.SceneRequiresSoftwareDistortion(stage.OnionSkinScene)
-            || stage.SceneRequiresSoftwareDistortion(stage.DragPreviewScene);
+        var gpuBitmaps = allowGpuBitmaps && CanDrawGpuBitmapWarps(stage);
+        return stage.SceneRequiresSoftwareDistortion(stage.Scene, gpuBitmaps)
+            || stage.SceneRequiresSoftwareDistortion(stage.UnderlayScene, gpuBitmaps)
+            || stage.SceneRequiresSoftwareDistortion(stage.OnionSkinScene, gpuBitmaps)
+            || stage.SceneRequiresSoftwareDistortion(stage.DragPreviewScene, gpuBitmaps);
     }
 
     private bool CanReuseBaseFrame(StageControl stage)
@@ -1510,6 +1528,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         };
 
         _gpuDevice = StageGpuDevice.TryCreate(stage.Handle, stage.ClientSize, _factory);
+        if (_gpuDevice is not null && !stage.RenderingCanvasOutput) StageGpuBitmapWarp.StartShaderCompilation();
         _target = _gpuDevice?.Context
             ?? (ID2D1RenderTarget)_factory.CreateHwndRenderTarget(renderTargetProperties, hwndProperties);
         _deviceContext2 = TryQueryDeviceContext2(_gpuDevice?.Context);
@@ -2008,7 +2027,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
         var deferredFillObjects = stage.SelectionFillDragFrontObjectsFor(scene);
         if ((deferredFillObjects is null or { Count: 0 })
-            && (TryDrawAffineBitmapLayer(stage, scene, objects, start)
+            && (TryDrawBitmapLayerCommands(stage, scene, layer, objects, start)
+                || TryDrawAffineBitmapLayer(stage, scene, objects, start, allowGpuWarp: true)
                 || !stage.SelectionMoveFeedbackActive
                     && TryDrawLayerObjectsBatched(stage, scene, layer, objects, start)))
         {
@@ -2281,6 +2301,12 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             // fill and stroke colours are intentionally unused.
             if (pass == SceneRenderPass.Fill)
             {
+                if (_bitmapWarp is not null && !_bitmapWarpUnavailable && !_capturingShotPreview && IsBitmapWarpEditing(stage)
+                    && stage.TryGetObjectDistortionsForRendering(scene, i, out var distortions))
+                {
+                    DrawGpuBitmapWarp(stage, scene, i, distortions);
+                    return;
+                }
                 DrawBitmapObject(stage, scene, i, screen, w, h);
             }
             return;
@@ -2448,10 +2474,12 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         }
         if (cachedFrame.AxisX != default && cachedFrame.AxisY != default
             && TryDrawCachedAffineBitmap(stage, scene, objectIndex, data, cachedFrame)) return;
-        if (!stage.TryDecodeBitmapImage(data.ImageAssetId, out var raster)) return;
+        if (!stage.TryDecodeBitmapImage(data, out var raster)) return;
         raster = BitmapImageRasterizer.ApplyObjectClip(raster, data);
 
-        if (stage.TryGetBitmapAffineScreenFrame(scene, objectIndex, out var affineFrame))
+        if (stage.TryGetBitmapAffineScreenFrame(scene, objectIndex, out var affineFrame)
+            || (data.BlockGridKey is not null && cachedFrame.AxisX != default && cachedFrame.AxisY != default
+                && StageControl.TrySnapBlockBitmapFrame(data, cachedFrame, stage.BitmapImageSampling(data.ImageAssetId), out affineFrame)))
         {
             DrawAffineBitmap(stage, scene, objectIndex, data, raster, affineFrame);
             return;
@@ -2521,14 +2549,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         var pixelBytes = raster.Pixels.LongLength;
         // The byte budget bounds GPU memory. An entry-count flush made a working
         // set of 1,000 tiny images re-upload in full on every frame.
-        while (_bitmapObjectCache.Count > 0
-            && _bitmapObjectCacheBytes > MaxBitmapObjectCacheBytes - pixelBytes)
-        {
-            var oldest = _bitmapObjectCache.MinBy(entry => entry.Value.LastUse);
-            _bitmapObjectCache.Remove(oldest.Key);
-            _bitmapObjectCacheBytes -= oldest.Value.PixelBytes;
-            oldest.Value.Dispose();
-        }
+        EvictBitmapTextures(pixelBytes);
 
         var pixelsHandle = GCHandle.Alloc(raster.Pixels, GCHandleType.Pinned);
         ID2D1Bitmap bitmap;
@@ -3835,6 +3856,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
     private void DrawFreehandPreview(StageControl stage)
     {
+        if (DrawPressureInkPreview(stage)) return;
         if (!stage.FreehandPreviewVisible || stage.FreehandPreviewPoints.Count == 0) return;
         if (stage.PressurePreviewLayers.Count > 0)
         {
@@ -4201,6 +4223,18 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
     private void DrawMarquee(StageControl stage)
     {
+        Span<PointF> chunk = stackalloc PointF[4];
+        if (stage.TryGetBlockChunkOutline(chunk))
+        {
+            var color = stage.BlockChunkEditing ? GdiColor.FromArgb(255, 100, 224, 209) : GdiColor.FromArgb(255, 112, 204, 255);
+            var brush = BrushFor(color.ToArgb());
+            for (var i = 0; i < chunk.Length; i++)
+            {
+                var a = chunk[i];
+                var b = chunk[(i + 1) % chunk.Length];
+                _target!.DrawLine(new(a.X, a.Y), new(b.X, b.Y), brush, 1.5f);
+            }
+        }
         DrawLassoPreview(stage);
         if (!stage.MarqueeVisible || stage.MarqueeOverlayActive) return;
         var left = Math.Min(stage.MarqueeStart.X, stage.MarqueeEnd.X);

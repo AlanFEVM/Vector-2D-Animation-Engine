@@ -1418,6 +1418,12 @@ internal sealed partial class VectorScene
     public void RebuildGeometryIndex()
     {
         GeometryIndexBuildCount++;
+        RefreshGeometryExtents();
+        RebuildSpatialIndex();
+    }
+
+    private void RefreshGeometryExtents()
+    {
         var workers = ParallelBatch.WorkerCount(ObjectCount, 8192);
         if (workers == 1)
         {
@@ -1435,8 +1441,6 @@ internal sealed partial class VectorScene
             }, workers);
             MaxHalfExtent = maxima.Max();
         }
-
-        RebuildSpatialIndex();
     }
 
     private float ObjectHalfExtent(int objectIndex)

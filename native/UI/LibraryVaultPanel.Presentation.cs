@@ -10,8 +10,9 @@ internal sealed partial class LibraryVaultPanel
     private long _assetThumbnailUse;
     private int _assetThumbnailRevision;
 
-    private void ClearAssetThumbnails()
+    private void ClearAssetThumbnails(bool clearImages = true)
     {
+        if (clearImages) ClearImageThumbnails();
         foreach (var entry in _assetThumbnails.Values) entry.Image?.Dispose();
         _assetThumbnails.Clear();
         if (!_projectObjects.IsDisposed) _projectObjects.Invalidate();
@@ -30,12 +31,13 @@ internal sealed partial class LibraryVaultPanel
         var revision = hash.ToHashCode();
         if (revision == _assetThumbnailRevision) return;
         _assetThumbnailRevision = revision;
-        ClearAssetThumbnails();
+        ClearAssetThumbnails(clearImages: false);
     }
 
     private Bitmap? AssetThumbnail(VaultRow row, int size)
     {
         if (row.Folder is not null || row.ImageAssetMissing || row.ExternalSvgMissing) return null;
+        if (row.ImageAsset is not null) return ImageAssetThumbnail(row, size);
         var frame = row.DrawingObject is { } symbol
             ? Math.Clamp(_frameProvider?.Invoke() ?? 0, 0, Math.Max(0, symbol.FrameCount - 1)) : 0;
         if (_assetThumbnails.TryGetValue(row, out var entry))

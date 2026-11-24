@@ -64,6 +64,7 @@ internal static class HotReloadModuleResolver
         nameof(WorkspaceColorFlyout),
         nameof(WorkspaceColorPickerPanel),
         nameof(SceneCanvasDialog),
+        "MinecraftSceneExtensionPanel",
         nameof(CanvasWelcomePanel),
         nameof(LayerBlendModePanel),
         nameof(DocumentInfoPanel),

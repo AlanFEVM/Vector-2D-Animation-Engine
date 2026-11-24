@@ -222,6 +222,8 @@ internal static partial class Benchmark
             BitmapImageRasterizer.Decode(path, settings);
             var scene = new VectorScene(); scene.CreateEmpty();
             scene.AddBitmapObject(0, PointF.Empty, new BitmapObjectData
+                { ImageAssetId = "opaque", PlacedSize = new SizeF(2000, 1200) });
+            scene.AddBitmapObject(0, PointF.Empty, new BitmapObjectData
                 { ImageAssetId = "opaque", PlacedSize = new SizeF(1200, 800) });
             scene.AddBitmapObject(0, new PointF(-350, 0), new BitmapObjectData
                 { ImageAssetId = "opaque", PlacedSize = new SizeF(1000, 1000) });
@@ -231,7 +233,7 @@ internal static partial class Benchmark
                 { ImageAssetId = "opaque", PlacedSize = new SizeF(1500, 500),
                     VisibleContours = [[new(0, 0), new(1, 0), new(1, 1), new(0, 1)],
                         [new(.4f, .2f), new(.6f, .2f), new(.6f, .8f), new(.4f, .8f)]] });
-            scene.Argb[3] = Color.FromArgb(180, Color.White).ToArgb();
+            scene.Argb[4] = Color.FromArgb(180, Color.White).ToArgb();
             using var host = new Form { ClientSize = new Size(640, 480), ShowInTaskbar = false,
                 StartPosition = FormStartPosition.Manual, Location = new Point(-3000, -3000) };
             using var stage = new StageControl(scene) { Dock = DockStyle.Fill,
@@ -244,9 +246,11 @@ internal static partial class Benchmark
             var maximumDelta = 0;
             foreach (var sample in new[] { BitmapSampling.Point, BitmapSampling.Linear })
             foreach (var offset in new[] { PointF.Empty, new PointF(3.125f, -2.75f) })
+            foreach (var viewWidth in new[] { 2200f, 8800f })
             {
+                shot = shot with { OrthographicSize = viewWidth };
                 stage.BitmapImageSamplingProvider = _ => sample;
-                scene.X[2] = 350 + offset.X; scene.Y[2] = offset.Y;
+                scene.X[3] = 350 + offset.X; scene.Y[3] = offset.Y;
                 scene.RebuildGeometryIndex();
                 Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_OCCLUSION", "1");
                 AssertTimeline(renderer.TryCapturePlanarShotPreview(stage, shot, new Size(640, 480), null, out var reference)
@@ -258,6 +262,15 @@ internal static partial class Benchmark
                     typeof(BitmapImageRasterizer).GetMethod("EvictFor",
                         System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!
                         .Invoke(null, [512L * 1024 * 1024]);
+                    var regionDraws = renderer.BitmapRegionDrawCalls;
+                    // Warm the cropped uploads, then evict all CPU pixels again.
+                    AssertTimeline(renderer.TryCapturePlanarShotPreview(stage, shot, new Size(640, 480), null, out var warm)
+                        && warm is not null, "Bitmap region warmup GPU capture failed.");
+                    warm!.Dispose();
+                    reads = BitmapImageRasterizer.SourceReadCount;
+                    typeof(BitmapImageRasterizer).GetMethod("EvictFor",
+                        System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!
+                        .Invoke(null, [512L * 1024 * 1024]);
                     AssertTimeline(renderer.TryCapturePlanarShotPreview(stage, shot, new Size(640, 480), null, out var actual)
                         && actual is not null, "Occlusion GPU capture failed after CPU eviction.");
                     using (actual)
@@ -266,6 +279,8 @@ internal static partial class Benchmark
                         for (var x = 0; x < actual.Width; x++)
                         {
                             var a = actual.GetPixel(x, y); var b = reference!.GetPixel(x, y);
+                            if (maximumDelta == 0 && a != b)
+                                Console.WriteLine($"bitmap_occlusion_first_difference sampling={sample} offset={offset} view_width={viewWidth} pixel={x},{y} actual={a} reference={b}");
                             maximumDelta = Math.Max(maximumDelta, Math.Max(Math.Abs(a.A - b.A), Math.Max(Math.Abs(a.R - b.R),
                                 Math.Max(Math.Abs(a.G - b.G), Math.Abs(a.B - b.B)))));
                         }
@@ -273,8 +288,23 @@ internal static partial class Benchmark
                     AssertTimeline(BitmapImageRasterizer.SourceReadCount == reads,
                         "A live GPU texture reread its evicted CPU source.");
                     var covered = (HashSet<int>)RequireField(typeof(Direct2DStageRenderer), "_coveredBitmaps").GetValue(renderer)!;
-                    AssertTimeline(covered.Contains(0), "The occlusion pixel oracle did not exercise full coverage by multiple images.");
+                    AssertTimeline(covered.Contains(1), "The occlusion pixel oracle did not exercise full coverage by multiple images.");
+                    AssertTimeline(renderer.BitmapRegionDrawCalls > regionDraws,
+                        "The occlusion pixel oracle did not exercise cropped GPU textures for partial coverage.");
                 }
+                stage.RestoreViewState(stage.CaptureViewState() with { CameraX = 0, CameraY = 0,
+                    Zoom = stage.Width * VectorUnits.UnitsPerPixel / viewWidth });
+                Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_OCCLUSION", "1");
+                stage.Invalidate();
+                PaintStage(stage); PaintStage(stage);
+                var expectedStage = CaptureStageGpuPixels(stage);
+                Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_OCCLUSION", null);
+                stage.Invalidate();
+                PaintStage(stage); PaintStage(stage);
+                var actualStage = CaptureStageGpuPixels(stage);
+                var stageDelta = actualStage.Zip(expectedStage, (a, b) => Math.Abs(a - b)).Max();
+                AssertTimeline(stageDelta == 0,
+                    $"Bitmap region clips changed stage pixels (sampling={sample}, offset={offset}, width={viewWidth}, delta={stageDelta}).");
             }
             AssertTimeline(maximumDelta == 0, $"Opaque coverage changed visible pixels (delta={maximumDelta}).");
             Console.WriteLine($"bitmap_opaque_occlusion_pixel_delta={maximumDelta} cpu_eviction_source_reads=0");
@@ -484,15 +514,17 @@ internal static partial class Benchmark
             {
                 ImageAssetId = "topology-texture", PlacedSize = new SizeF(400, 300),
                 VisibleContours = [[new(0, 0), new(1, 0), new(1, 1), new(0, 1)],
-                    [new(0.45f, 0.45f), new(0.55f, 0.45f), new(0.55f, 0.55f), new(0.45f, 0.55f)]]
+                    [new(0.425f, 0.45f), new(0.575f, 0.45f), new(0.575f, 0.55f), new(0.425f, 0.55f)]]
             });
             scene.ShearObjects([cutter, source], point => TransformBitmapProbe(point, affine));
             AssertTimeline(scene.GetFillParts(source, 0).Length == 1,
                 "An intact image participated in topology cutting.");
             scene.BreakApartBitmapObjects([source]);
-            var expected = kind is "line" or "curve" ? 2 : 3;
-            AssertTimeline(scene.GetFillParts(source, 0).Length == expected,
-                $"A {kind} failed to partition a broken-apart image (affine={affine}).");
+            // The hole spans the 40-unit cutter, separating its top and bottom intersections.
+            var expected = kind is "line" or "curve" ? 2 : 4;
+            var actual = scene.GetFillParts(source, 0).Length;
+            AssertTimeline(actual == expected,
+                $"A {kind} produced {actual} bitmap parts instead of {expected} (affine={affine}).");
             var left = scene.HitTestElement(TransformBitmapProbe(new PointF(-120, 80), affine), 0, 0);
             var right = scene.HitTestElement(TransformBitmapProbe(new PointF(120, 80), affine), 0, 0);
             AssertTimeline(left.IsValid && right.IsValid && left.Key.ObjectIndex == source
@@ -686,6 +718,7 @@ internal static partial class Benchmark
         scene.CreateEmpty();
         var rasters = new Dictionary<string, BitmapImageRaster>();
         var fixture = Environment.GetEnvironmentVariable("VECTOR_BENCH_BITMAP_DRAG_PROJECT");
+        var assetCount = 43;
         using var resolverHost = string.IsNullOrWhiteSpace(fixture) ? null : new MainForm();
         Func<string, BitmapImageRaster?> resolve = id => rasters.GetValueOrDefault(id);
         Func<string, StageControl, BitmapImageRaster?>? stageResolver = null;
@@ -700,8 +733,7 @@ internal static partial class Benchmark
             sampling = RequireMethod(typeof(MainForm), "ResolveBitmapImageSampling")
                 .CreateDelegate<Func<string, BitmapSampling>>(resolverHost);
             scene = project.DrawingObjects.Single().Scene;
-            foreach (var asset in project.ImageAssets)
-                rasters[asset.Id] = BitmapImageRasterizer.Decode(asset.SourcePath, asset.ImportSettings);
+            assetCount = project.ImageAssets.Count;
         }
         else
         {
@@ -789,7 +821,7 @@ internal static partial class Benchmark
                 AssertTimeline(stage.LastFrameUsedDirect2D && stage.LastStats.DrawnObjects >= indices.Length
                     && stage.SelectionMoveFeedbackActive && stage.SelectionMoveOrigins.Count == indices.Length,
                     $"Bitmap movement omitted artwork, origin feedback or hardware rendering: frame={frame}, hardware={stage.LastFrameUsedDirect2D}, drawn={stage.LastStats.DrawnObjects}/{indices.Length}, feedback={stage.SelectionMoveFeedbackActive}, origins={stage.SelectionMoveOrigins.Count}.");
-                AssertTimeline(lookups <= rasters.Count,
+                AssertTimeline(lookups <= assetCount,
                     "Origin feedback and moving artwork resolved the same asset repeatedly within a paint.");
                 foreach (var index in indices)
                 {
@@ -817,8 +849,68 @@ internal static partial class Benchmark
         AssertTimeline(!stage.SelectionMoveFeedbackActive, "Bitmap movement retained origin feedback after release.");
     }
 
+    private static void RunBitmapZoomRegression()
+    {
+        var fixture = Environment.GetEnvironmentVariable("VECTOR_BENCH_BITMAP_DRAG_PROJECT");
+        if (string.IsNullOrWhiteSpace(fixture)) return;
+        var (project, manifest) = ProjectPackageStore.OpenPackage(fixture);
+        using var form = new MainForm { ClientSize = new Size(2560, 1400), ShowInTaskbar = false };
+        form.Show();
+        RequireMethod(typeof(MainForm), "LoadProjectDocument").Invoke(form, [project, manifest]);
+        var tabs = RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        tabs.GetType().GetProperty("SelectedView")!.SetValue(tabs, WorkspaceView.BasicDrawing);
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        form.ClientSize = new Size(form.ClientSize.Width + 1920 - stage.Width, form.ClientSize.Height + 1080 - stage.Height);
+        form.PerformLayout();
+        var indices = Enumerable.Range(0, scene.ObjectCount).ToArray();
+        RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.ObjectSelect]);
+        RequireMethod(typeof(MainForm), "SetSelection", [typeof(IEnumerable<int>), typeof(bool), typeof(bool), typeof(bool)])
+            .Invoke(form, [indices, false, false, true]);
+        var bounds = indices.Select(scene.GetObjectWorldBounds).Aggregate(RectangleF.Union);
+        stage.RestoreViewState(stage.CaptureViewState() with { CameraX = bounds.Left + bounds.Width / 2,
+            CameraY = bounds.Top + bounds.Height / 2, Zoom = .62f });
+        Application.DoEvents(); PaintStage(stage);
+        var renderer = (Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!;
+        foreach (var selected in new[] { false, true })
+        {
+            if (!selected) stage.SetSelection(Array.Empty<int>());
+            else RequireMethod(typeof(MainForm), "SetSelection", [typeof(IEnumerable<int>), typeof(bool), typeof(bool), typeof(bool)])
+                .Invoke(form, [indices, false, false, true]);
+            stage.SetLayerContentHighlightLayer(0, Color.Cyan);
+            var times = new List<double>();
+            var reads = BitmapImageRasterizer.SourceReadCount;
+            var builds = stage.HighlightCoverageBuilds;
+            for (var frame = -4; frame < 24; frame++)
+            {
+                var started = System.Diagnostics.Stopwatch.GetTimestamp();
+                stage.ZoomAt(new Point(stage.Width / 2, stage.Height / 2), frame % 2 == 0 ? 1.06f : 1 / 1.06f, interactivePreview: true);
+                PaintStage(stage);
+                var ms = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                AssertTimeline(stage.LastFrameUsedDirect2D && stage.LastStats.DrawnObjects > 0, "Image zoom lost GPU content.");
+                if (frame >= 0) times.Add(ms);
+            }
+            times.Sort();
+            Console.WriteLine(FormattableString.Invariant($"bitmap_zoom objects={indices.Length} selected={selected} viewport={stage.Width}x{stage.Height} dpi={stage.DeviceDpi} avg_ms={times.Average():0.###} p95_ms={times[22]:0.###} max_ms={times[^1]:0.###} source_reads={BitmapImageRasterizer.SourceReadCount-reads} coverage_builds={stage.HighlightCoverageBuilds-builds}"));
+            // Compare settled output; interactive raster zoom previews are
+            // intentionally temporary and are not the final-quality oracle.
+            RequireMethod(typeof(StageControl), "EndZoomLodPreview", [typeof(bool)]).Invoke(stage, [false]);
+            stage.Invalidate(); PaintStage(stage); PaintStage(stage);
+            var actual = CaptureStageGpuPixels(stage);
+            RequireField(typeof(StageControl), "_highlightOcclusionPrepared").SetValue(stage, false);
+            ((System.Collections.IDictionary)RequireField(typeof(StageControl), "_highlightOcclusionContours").GetValue(stage)!).Clear();
+            renderer.InvalidateSelectionCommands(); renderer.InvalidateLayerContentHighlightCommands();
+            stage.Invalidate(); PaintStage(stage);
+            var expected = CaptureStageGpuPixels(stage);
+            var delta = actual.Zip(expected, (a,b) => Math.Abs(a-b)).Max();
+            AssertTimeline(delta <= 1, $"Zoom reuse changed complete GPU pixels: {delta}.");
+            Console.WriteLine($"bitmap_zoom_pixel_delta={delta}");
+        }
+    }
+
     private static void RunBitmapPointerMoveRegression()
     {
+        RunBitmapZoomRegression();
         var fixture = Environment.GetEnvironmentVariable("VECTOR_BENCH_BITMAP_DRAG_PROJECT");
         if (string.IsNullOrWhiteSpace(fixture)) return;
         var (project, manifest) = ProjectPackageStore.OpenPackage(fixture);
@@ -846,8 +938,32 @@ internal static partial class Benchmark
             CameraY = bounds.Top + bounds.Height * 0.5f,
             Zoom = stage.Width * VectorUnits.UnitsPerPixel / viewWidth
         });
+        if (float.TryParse(Environment.GetEnvironmentVariable("VECTOR_BENCH_BITMAP_DRAG_ZOOM"),
+            System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var zoom)
+            && zoom > 0 && float.IsFinite(zoom))
+            stage.RestoreViewState(stage.CaptureViewState() with
+            { CameraX = scene.X[indices[^1]], CameraY = scene.Y[indices[^1]], Zoom = zoom });
+        Console.WriteLine($"bitmap_pointer_fixture objects={indices.Length} bounds={bounds} zoom={stage.Zoom} layers={scene.LayerCount}");
         Application.DoEvents();
         PaintStage(stage);
+        if (Environment.GetEnvironmentVariable("VECTOR_BENCH_BITMAP_PAINT_DIAGNOSTICS") == "1")
+        {
+            Console.WriteLine($"bitmap_zoom_layer_highlight visible={stage.LayerContentHighlightVisible} objects={stage.LayerContentHighlightObjects.Count}");
+            foreach (var suppress in new[] { false, true, false })
+            {
+                stage.ConfigureSelectionArrows(stage.SelectionArrows, objectSelection: true, suppressGeometryFeedback: suppress);
+                stage.Invalidate(); PaintStage(stage); PaintStage(stage);
+                Console.WriteLine(FormattableString.Invariant($"bitmap_zoom_paint selection_suppressed={suppress} render_ms={stage.LastFrameRenderMilliseconds:0.###} commands_ms={stage.LastDirect2DCommandMilliseconds:0.###} present_ms={stage.LastDirect2DPresentMilliseconds:0.###}"));
+            }
+            stage.ClearLayerContentHighlight();
+            foreach (var suppress in new[] { false, true })
+            {
+                stage.ConfigureSelectionArrows(stage.SelectionArrows, objectSelection: true, suppressGeometryFeedback: suppress);
+                stage.Invalidate(); PaintStage(stage); PaintStage(stage);
+                Console.WriteLine(FormattableString.Invariant($"bitmap_zoom_without_layer_highlight selection_suppressed={suppress} render_ms={stage.LastFrameRenderMilliseconds:0.###} commands_ms={stage.LastDirect2DCommandMilliseconds:0.###} present_ms={stage.LastDirect2DPresentMilliseconds:0.###}"));
+            }
+            return;
+        }
         var before = indices.Select(i => new PointF(scene.X[i], scene.Y[i])).ToArray();
         var primary = indices[^1];
         var start = Point.Round(stage.WorldToScreen(scene.X[primary], scene.Y[primary]));
@@ -875,9 +991,11 @@ internal static partial class Benchmark
                 var inputMilliseconds = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
                 if (stage.RenderedFrameCount == rendered) PaintStage(stage);
                 var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-                AssertTimeline(stage.LastFrameUsedDirect2D && stage.LastStats.DrawnObjects >= indices.Length
+                var visibleBounds = stage.VisibleWorldBounds();
+                var visibleCount = indices.Count(index => scene.GetObjectWorldBounds(index).IntersectsWith(visibleBounds));
+                AssertTimeline(stage.LastFrameUsedDirect2D && stage.LastStats.DrawnObjects >= visibleCount
                     && stage.SelectionMoveFeedbackActive && stage.SelectedObjects.Count == indices.Length,
-                    "The editor pointer path lost the bitmap selection, origin feedback or hardware presentation.");
+                    $"The editor pointer path lost visible bitmap content, selection, origin feedback or hardware presentation: drawn={stage.LastStats.DrawnObjects}/{visibleCount}, selected={stage.SelectedObjects.Count}/{indices.Length}, feedback={stage.SelectionMoveFeedbackActive}, d2d={stage.LastFrameUsedDirect2D}.");
                 if (sample == -8)
                 {
                     Console.WriteLine(FormattableString.Invariant($"bitmap_pointer_first_move_ms={elapsed:0.###}"));
@@ -892,7 +1010,14 @@ internal static partial class Benchmark
                     var entries = (System.Collections.IDictionary)RequireField(typeof(Direct2DStageRenderer), "_bitmapObjectCache").GetValue(gpu)!;
                     Console.WriteLine($"bitmap_pointer_gpu_cache_entries={entries.Count} bytes={RequireField(typeof(Direct2DStageRenderer), "_bitmapObjectCacheBytes").GetValue(gpu)} source_reads={BitmapImageRasterizer.SourceReadCount} evictions={BitmapImageRasterizer.CacheEvictionCount}");
                     var timings = (Direct2DStageRenderer)gpu;
+                    foreach (var group in entries.Keys.Cast<object>()
+                        .GroupBy(entryKey => entryKey.GetType().GetField("Item2")!.GetValue(entryKey)))
+                        Console.WriteLine($"bitmap_pointer_gpu_mip={group.Key} entries={group.Count()}");
                     Console.WriteLine(FormattableString.Invariant($"bitmap_pointer_gpu_end_draw_ms={timings.DiagnosticEndDrawMilliseconds:0.###} swap_chain_present_ms={timings.DiagnosticSwapChainPresentMilliseconds:0.###}"));
+                    Console.WriteLine(FormattableString.Invariant($"bitmap_pointer_cpu collect_ms={timings.DiagnosticCollectMilliseconds:0.###} objects_ms={timings.DiagnosticObjectDrawMilliseconds:0.###} selection_ms={timings.DiagnosticSelectionMilliseconds:0.###} coverage_ms={timings.DiagnosticBitmapCoverageMilliseconds:0.###}"));
+                    Console.WriteLine($"bitmap_pointer_gpu_draws={timings.BitmapDrawCalls} region_draws={timings.BitmapRegionDrawCalls} occlusion_culls={timings.BitmapOcclusionCulls}");
+                    Console.WriteLine($"bitmap_pointer_origin_cache_builds={timings.BitmapOriginBuilds} reuses={timings.BitmapOriginReuses}");
+                    Console.WriteLine($"bitmap_pointer_adapter={((StageGpuDevice?)RequireField(typeof(Direct2DStageRenderer), "_gpuDevice").GetValue(gpu))?.AdapterName ?? "legacy"}");
                 }
                 if (sample >= 0) samples.Add(elapsed);
             }
@@ -925,6 +1050,35 @@ internal static partial class Benchmark
             AssertTimeline(maximumOutlineError <= 0.02f,
                 "Bitmap movement outline reuse changed the exhaustive visible contours.");
             Console.WriteLine(FormattableString.Invariant($"bitmap_pointer_outline_oracle_max_world_error={maximumOutlineError:0.######}"));
+            var occlusionPolicy = Environment.GetEnvironmentVariable("VECTOR_DISABLE_BITMAP_OCCLUSION");
+            var originPolicy = Environment.GetEnvironmentVariable("VECTOR_DISABLE_BITMAP_ORIGIN_CACHE");
+            var highlightPolicy = Environment.GetEnvironmentVariable("VECTOR_DISABLE_BITMAP_HIGHLIGHT_CACHE");
+            try
+            {
+                Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_OCCLUSION", "1");
+                Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_ORIGIN_CACHE", "1");
+                Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_HIGHLIGHT_CACHE", "1");
+                renderer.InvalidateLayerContentHighlightCommands();
+                stage.Invalidate(); PaintStage(stage); PaintStage(stage);
+                var expected = CaptureStageGpuPixels(stage);
+                Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_OCCLUSION", occlusionPolicy);
+                Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_ORIGIN_CACHE", originPolicy);
+                Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_HIGHLIGHT_CACHE", highlightPolicy);
+                renderer.InvalidateLayerContentHighlightCommands();
+                stage.Invalidate(); PaintStage(stage); PaintStage(stage);
+                var actual = CaptureStageGpuPixels(stage);
+                var delta = actual.Zip(expected, (a, b) => Math.Abs(a - b)).Max();
+                // Match the existing affine-layer oracle's one-byte rounding
+                // tolerance when equivalent GPU texture windows are composed.
+                AssertTimeline(delta <= 1, $"The package drag changed exhaustive GPU pixels (delta={delta}).");
+                Console.WriteLine($"bitmap_pointer_exhaustive_pixel_delta={delta}");
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_OCCLUSION", occlusionPolicy);
+                Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_ORIGIN_CACHE", originPolicy);
+                Environment.SetEnvironmentVariable("VECTOR_DISABLE_BITMAP_HIGHLIGHT_CACHE", highlightPolicy);
+            }
         }
         finally { up.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, end.X, end.Y, 0)]); }
         samples.Sort();

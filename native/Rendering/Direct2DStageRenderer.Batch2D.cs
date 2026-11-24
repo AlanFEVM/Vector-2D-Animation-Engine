@@ -8,12 +8,14 @@ namespace VectorAnimationEngine;
 internal sealed partial class Direct2DStageRenderer
 {
     private const int MaxBatch2DLayerCacheEntries = 8;
+    private const int MaxBatch2DRejectedLayers = 128;
     private const float Batch2DMinimumScreenExtent = 0.75f;
     private const float Batch2DMinimumStrokeScreenExtent = 4f;
     private const float Batch2DMinimumStrokePixels = 0.1f;
     private const float Batch2DRealizationTolerancePixels = 0.2f;
 
     private readonly Dictionary<(VectorScene Scene, int Layer), CachedBatch2DLayer> _batch2DLayerCache = [];
+    private readonly Dictionary<(VectorScene Scene, int Layer), int> _batch2DRejectedObjects = [];
     private readonly List<int> _batch2DObjects = [];
     private ID2D1DeviceContext2? _deviceContext2;
 
@@ -95,8 +97,21 @@ internal sealed partial class Direct2DStageRenderer
         if (scene.HasDisplayLayerEffects) return false;
         if (stage.HasSceneCompositionMaskClips(scene)) return false;
 
-        var scaleKey = Batch2DRealizationScaleKey(stage);
         var key = (scene, layer);
+        if (_batch2DRejectedObjects.TryGetValue(key, out var rejected))
+        {
+            // Recheck the object itself so this remains valid after frame changes,
+            // edits, or packed indices being reused. Camera movement cannot fix it.
+            if ((uint)rejected < scene.ObjectCount && scene.ObjectLayer[rejected] == layer
+                && scene.IsObjectActive(rejected, stage.Frame) && !CanBatch2DObject(scene, rejected))
+            {
+                return false;
+            }
+
+            _batch2DRejectedObjects.Remove(key);
+        }
+
+        var scaleKey = Batch2DRealizationScaleKey(stage);
         if (!_batch2DLayerCache.TryGetValue(key, out var cached)
             || !cached.Matches(scene, layer, stage.Frame, scaleKey))
         {
@@ -164,10 +179,22 @@ internal sealed partial class Direct2DStageRenderer
         {
             if ((uint)index >= scene.ObjectCount) continue;
             if (scene.ObjectLayer[index] != layer) continue;
+            if (!CanBatch2DObject(scene, index))
+            {
+                if (_batch2DRejectedObjects.Count >= MaxBatch2DRejectedLayers)
+                    _batch2DRejectedObjects.Remove(_batch2DRejectedObjects.Keys.First());
+                _batch2DRejectedObjects[(scene, layer)] = index;
+                return null;
+            }
             _batch2DObjects.Add(index);
         }
 
         if (_batch2DObjects.Count == 0) return null;
+        // Check view-dependent constraints before allocating any GPU geometry.
+        foreach (var index in _batch2DObjects)
+        {
+            if (!CanBatch2DObjectAtView(stage, scene, index)) return null;
+        }
         _batch2DObjects.Sort((a, b) => SceneRenderOrderBuffer.CompareObjects(scene, a, b));
 
         var runs = new List<Batch2DRun>();
@@ -218,7 +245,7 @@ internal sealed partial class Direct2DStageRenderer
                 continue;
             }
 
-            if (!TryGetBatch2DRunKey(stage, scene, index, pass, out var runKey)) return false;
+            if (!TryGetBatch2DRunKey(scene, index, pass, out var runKey)) return false;
             if (!hasCurrent || !currentKey.Equals(runKey))
             {
                 if (!FlushBatch2DRun(stage, scene, runs, currentKey, currentObjects, hasCurrent)) return false;
@@ -312,18 +339,40 @@ internal sealed partial class Direct2DStageRenderer
         runs.Clear();
     }
 
-    private bool TryGetBatch2DRunKey(
-        StageControl stage,
+    private static bool CanBatch2DObject(VectorScene scene, int index)
+    {
+        var shape = scene.ShapeKind[index];
+        return (!SceneRenderOrder.HasFill(shape) || TryGetBatch2DRunKey(scene, index, SceneRenderPass.Fill, out _))
+            && (!SceneRenderOrder.HasStroke(shape, scene.Stroke[index])
+                || TryGetBatch2DRunKey(scene, index, SceneRenderPass.Stroke, out _));
+    }
+
+    private static bool CanBatch2DObjectAtView(StageControl stage, VectorScene scene, int index)
+    {
+        var shape = scene.ShapeKind[index];
+        var hasFill = SceneRenderOrder.HasFill(shape);
+        var hasStroke = SceneRenderOrder.HasStroke(shape, scene.Stroke[index]);
+        if (!hasFill && !hasStroke) return true;
+        if (stage.IsObjectHiddenForRendering(scene, index)) return false;
+        if (shape == ShapeKind.Line) return true;
+
+        // The per-object path clamps fills to 0.75 px and omits strokes at 4 px or less.
+        var width = stage.WorldLengthToScreen(scene.Width[index]);
+        var height = stage.WorldLengthToScreen(scene.Height[index]);
+        return (!hasFill || !(width < Batch2DMinimumScreenExtent || height < Batch2DMinimumScreenExtent))
+            && (!hasStroke || width > Batch2DMinimumStrokeScreenExtent && height > Batch2DMinimumStrokeScreenExtent);
+    }
+
+    private static bool TryGetBatch2DRunKey(
         VectorScene scene,
         int index,
         SceneRenderPass pass,
         out Batch2DRunKey key)
     {
         key = default;
-        if (stage.IsObjectHiddenForRendering(scene, index)) return false;
         if (scene.GetSvgStrokeStyle(index) is not null) return false;
         if (scene.HasGradient(index)) return false;
-        if (scene.TryGetObjectDistortions(index, out _)) return false;
+        if (scene.TryGetObjectDistortionsView(index, out _)) return false;
 
         var argb = pass == SceneRenderPass.Fill ? scene.Argb[index] : scene.StrokeArgb[index];
         // Merging semi-transparent runs would double-blend the overlap, so those
@@ -350,19 +399,9 @@ internal sealed partial class Direct2DStageRenderer
             case ShapeKind.Triangle:
             case ShapeKind.Polygon:
             case ShapeKind.Star:
-                var screenWidth = stage.WorldLengthToScreen(scene.Width[index]);
-                var screenHeight = stage.WorldLengthToScreen(scene.Height[index]);
-                if (pass == SceneRenderPass.Fill)
-                {
-                    // The per-object path clamps each screen extent to 0.75 px;
-                    // very small objects keep that path so the clamp still applies.
-                    if (screenWidth < Batch2DMinimumScreenExtent || screenHeight < Batch2DMinimumScreenExtent) return false;
-                }
-                else
+                if (pass == SceneRenderPass.Stroke)
                 {
                     if (scene.Stroke[index] <= 0) return false;
-                    // The per-object path skips strokes on shapes below 4 screen pixels.
-                    if (!(screenWidth > Batch2DMinimumStrokeScreenExtent && screenHeight > Batch2DMinimumStrokeScreenExtent)) return false;
                     worldStroke = scene.Stroke[index];
                 }
 
@@ -465,5 +504,6 @@ internal sealed partial class Direct2DStageRenderer
     {
         foreach (var cached in _batch2DLayerCache.Values) cached.Dispose();
         _batch2DLayerCache.Clear();
+        _batch2DRejectedObjects.Clear();
     }
 }

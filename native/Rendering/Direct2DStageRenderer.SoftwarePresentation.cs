@@ -141,7 +141,8 @@ internal sealed partial class Direct2DStageRenderer
     internal bool TryPresentSoftwareFrame(StageControl stage, Action<Graphics> drawFrame, bool preparedFrame = false)
     {
         if (_disabled || stage.Width <= 0 || stage.Height <= 0
-            || (!preparedFrame && !stage.ShotWorkspacePreviewActive && !RequiresSoftwareLayerCompositing(stage) && !RequiresSoftwareDistortion(stage))) return false;
+            || (!preparedFrame && !stage.ShotWorkspacePreviewActive && !RequiresSoftwareLayerCompositing(stage)
+                && !RequiresSoftwareDistortion(stage, allowGpuBitmaps: false))) return false;
         var drawing = false;
         try
         {

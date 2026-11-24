@@ -40,6 +40,8 @@ internal readonly record struct TimelineTween(int StartFrame, int EndFrame, Time
 {
     internal const int MaxCurveAnchorCount = 64;
 
+    public bool IsEmptyPlaceholder { get; init; }
+
     private static readonly TweenCurveAnchor[] LinearCurveAnchors =
     [
         new(0, 0),
@@ -91,6 +93,29 @@ internal readonly record struct TimelineTween(int StartFrame, int EndFrame, Time
 
     internal TimelineTween WithCurveAnchors(TweenCurveAnchor[] normalizedAnchors) =>
         new(StartFrame, EndFrame, Kind) { CurveAnchors = normalizedAnchors };
+
+    internal TimelineTween Slice(int startFrame, int endFrame)
+    {
+        var segment = new TimelineTween(startFrame, endFrame, Kind);
+        if (IsLinearCurve) return segment;
+
+        var startTime = (float)(startFrame - StartFrame) / (EndFrame - StartFrame);
+        var endTime = (float)(endFrame - StartFrame) / (EndFrame - StartFrame);
+        var startValue = ProgressAtNormalized(startTime);
+        var endValue = ProgressAtNormalized(endTime);
+        if (endTime <= startTime || endValue <= startValue) return segment;
+
+        var anchors = new List<TweenCurveAnchor> { new(0, 0) };
+        foreach (var anchor in CurveAnchors)
+        {
+            if (anchor.Time <= startTime || anchor.Time >= endTime) continue;
+            anchors.Add(new TweenCurveAnchor((anchor.Time - startTime) / (endTime - startTime),
+                Math.Clamp((anchor.Value - startValue) / (endValue - startValue), 0, 1)));
+        }
+        anchors.Add(new(1, 1));
+        return TryNormalizeCurveAnchors(anchors, out var normalized)
+            ? segment.WithCurveAnchors(normalized) : segment;
+    }
 
     internal bool CurveEquals(IReadOnlyList<TweenCurveAnchor> normalizedAnchors)
     {

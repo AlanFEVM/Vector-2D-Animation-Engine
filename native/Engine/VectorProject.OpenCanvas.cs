@@ -20,7 +20,7 @@ internal sealed partial class VectorProject
 
     internal string GetNextSymbolName()
     {
-        var symbols = _drawingObjects.Where(item => !item.IsOpenCanvas).ToArray();
+        var symbols = _drawingObjects.Where(item => item.IsLibrarySymbol).ToArray();
         var initial = symbols.FirstOrDefault();
         var unusedInitial = initial is not null && initial.Name == "Symbol 001"
             && initial.Scene.ObjectCount == 0 && initial.Instances.Count == 0

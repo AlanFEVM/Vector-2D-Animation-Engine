@@ -20,7 +20,7 @@ internal sealed partial class MainForm
         {
             target = _drawingObjects.FirstOrDefault(item => !item.IsOpenCanvas
                 && item.Id == _currentScopeDrawingObjectId)
-                ?? _drawingObjects.FirstOrDefault(item => !item.IsOpenCanvas);
+                ?? _drawingObjects.FirstOrDefault(item => item.IsLibrarySymbol);
         }
         else
         {

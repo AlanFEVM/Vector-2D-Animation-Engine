@@ -2001,7 +2001,7 @@ internal sealed partial class StageControl
         float materialOpacity)
     {
         if (!Scene.TryGetBitmapObjectData(objectIndex, out var data)) return;
-        if (!TryDecodeBitmapImage(data.ImageAssetId, out var raster)) return;
+        if (!TryDecodeBitmapImage(data, out var raster)) return;
         raster = BitmapImageRasterizer.ApplyObjectClip(raster, data);
         var contour = GetReference3DProjectedContours(objectIndex)
             .FirstOrDefault(candidate => candidate.Closed && candidate.Points.Length >= 3);
@@ -2049,6 +2049,14 @@ internal sealed partial class StageControl
         var state = graphics.Save();
         try
         {
+            if (TrySnapBlockBitmapFrame(data, new(topLeft,
+                    new(topRight.X - topLeft.X, topRight.Y - topLeft.Y),
+                    new(bottomLeft.X - topLeft.X, bottomLeft.Y - topLeft.Y)),
+                    BitmapImageSampling(data.ImageAssetId), out var snapped))
+            {
+                DrawSnappedBlockBitmap(graphics, raster, bitmap.Bitmap, snapped, opacity);
+                return;
+            }
             graphics.InterpolationMode = BitmapImageSampling(data.ImageAssetId) == BitmapSampling.Point
                 ? InterpolationMode.NearestNeighbor
                 : InterpolationMode.HighQualityBicubic;

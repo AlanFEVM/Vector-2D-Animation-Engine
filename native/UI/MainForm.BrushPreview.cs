@@ -2,6 +2,27 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class MainForm
 {
+    private float _pressureBrushSizePoints = 10;
+    private PressureBrushOptions _freehandPressureOptions = PressureBrushOptions.Default;
+    private BrushShape? _pressureTipShape;
+    private (int Roundness, int Angle) _pressureTipKey;
+
+    private bool ActiveBrushContinuous() => _tool == ToolMode.PressureBrush || _drawSettings.BrushContinuous;
+
+    private BrushShape ActiveBrushShape()
+    {
+        if (_tool != ToolMode.PressureBrush) return _brushShape;
+        var options = _freehandDrawing ? _freehandPressureOptions : _drawSettings.PressureBrushOptions;
+        var key = (options.Roundness, options.Angle);
+        if (_pressureTipShape is null || _pressureTipKey != key)
+        {
+            _pressureTipKey = key;
+            _pressureTipShape = BrushShape.CreateTraditionalBrush(
+                TraditionalBrushTipKind.Round, options.Roundness, options.Angle);
+        }
+        return _pressureTipShape;
+    }
+
     private int[] BuildBrushStrokeForCommit(DrawingToolCommit commit, Func<int[]> build)
     {
         try { return build(); }
@@ -27,6 +48,34 @@ internal sealed partial class MainForm
         }
     }
 
+    private int[] CommitPressureBrushPreview()
+    {
+        // Pointer-up can contain samples that have not reached the throttled preview yet.
+        // Finish its mutable tail, then extract the displayed ink into editable geometry.
+        if (_pressureInk is not null && UpdatePressureInkPreview())
+        {
+            return _pressureInk.Commit(_scene, _scene.ActiveLayer, _freehandColor);
+        }
+        if (!TryUpdateBrushAreaPreview(force: true)) return [];
+        return BrushStrokeBuilder.AddPreparedBrushStroke(_scene, _scene.ActiveLayer, _brushAreaPreviewStage);
+    }
+
+    private BrushStrokeBuilder.PressureInk? _pressureInk;
+
+    private bool UpdatePressureInkPreview()
+    {
+        if (!_freehandPressureBrush || _materialEditor.GetGradientPaintForTarget(strokeTarget: false).Kind != GradientKind.Solid)
+            return false;
+        FreehandStrokeProcessor.UpdatePressurePreviewProfile(_pressureBrushSamples, _freehandStrokeUnits,
+            _brushAreaPressureProfile, _brushAreaPressureDistances, _freehandPressureOptions);
+        var profile = ProcessBrushPressurePreview();
+        _pressureInk ??= new BrushStrokeBuilder.PressureInk(ActiveBrushShape());
+        _pressureInk.Update(profile, _brushPreviewPressureStableCount, _freehandBrushSmoothing, _freehandPencilWorldPerPixel);
+        ClearShapeGradientBrushPreview();
+        _stage.SetPressureInkPreview(_pressureInk.Pieces, _freehandColor);
+        return true;
+    }
+
     private readonly List<PointF> _brushPreviewTrajectory = [];
     private int _brushPreviewStableSourceCount;
     private int _brushPreviewStablePointCount;
@@ -34,7 +83,7 @@ internal sealed partial class MainForm
     private int _brushPreviewPressureStableCount;
     private int _brushPreviewPressureSmoothing = -1;
     private int _brushPreviewPressureSealedCount;
-    private VectorSceneSnapshot? _brushPreviewPressureSealedScene;
+    private BrushStrokeBuilder.PressurePreview? _brushPressureGeometry;
 
     private PressureBrushPoint[] ProcessBrushPressurePreview()
     {
@@ -48,43 +97,34 @@ internal sealed partial class MainForm
         _brushPreviewPressureSmoothing = smoothing;
         var support = BrushStrokeBuilder.PressureSmoothingSupport(smoothing);
         var first = Math.Max(0, _brushPreviewPressureStableCount - support);
-        var tail = BrushStrokeBuilder.ProcessPressureTrajectory(
-            _brushAreaPressureProfile.GetRange(first, _brushAreaPressureProfile.Count - first), smoothing);
+        var source = _brushAreaPressureProfile.GetRange(first, _brushAreaPressureProfile.Count - first);
+        var tail = _freehandPressureBrush
+            ? FreehandStrokeProcessor.SmoothPressureProfileSpatial(source, smoothing, _freehandPencilWorldPerPixel)
+            : BrushStrokeBuilder.ProcessPressureTrajectory(source, smoothing);
         _brushPreviewPressureProfile.RemoveRange(_brushPreviewPressureStableCount,
             _brushPreviewPressureProfile.Count - _brushPreviewPressureStableCount);
         _brushPreviewPressureProfile.AddRange(tail.Skip(_brushPreviewPressureStableCount - first));
         _brushPreviewPressureStableCount = Math.Max(0, _brushAreaPressureProfile.Count - support - 1);
-        return _brushPreviewPressureProfile.ToArray();
+        var result = _brushPreviewPressureProfile.ToArray();
+        var firstTapered = _freehandPressureOptions.ApplyEndTaper(result, _freehandStrokeUnits);
+        _brushPreviewPressureStableCount = Math.Min(_brushPreviewPressureStableCount, firstTapered);
+        return result;
     }
 
     private int[] BuildPressureBrushAreaPreview()
     {
-        const int sealedSpan = 64;
         FreehandStrokeProcessor.UpdatePressurePreviewProfile(
-            _pressureBrushSamples, _freehandStrokeUnits, _brushAreaPressureProfile, _brushAreaPressureDistances);
+            _pressureBrushSamples, _freehandStrokeUnits, _brushAreaPressureProfile, _brushAreaPressureDistances, _freehandPressureOptions);
         var profile = ProcessBrushPressurePreview();
         if (profile.Length == 0) return [];
-        if (_brushPreviewPressureSealedScene is null)
-            _brushPreviewPressureSealedScene = _brushAreaPreviewStage.CreateSnapshot();
-        else _brushAreaPreviewStage.RestoreSnapshot(_brushPreviewPressureSealedScene);
-        while (_brushPreviewPressureStableCount - _brushPreviewPressureSealedCount >= sealedSpan)
-        {
-            var last = _brushPreviewPressureSealedCount + sealedSpan;
-            var additions = Append(last);
-            _brushAreaPreviewStage.MergeSameColorFillsAroundNewObjects(additions, connectNearby: false, frame: 0);
-            _brushPreviewPressureSealedCount = last;
-            _brushPreviewPressureSealedScene = _brushAreaPreviewStage.CreateSnapshot();
-        }
-        return Append(profile.Length);
-
-        int[] Append(int last)
-        {
-            var first = Math.Max(0, _brushPreviewPressureSealedCount - 1);
-            return BrushStrokeBuilder.AddPressureProfile(
-                _brushAreaPreviewStage, _scene.ActiveLayer, profile[first..last], _freehandColor, _brushShape,
-                _freehandBrushSmoothing, _freehandPencilWorldPerPixel,
-                _drawSettings.BrushFrequency, _drawSettings.BrushContinuous, trajectoryPrepared: true);
-        }
+        _brushPressureGeometry ??= new BrushStrokeBuilder.PressurePreview(ActiveBrushShape());
+        // This scene contains one gesture only. Its union is built before fitting, rather
+        // than repeatedly materializing and merging editable paths from preceding frames.
+        var additions = _brushPressureGeometry.Build(
+            _brushAreaPreviewStage, _scene.ActiveLayer, profile, _brushPreviewPressureStableCount,
+            _freehandColor, _freehandBrushSmoothing, _freehandPencilWorldPerPixel);
+        _brushPreviewPressureSealedCount = _brushPressureGeometry.SealedCount;
+        return additions;
     }
 
     private PointF[] ProcessBrushPreviewTrajectory()
@@ -121,6 +161,6 @@ internal sealed partial class MainForm
         _brushPreviewPressureStableCount = 0;
         _brushPreviewPressureSmoothing = -1;
         _brushPreviewPressureSealedCount = 0;
-        _brushPreviewPressureSealedScene = null;
+        _brushPressureGeometry = null;
     }
 }

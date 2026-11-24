@@ -4,6 +4,12 @@ internal sealed class OperationPreferencesDialog : ModernDialogForm
 {
     private readonly Button _leftToolbar = new SegmentedButton { Text = "Left" };
     private readonly Button _topToolbar = new SegmentedButton { Text = "Top" };
+    private readonly ModernNumericUpDown _imageAutoPlaceLimit = new()
+    {
+        Minimum = 0, Maximum = 1000, DecimalPlaces = 0, Increment = 1,
+        Dock = DockStyle.Fill, Margin = new Padding(8, 0, 0, 0),
+        AccessibleName = "Image import auto-place limit", MouseWheelChangesValue = false
+    };
     public ToolbarPosition SelectedToolbarPosition { get; private set; }
     internal Func<bool>? ApplyRequested { get; set; }
     private readonly ModernToggleSwitch _freeTransformShiftProportional = new()
@@ -18,8 +24,9 @@ internal sealed class OperationPreferencesDialog : ModernDialogForm
     {
     }
 
-    public OperationPreferencesDialog(bool freeTransformShiftProportionalEnabled, ToolbarPosition toolbarPosition = ToolbarPosition.Left)
-        : base("Operation preferences", new Size(620, 380))
+    public OperationPreferencesDialog(bool freeTransformShiftProportionalEnabled, ToolbarPosition toolbarPosition = ToolbarPosition.Left,
+        int imageImportAutoPlaceLimit = ApplicationSettings.DefaultImageImportAutoPlaceLimit)
+        : base("Operation preferences", new Size(620, 480))
     {
         AccessibleName = "Operation preferences";
         var layout = new TableLayoutPanel
@@ -27,13 +34,15 @@ internal sealed class OperationPreferencesDialog : ModernDialogForm
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 1,
-            RowCount = 5,
+            RowCount = 7,
             Margin = Padding.Empty
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
         DialogContent.Controls.Add(layout);
@@ -64,6 +73,25 @@ internal sealed class OperationPreferencesDialog : ModernDialogForm
         toolbarRow.Controls.Add(_topToolbar, 2, 0);
         SelectToolbarPosition(toolbarPosition);
         layout.Controls.Add(toolbarRow, 0, 0);
+        var importRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty
+        };
+        importRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 68));
+        importRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
+        importRow.Controls.Add(new Label
+        {
+            Text = "Image import auto-place limit", Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft, ForeColor = Theme.Text, Margin = Padding.Empty
+        }, 0, 0);
+        _imageAutoPlaceLimit.Value = Math.Clamp(imageImportAutoPlaceLimit, 0, 1000);
+        importRow.Controls.Add(_imageAutoPlaceLimit, 1, 0);
+        layout.Controls.Add(importRow, 0, 4);
+        layout.Controls.Add(new Label
+        {
+            Text = "Batches above this number stay in the library. Drag selected assets onto the stage to place them. Set 0 to always import into the library only.",
+            Dock = DockStyle.Fill, ForeColor = Theme.Muted, Margin = new Padding(0, 6, 0, 0)
+        }, 0, 5);
         layout.Controls.Add(new Label
         {
             Text = "Left: vertical toolbar. Top: horizontal toolbar with tool groups opening as a grid.",
@@ -92,7 +120,7 @@ internal sealed class OperationPreferencesDialog : ModernDialogForm
             BackColor = Theme.Panel,
             TextAlign = ContentAlignment.MiddleLeft,
             Margin = Padding.Empty
-        }, 0, 4);
+        }, 0, 6);
         AcceptButton = AddDialogAction("Apply", DialogResult.OK, DialogActionStyle.Primary,
             () => ApplyRequested?.Invoke() ?? true);
         CancelButton = AddDialogAction("Cancel", DialogResult.Cancel);
@@ -100,6 +128,7 @@ internal sealed class OperationPreferencesDialog : ModernDialogForm
     }
 
     public bool FreeTransformShiftProportionalEnabled => _freeTransformShiftProportional.Checked;
+    public int ImageImportAutoPlaceLimit => (int)_imageAutoPlaceLimit.Value;
 
     private void SelectToolbarPosition(ToolbarPosition position)
     {

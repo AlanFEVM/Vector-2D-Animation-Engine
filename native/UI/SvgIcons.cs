@@ -90,6 +90,7 @@ internal enum SvgIconKind
     AssetImage,
     AssetSvg,
     SoloLayerVisible,
+    SoloUnlockLayerVisible,
     AllLayersVisible,
     LinearAutoKeyframe,
     LinearLayerParenting,
@@ -904,6 +905,7 @@ internal static partial class SvgIcons
                 break;
             }
             case SvgIconKind.SoloLayerVisible:
+            case SvgIconKind.SoloUnlockLayerVisible:
             case SvgIconKind.AllLayersVisible:
             case SvgIconKind.LinearAutoKeyframe:
             case SvgIconKind.LinearLayerParenting:
@@ -911,22 +913,34 @@ internal static partial class SvgIcons
                 using var outline = new Pen(color, referenceSize / 12f)
                 { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
                 PointF V(float x, float y) => P(referenceBounds, x, y);
-                if (kind is SvgIconKind.SoloLayerVisible or SvgIconKind.AllLayersVisible)
+                if (kind is SvgIconKind.SoloLayerVisible or SvgIconKind.SoloUnlockLayerVisible or SvgIconKind.AllLayersVisible)
                 {
-                    PointF[] layer = kind == SvgIconKind.SoloLayerVisible
-                        ? [V(4, 12), V(12, 8), V(20, 12), V(12, 16)]
-                        : [V(2, 7), V(10, 3), V(18, 7), V(10, 11)];
+                    PointF[] layer = kind == SvgIconKind.AllLayersVisible
+                        ? [V(2, 7), V(10, 3), V(18, 7), V(10, 11)]
+                        : [V(4, 12), V(12, 8), V(20, 12), V(12, 16)];
                     g.DrawPolygon(outline, layer);
                     if (kind == SvgIconKind.AllLayersVisible)
                     {
                         g.DrawLines(outline, [V(2, 10.5f), V(10, 14.5f), V(18, 10.5f)]);
                         g.DrawLines(outline, [V(2, 14), V(10, 18), V(12, 17)]);
                     }
-                    using var eye = new GraphicsPath();
-                    eye.AddBezier(V(13, 20), V(15.5f, 16.5f), V(20.5f, 16.5f), V(23, 20));
-                    eye.AddBezier(V(23, 20), V(20.5f, 23.5f), V(15.5f, 23.5f), V(13, 20));
-                    g.DrawPath(outline, eye);
-                    g.DrawEllipse(outline, Rect(referenceBounds, 16.75f, 18.75f, 2.5f, 2.5f));
+                    if (kind == SvgIconKind.SoloUnlockLayerVisible)
+                    {
+                        // Open padlock badge: the left shackle leg plugs into the body while the
+                        // right leg stops short of it, so the shackle reads as lifted/unlocked.
+                        g.DrawRectangle(outline, Rect(referenceBounds, 15f, 18.8f, 6.8f, 4.6f));
+                        g.DrawArc(outline, Rect(referenceBounds, 16.2f, 14.6f, 4.4f, 4.4f), 180f, 180f);
+                        g.DrawLine(outline, V(16.2f, 16.8f), V(16.2f, 19.4f));
+                        g.DrawLine(outline, V(20.6f, 16.8f), V(20.6f, 17.7f));
+                    }
+                    else
+                    {
+                        using var eye = new GraphicsPath();
+                        eye.AddBezier(V(13, 20), V(15.5f, 16.5f), V(20.5f, 16.5f), V(23, 20));
+                        eye.AddBezier(V(23, 20), V(20.5f, 23.5f), V(15.5f, 23.5f), V(13, 20));
+                        g.DrawPath(outline, eye);
+                        g.DrawEllipse(outline, Rect(referenceBounds, 16.75f, 18.75f, 2.5f, 2.5f));
+                    }
                 }
                 else if (kind == SvgIconKind.LinearAutoKeyframe)
                 {

@@ -10,7 +10,13 @@ namespace VectorAnimationEngine;
 /// Cache key for a decoded bitmap. The content hash makes an edited or replaced asset
 /// produce a new key instead of resurrecting a stale decode.
 /// </summary>
-internal readonly record struct BitmapImageRasterKey(string ContentSha256, int PixelWidth, int PixelHeight);
+internal readonly record struct BitmapImageRasterKey(string ContentSha256, int PixelWidth, int PixelHeight)
+{
+    public uint ShadowCorners { get; init; }
+    public uint WarmLightCorners { get; init; }
+    public int? BiomeTintArgb { get; init; }
+    public bool BiomeTintGrassSide { get; init; }
+}
 
 /// <summary>
 /// Fully decoded, premultiplied 32bpp image ready for upload to either renderer.
@@ -89,6 +95,10 @@ internal static class BitmapImageRasterizer
 
     private static readonly Dictionary<BitmapImageRasterKey, CacheEntry> RasterCache = new();
     private static readonly Dictionary<SourceCacheKey, SourceCacheEntry> SourceCache = new();
+    // Keep only small validation records with their live project asset. Pixel
+    // eviction must not discard the identity of an uploaded GPU texture, and
+    // closing/replacing a project must not keep its asset definitions alive.
+    private static readonly ConditionalWeakTable<ImageAssetDefinition, AssetSourceProof> AssetSources = new();
     private static readonly object CacheSync = new();
     private static long _cacheBytes;
     private static long _useSequence;
@@ -100,20 +110,36 @@ internal static class BitmapImageRasterizer
     private static readonly ConditionalWeakTable<BitmapObjectData, string> ClipKeys = new();
     private static readonly HashSet<BitmapImageRasterKey> OpaqueSources = [];
 
-    internal static bool IsKnownOpaqueSource(BitmapImageRasterKey key)
+    internal static bool IsKnownOpaqueSource(BitmapImageRasterKey key, ImageAssetDefinition? asset = null)
     {
-        lock (CacheSync) return OpaqueSources.Contains(key);
+        lock (CacheSync)
+            return asset is not null && AssetSources.TryGetValue(asset, out var proof)
+                ? proof.Entry.RasterKey == key && proof.Entry.Opaque
+                : OpaqueSources.Contains(key);
     }
 
-    internal static bool TryGetSourceKey(FileInfo file, BitmapImageImportSettings settings, out BitmapImageRasterKey key)
+    internal static bool TryGetSourceKey(FileInfo file, BitmapImageImportSettings settings,
+        out BitmapImageRasterKey key, ImageAssetDefinition? asset = null)
     {
         key = default;
         if (!settings.IsValid || !file.Exists) return false;
         var stamp = new SourceStamp(file.Length, file.LastWriteTimeUtc, file.CreationTimeUtc);
+        var sourceKey = new SourceCacheKey(file.FullName.ToUpperInvariant(), settings);
         lock (CacheSync)
         {
-            if (!SourceCache.TryGetValue(new(file.FullName.ToUpperInvariant(), settings), out var source)
+            if (asset is not null && AssetSources.TryGetValue(asset, out var proof)
+                && proof.SourceKey == sourceKey && proof.Entry.Stamp == stamp)
+            {
+                key = proof.Entry.RasterKey;
+                return true;
+            }
+            if (!SourceCache.TryGetValue(sourceKey, out var source)
                 || source.Stamp != stamp) return false;
+            if (asset is not null)
+            {
+                AssetSources.Remove(asset);
+                AssetSources.Add(asset, new(sourceKey, source));
+            }
             key = source.RasterKey;
             return true;
         }
@@ -128,6 +154,89 @@ internal static class BitmapImageRasterizer
             System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(value.VisibleContours,
                 new System.Text.Json.JsonSerializerOptions { IncludeFields = true }))));
         return source with { ContentSha256 = source.ContentSha256 + ":clip:" + clipKey };
+    }
+
+    internal static BitmapImageRasterKey ObjectAppearanceKey(BitmapImageRasterKey source, BitmapObjectData data) =>
+        source with
+        {
+            ShadowCorners = data.ShadowCorners,
+            WarmLightCorners = data.WarmLightCorners,
+            BiomeTintArgb = data.BiomeTintArgb,
+            BiomeTintGrassSide = data.BiomeTintArgb.HasValue && data.BiomeTintGrassSide
+        };
+
+    internal static BitmapImageRaster ApplyShadow(BitmapImageRaster source, uint corners, uint warmth = 0)
+    {
+        if ((corners | warmth) == 0) return source;
+        return ApplyObjectAppearance(source, source.Key with { ShadowCorners = corners, WarmLightCorners = warmth });
+    }
+
+    // Derive from the decoded source so the lookup key and rendered pixels describe the same appearance.
+    internal static BitmapImageRaster ApplyObjectAppearance(BitmapImageRaster source, BitmapImageRasterKey key)
+    {
+        if (key == source.Key) return source;
+        var corners = key.ShadowCorners;
+        var warmth = key.WarmLightCorners;
+        lock (CacheSync)
+        {
+            if (RasterCache.TryGetValue(key, out var cached))
+            {
+                cached.LastUse = ++_useSequence;
+                return cached.Raster;
+            }
+            var result = new BitmapImageRaster(key);
+            var tintRgb = (key.BiomeTintArgb ?? -1) & 0x00ffffff;
+            var tintB = tintRgb & 255;
+            var tintG = (tintRgb >> 8) & 255;
+            var tintR = tintRgb >> 16;
+            var maskGrassSide = key.BiomeTintArgb.HasValue && key.BiomeTintGrassSide;
+            var hasTint = maskGrassSide || tintRgb != 0x00ffffff;
+            // Opaque texels of the bundled 16x16 grass_block_side_overlay, low bit at the left.
+            ReadOnlySpan<ushort> grassSideRows = [0xffff, 0xffdf, 0x6f5d, 0x0510];
+            var offset = 0;
+            for (var y = 0; y < source.PixelHeight; y++)
+            {
+                var grassRow = maskGrassSide ? GrassSideMaskCoordinate(y, source.PixelHeight) : -1;
+                var grassMask = (uint)grassRow < (uint)grassSideRows.Length ? grassSideRows[grassRow] : 0;
+                var v = (2 * y + 1) * 128 / source.PixelHeight;
+                var (left, right) = InterpolateEdges(corners, v);
+                var (warmLeft, warmRight) = InterpolateEdges(warmth, v);
+                for (var x = 0; x < source.PixelWidth; x++, offset += 4)
+                {
+                    var u = (2 * x + 1) * 128 / source.PixelWidth;
+                    var shade = 255 - ((left * (256 - u) + right * u + 32768) >> 16);
+                    var warm = (warmLeft * (256 - u) + warmRight * u + 32768) >> 16;
+                    var b = (int)source.Pixels[offset];
+                    var g = (int)source.Pixels[offset + 1];
+                    var r = (int)source.Pixels[offset + 2];
+                    if (hasTint && (!maskGrassSide || (grassMask != 0
+                        && (grassMask & (1 << GrassSideMaskCoordinate(x, source.PixelWidth))) != 0)))
+                    {
+                        // Remove the baked grass hue without losing its texel shading or premultiplied alpha.
+                        if (maskGrassSide) b = g = r = (54 * r + 183 * g + 19 * b + 128) >> 8;
+                        // RGB multiplication on premultiplied pixels preserves the source alpha.
+                        b = (b * tintB + 127) / 255;
+                        g = (g * tintG + 127) / 255;
+                        r = (r * tintR + 127) / 255;
+                    }
+                    result.Pixels[offset] = (byte)((b * (shade - shade * warm / 255) + 127) / 255);
+                    result.Pixels[offset + 1] = (byte)((g * (shade - shade * warm / 765) + 127) / 255);
+                    result.Pixels[offset + 2] = (byte)((r * Math.Min(255, shade + warm / 2) + 127) / 255);
+                    result.Pixels[offset + 3] = source.Pixels[offset + 3];
+                }
+            }
+            EvictFor(result.Pixels.LongLength);
+            RasterCache[key] = new CacheEntry(result, ++_useSequence);
+            _cacheBytes += result.Pixels.LongLength;
+            return result;
+        }
+
+        // Sample the stock mask at the center of each decoded texel, including scaled rasters.
+        static int GrassSideMaskCoordinate(int pixel, int extent) => (2 * pixel + 1) * 8 / extent;
+
+        static (int Left, int Right) InterpolateEdges(uint value, int v) =>
+            ((int)(value & 255) * (256 - v) + (int)(value >> 16 & 255) * v,
+             (int)(value >> 8 & 255) * (256 - v) + (int)(value >> 24) * v);
     }
 
     internal static BitmapImageRaster ApplyObjectClip(BitmapImageRaster source, BitmapObjectData data)
@@ -178,7 +287,8 @@ internal static class BitmapImageRasterizer
 
     private readonly record struct SourceCacheKey(string FullPath, BitmapImageImportSettings Settings);
     private readonly record struct SourceStamp(long Length, DateTime LastWriteTimeUtc, DateTime CreationTimeUtc);
-    private readonly record struct SourceCacheEntry(SourceStamp Stamp, BitmapImageRasterKey RasterKey);
+    private readonly record struct SourceCacheEntry(SourceStamp Stamp, BitmapImageRasterKey RasterKey, bool Opaque);
+    private sealed record AssetSourceProof(SourceCacheKey SourceKey, SourceCacheEntry Entry);
 
     /// <summary>
     /// Reads image metadata without decoding pixels, so the import dialog can show
@@ -234,10 +344,11 @@ internal static class BitmapImageRasterizer
 
     // A render lookup has just read these attributes to validate the resource
     // path. Reuse that per-lookup metadata, never a stamp from an earlier frame.
-    internal static BitmapImageRaster Decode(FileInfo source, BitmapImageImportSettings settings) =>
-        DecodeSource(source.FullName, settings, source);
+    internal static BitmapImageRaster Decode(FileInfo source, BitmapImageImportSettings settings,
+        ImageAssetDefinition? asset = null) => DecodeSource(source.FullName, settings, source, asset);
 
-    private static BitmapImageRaster DecodeSource(string fullPath, BitmapImageImportSettings settings, FileInfo? sourceMetadata)
+    private static BitmapImageRaster DecodeSource(string fullPath, BitmapImageImportSettings settings,
+        FileInfo? sourceMetadata, ImageAssetDefinition? asset = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fullPath);
         if (!settings.IsValid)
@@ -252,12 +363,21 @@ internal static class BitmapImageRasterizer
         var sourceKey = new SourceCacheKey(fullPath.ToUpperInvariant(), settings);
         lock (CacheSync)
         {
-            if (SourceCache.TryGetValue(sourceKey, out var source)
+            var known = SourceCache.TryGetValue(sourceKey, out var source);
+            if (asset is not null && AssetSources.TryGetValue(asset, out var proof)
+                && proof.SourceKey == sourceKey && proof.Entry.Stamp == stamp)
+            { source = proof.Entry; known = true; }
+            if (known
                 && source.Stamp == stamp
                 && RasterCache.TryGetValue(source.RasterKey, out var cached))
             {
                 Interlocked.Increment(ref _cacheHitCount);
                 cached.LastUse = ++_useSequence;
+                if (asset is not null)
+                {
+                    AssetSources.Remove(asset);
+                    AssetSources.Add(asset, new(sourceKey, source));
+                }
                 return cached.Raster;
             }
         }
@@ -272,7 +392,7 @@ internal static class BitmapImageRasterizer
             {
                 Interlocked.Increment(ref _cacheHitCount);
                 cached.LastUse = ++_useSequence;
-                CacheSource(sourceKey, stamp, key, file);
+                CacheSource(sourceKey, stamp, key, file, IsOpaque(cached.Raster), asset);
                 return cached.Raster;
             }
 
@@ -293,9 +413,7 @@ internal static class BitmapImageRasterizer
             }
 
             ApplyAlphaSource(raster.Pixels, settings.AlphaSource);
-            var opaque = true;
-            for (var offset = 3; offset < raster.Pixels.Length; offset += 4)
-                if (raster.Pixels[offset] != 255) { opaque = false; break; }
+            var opaque = IsOpaque(raster);
             if (opaque)
             {
                 if (OpaqueSources.Count >= MaxCacheEntries) OpaqueSources.Remove(OpaqueSources.First());
@@ -306,13 +424,13 @@ internal static class BitmapImageRasterizer
             EvictFor(cacheBytes);
             RasterCache[key] = new CacheEntry(raster, ++_useSequence);
             _cacheBytes += cacheBytes;
-            CacheSource(sourceKey, stamp, key, file);
+            CacheSource(sourceKey, stamp, key, file, opaque, asset);
             return raster;
         }
     }
 
     private static void CacheSource(SourceCacheKey sourceKey, SourceStamp stamp,
-        BitmapImageRasterKey rasterKey, FileInfo file)
+        BitmapImageRasterKey rasterKey, FileInfo file, bool opaque, ImageAssetDefinition? asset)
     {
         file.Refresh();
         if (!file.Exists || stamp != new SourceStamp(file.Length, file.LastWriteTimeUtc, file.CreationTimeUtc)) return;
@@ -320,7 +438,57 @@ internal static class BitmapImageRasterizer
         // small images reread their files even though all pixels fit the budget.
         if (SourceCache.Count >= Math.Max(MaxCacheEntries, RasterCache.Count) && !SourceCache.ContainsKey(sourceKey))
             SourceCache.Remove(SourceCache.Keys.First());
-        SourceCache[sourceKey] = new SourceCacheEntry(stamp, rasterKey);
+        var entry = new SourceCacheEntry(stamp, rasterKey, opaque);
+        SourceCache[sourceKey] = entry;
+        if (asset is not null)
+        {
+            AssetSources.Remove(asset);
+            AssetSources.Add(asset, new(sourceKey, entry));
+        }
+    }
+
+    private static bool IsOpaque(BitmapImageRaster raster)
+    {
+        for (var offset = 3; offset < raster.Pixels.Length; offset += 4)
+            if (raster.Pixels[offset] != 255) return false;
+        return true;
+    }
+
+    internal static BitmapImageRasterKey RegionRasterKey(BitmapImageRasterKey source, Rectangle pixels)
+        => pixels == new Rectangle(0, 0, source.PixelWidth, source.PixelHeight) ? source
+            : source with
+            {
+                ContentSha256 = $"{source.ContentSha256}:region:{source.PixelWidth}:{source.PixelHeight}:{pixels.X}:{pixels.Y}",
+                PixelWidth = pixels.Width, PixelHeight = pixels.Height
+            };
+
+    internal static BitmapImageRaster? TryGetRegionRaster(BitmapImageRasterKey source, Rectangle pixels)
+    {
+        lock (CacheSync)
+        {
+            if (!RasterCache.TryGetValue(RegionRasterKey(source, pixels), out var entry)) return null;
+            entry.LastUse = ++_useSequence;
+            return entry.Raster;
+        }
+    }
+
+    internal static BitmapImageRaster CacheRegionRaster(BitmapImageRaster source, Rectangle pixels)
+    {
+        var key = RegionRasterKey(source.Key, pixels);
+        if (key == source.Key) return source;
+        lock (CacheSync)
+        {
+            if (RasterCache.TryGetValue(key, out var existing))
+            { existing.LastUse = ++_useSequence; return existing.Raster; }
+            var result = new BitmapImageRaster(key);
+            for (var row = 0; row < pixels.Height; row++)
+                Buffer.BlockCopy(source.Pixels, (pixels.Y + row) * source.Stride + pixels.X * 4,
+                    result.Pixels, row * result.Stride, result.Stride);
+            EvictFor(result.Pixels.LongLength);
+            RasterCache.Add(key, new(result, ++_useSequence));
+            _cacheBytes += result.Pixels.LongLength;
+            return result;
+        }
     }
 
     internal static void ClearCache()
@@ -329,6 +497,7 @@ internal static class BitmapImageRasterizer
         {
             RasterCache.Clear();
             SourceCache.Clear();
+            AssetSources.Clear();
             OpaqueSources.Clear();
             _cacheBytes = 0;
         }
@@ -418,7 +587,7 @@ internal static class BitmapImageRasterizer
     }
 
     private static Bitmap RenderToSize(
-        Bitmap source,
+        Image source,
         (int Width, int Height) size,
         BitmapImageImportSettings settings)
     {
@@ -446,6 +615,55 @@ internal static class BitmapImageRasterizer
             target.Dispose();
             throw;
         }
+    }
+
+    // Library rows need a few dozen pixels, not a full renderer raster. This path
+    // owns its stream/image, never takes CacheSync, and never evicts stage textures.
+    internal static Bitmap CreateLibraryThumbnail(string fullPath, BitmapImageImportSettings settings,
+        int size, CancellationToken cancellationToken)
+    {
+        if (!settings.IsValid || size is < 1 or > 512) throw new ArgumentException("Invalid thumbnail settings.");
+        cancellationToken.ThrowIfCancellationRequested();
+        ValidateSourceFile(fullPath);
+        ProjectTemporaryResources.RejectReparsePath(fullPath);
+        using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            64 * 1024, FileOptions.SequentialScan);
+        Interlocked.Increment(ref _sourceReadCount);
+        using var source = Image.FromStream(stream, useEmbeddedColorManagement: true, validateImageData: true);
+        if (!BitmapImageFormats.TryValidateDecodedBudget(source.Width, source.Height, out var error))
+            throw new InvalidDataException(error);
+        var stored = settings.ResolveStoredPixelSize(source.Size);
+        var scale = Math.Min(size / stored.Width, size / stored.Height);
+        var width = Math.Max(1, (int)MathF.Round(stored.Width * scale));
+        var height = Math.Max(1, (int)MathF.Round(stored.Height * scale));
+        cancellationToken.ThrowIfCancellationRequested();
+        using var sampled = RenderToSize(source, (width, height), settings);
+        if (settings.AlphaSource == ImageAlphaSource.None)
+        {
+            var data = sampled.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadWrite, PixelFormat.Format32bppPArgb);
+            try
+            {
+                var row = new byte[width * 4];
+                for (var y = 0; y < height; y++)
+                {
+                    var pointer = IntPtr.Add(data.Scan0, y * data.Stride);
+                    Marshal.Copy(pointer, row, 0, row.Length);
+                    ApplyAlphaSource(row, settings.AlphaSource);
+                    Marshal.Copy(row, 0, pointer, row.Length);
+                }
+            }
+            finally { sampled.UnlockBits(data); }
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        var thumbnail = new Bitmap(size, size, PixelFormat.Format32bppPArgb);
+        try
+        {
+            using var graphics = Graphics.FromImage(thumbnail);
+            graphics.CompositingMode = CompositingMode.SourceCopy;
+            graphics.DrawImageUnscaled(sampled, (size - width) / 2, (size - height) / 2);
+            return thumbnail;
+        }
+        catch { thumbnail.Dispose(); throw; }
     }
 
     /// <summary>
@@ -499,8 +717,7 @@ internal static class BitmapImageRasterizer
         try
         {
             using var lease = source.AcquireBitmap();
-            var raster = new BitmapImageRaster(
-                new BitmapImageRasterKey(source.Key.ContentSha256, width, height));
+            var raster = new BitmapImageRaster(source.Key with { PixelWidth = width, PixelHeight = height });
             using var target = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
             using (var graphics = Graphics.FromImage(target))
             {

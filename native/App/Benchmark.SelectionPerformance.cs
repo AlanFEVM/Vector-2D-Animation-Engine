@@ -48,7 +48,10 @@ internal static partial class Benchmark
         try
         {
             Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", null);
+            RunBitmapAssetIdentityLifetimeRegression();
             RunBitmapOpaqueOcclusionRegression();
+            RunBitmapOriginCacheRegression();
+            RunBitmapLayerHighlightCacheRegression();
             RunBitmapMoveFeedbackRegression();
             RunBitmapPointerMoveRegression();
             RunThousandBitmapInteractionRegression();
@@ -80,6 +83,15 @@ internal static partial class Benchmark
         if (stage.RenderedFrameCount != frames) return;
         stage.Invalidate();
         stage.Update();
+        // Windows may validate an obscured HWND without delivering WM_PAINT.
+        // Explicitly execute the same paint on its real render target; never
+        // count an unchanged frame or a no-op Refresh as a fast sample.
+        if (stage.RenderedFrameCount == frames && stage.Visible && stage.IsHandleCreated)
+        {
+            using var graphics = stage.CreateGraphics();
+            using var paint = new PaintEventArgs(graphics, stage.ClientRectangle);
+            RequireMethod(typeof(StageControl), "OnPaint").Invoke(stage, [paint]);
+        }
         AssertTimeline(stage.RenderedFrameCount != frames, "The benchmark frame did not paint the stage.");
     }
 

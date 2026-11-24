@@ -612,6 +612,10 @@ internal sealed partial class VectorScene
                     bitmapUpdates[index] = new BitmapObjectData
                     {
                         ImageAssetId = bitmap.ImageAssetId,
+                        ShadowCorners = bitmap.ShadowCorners,
+                        WarmLightCorners = bitmap.WarmLightCorners,
+                        BiomeTintArgb = bitmap.BiomeTintArgb,
+                        BiomeTintGrassSide = bitmap.BiomeTintGrassSide,
                         PlacedSize = bitmap.PlacedSize,
                         IsBrokenApart = bitmap.IsBrokenApart,
                         VisibleContours = regions.SelectMany(region => region.Contours).Select(contour =>

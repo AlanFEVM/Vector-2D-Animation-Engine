@@ -70,6 +70,8 @@ internal sealed record ApplicationSettings
     /// </summary>
     public bool FreeTransformShiftProportionalEnabled { get; init; } = true;
     public bool SimpleSelectionHighlightEnabled { get; init; } = false;
+    public const int DefaultImageImportAutoPlaceLimit = 50;
+    public int ImageImportAutoPlaceLimit { get; init; } = DefaultImageImportAutoPlaceLimit;
     public SelectionArrowSettings SelectionArrows { get; init; } = new();
     public bool ExperimentalSceneLightingEnabled { get; init; } = false;
     // The former experimental key is intentionally ignored on upgrade, so
@@ -194,6 +196,7 @@ internal static class ApplicationSettingsStore
         {
             ToolShortcutPreset = preset,
             SelectionArrows = (settings.SelectionArrows ?? new()).Normalized(),
+            ImageImportAutoPlaceLimit = Math.Clamp(settings.ImageImportAutoPlaceLimit, 0, 1000),
             ActiveShortcutProfileId = shortcutProfiles.ActiveProfileId,
             CustomShortcutProfiles = shortcutProfiles.CustomProfiles,
             Language = language,

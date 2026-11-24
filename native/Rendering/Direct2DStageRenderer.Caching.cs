@@ -20,6 +20,14 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 {
     private void ResetTarget()
     {
+        ClearPressureInkGeometry();
+        _bitmapWarp?.Dispose();
+        _bitmapWarp = null;
+        _bitmapWarpFrame = null;
+        _bitmapWarpUnavailable = false;
+        _bitmapWarpMeshScratch = null;
+        _bitmapWarpGrid = [];
+        ClearBitmapOrigins();
         ReleaseShotPreviewCaptureResources();
         _shotPreviewCaptureFailed = false;
         ClearRetainedCompositionMasks();
@@ -1046,8 +1054,14 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
     private void ClearBitmapObjectCache()
     {
+        ClearBlockTiles();
+        ClearBitmapLayerCommands();
         foreach (var cached in _bitmapObjectCache.Values) cached.Dispose();
         _bitmapObjectCache.Clear();
+        foreach (var cached in _bitmapRegionCache.Values) cached.Dispose();
+        _bitmapRegionCache.Clear();
+        _protectedBitmapRegions.Clear();
+        _bitmapRegionPersistentLimit = MaxBitmapObjectCacheBytes;
         _bitmapObjectCacheBytes = 0;
     }
 

@@ -49,7 +49,7 @@ internal sealed partial class Direct2DStageRenderer
 
     private void DrawSelectionMoveOrigins(StageControl stage)
     {
-        if (!stage.SelectionMoveFeedbackActive) return;
+        if (!stage.SelectionMoveFeedbackActive) { ClearBitmapOrigins(); return; }
         var source = stage.Scene;
         DrawSelectionMoveOpacity(StageControl.SelectionMoveOriginOpacity, null, () =>
         {
@@ -60,8 +60,7 @@ internal sealed partial class Direct2DStageRenderer
                 if (!first.Scene.HasDisplayLayerEffects
                     && origins.All(origin => origin.SharedBitmapScene && ReferenceEquals(origin.Scene, first.Scene))
                     && stage.SelectionMoveOrigins.Keys.All(index => stage.SelectionMoveOriginClips(index).Length == 0)
-                    && TryDrawAffineBitmapLayer(stage, first.Scene,
-                        origins.Select(origin => origin.ObjectIndex).ToArray(), 0)) return;
+                    && DrawSharedBitmapOrigins(first.Scene, origins.Select(origin => origin.ObjectIndex).ToArray())) return;
                 foreach (var entry in stage.SelectionMoveOrigins)
                 {
                     DrawOriginClipped(stage.SelectionMoveOriginClips(entry.Key), 0, () =>
@@ -90,6 +89,10 @@ internal sealed partial class Direct2DStageRenderer
             }
             finally { stage.Scene = source; }
         });
+
+        bool DrawSharedBitmapOrigins(VectorScene scene, int[] objects)
+            => TryDrawCachedBitmapOrigins(stage, scene, objects)
+                || TryDrawAffineBitmapLayer(stage, scene, objects, 0);
 
         void DrawOriginClipped(DrawingPoint[][][] clips, int clipIndex, Action draw)
         {

@@ -8567,7 +8567,9 @@ internal static partial class Benchmark
 
     public static void RunStageRendererRegression()
     {
+        RunExplicitGpuRegression(RunBitmapLayerCommandsRegression);
         RunBitmapLiveDistortionRegression();
+        RunExplicitGpuRegression(RunBitmapGpuWarpRegression);
         RunBitmapBreakApartRegression();
         RunExplicitGpuRegression(RunBitmapLayerPixelRegression);
         RunBitmapAffineTransformRegression();

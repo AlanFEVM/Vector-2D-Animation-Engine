@@ -139,7 +139,7 @@ internal sealed partial class VectorProject
 
     public DrawingObjectDefinition AddDrawingObject(string? name = null)
     {
-        var index = _drawingObjects.Count(item => !item.IsOpenCanvas) + 1;
+        var index = _drawingObjects.Count(item => item.IsLibrarySymbol) + 1;
         var drawingObject = new DrawingObjectDefinition
         {
             Name = string.IsNullOrWhiteSpace(name) ? $"Symbol {index:000}" : name,
@@ -156,7 +156,8 @@ internal sealed partial class VectorProject
         IReadOnlyCollection<int> objectIndices,
         int frame,
         out DrawingObjectDefinition? symbol,
-        out DrawingObjectInstanceDefinition? instance)
+        out DrawingObjectInstanceDefinition? instance,
+        bool asGroup = false)
     {
         symbol = null;
         instance = null;
@@ -226,8 +227,9 @@ internal sealed partial class VectorProject
         var previousEditFrame = source.EditFrame;
         var created = new DrawingObjectDefinition
         {
-            Name = $"Symbol {_drawingObjects.Count + 1:000}",
-            Detail = "Reusable symbol"
+            Name = asGroup ? "Group" : $"Symbol {_drawingObjects.Count(item => item.IsLibrarySymbol) + 1:000}",
+            Kind = asGroup ? "Group" : "Symbol",
+            Detail = asGroup ? "Independent drawing group" : "Reusable symbol"
         };
         created.SetAnchor(anchor);
         created.Scene.RestoreSnapshot(selectionScene.CreateSnapshot());
@@ -584,7 +586,17 @@ internal sealed partial class VectorProject
         var instanceIdMap = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var sourceInstance in source.Instances)
         {
-            var copy = CloneDrawingObjectInstance(sourceInstance, drawingObjectIdMap);
+            var memberMap = drawingObjectIdMap;
+            if (FindDrawingObject(sourceInstance.DrawingObjectId) is { IsGroup: true } group)
+            {
+                var privateCopy = DuplicateDrawingObjectCore(group, "", drawingObjectIdMap: drawingObjectIdMap);
+                var privateMap = drawingObjectIdMap is null
+                    ? new Dictionary<string, string>(StringComparer.Ordinal)
+                    : drawingObjectIdMap.ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
+                privateMap[group.Id] = privateCopy.Id;
+                memberMap = privateMap;
+            }
+            var copy = CloneDrawingObjectInstance(sourceInstance, memberMap);
             duplicate.AddInstance(this, copy);
             instanceIdMap[sourceInstance.Id] = copy.Id;
         }
@@ -607,7 +619,8 @@ internal sealed partial class VectorProject
                     IsCollisionTerrain = track.IsCollisionTerrain,
                     Duration = track.Duration,
                     Keyframes = track.Keyframes.ToArray(),
-                    Tweens = track.Tweens.ToArray()
+                    Tweens = track.Tweens.ToArray(),
+                    InterruptedTweens = track.InterruptedTweens.ToArray()
                 }).ToArray()
             });
             duplicate.SynchronizeTimelineTracks();
@@ -632,7 +645,7 @@ internal sealed partial class VectorProject
 
         var target = FindDrawingObject(drawingObjectId);
         if (target is null) return false;
-        if (target.IsOpenCanvas || _drawingObjects.Count(item => !item.IsOpenCanvas) <= 1) return false;
+        if (target.IsOpenCanvas || target.IsLibrarySymbol && _drawingObjects.Count(item => item.IsLibrarySymbol) <= 1) return false;
 
         foreach (var scene in _scenes)
         {
@@ -684,6 +697,9 @@ internal sealed partial class VectorProject
         var scene = FindScene(sceneId);
         var drawingObject = FindDrawingObject(drawingObjectId);
         if (scene is null || drawingObject is null || drawingObject.IsOpenCanvas) return false;
+
+        // A group owns its contents. Pasting it must never create another linked owner.
+        if (drawingObject.IsGroup) drawingObject = DuplicateDrawingObjectCore(drawingObject, "");
 
         instance = new SceneObjectInstanceDefinition
         {
@@ -980,6 +996,7 @@ internal sealed partial class VectorProject
 
         var container = FindDrawingObject(containerId)!;
         var child = FindDrawingObject(childId)!;
+        if (child.IsGroup) child = DuplicateDrawingObjectCore(child, "");
         instance = new DrawingObjectInstanceDefinition
         {
             DrawingObjectId = child.Id,
@@ -1111,6 +1128,7 @@ internal sealed partial class VectorProject
                     Dimension = scene.Dimension,
                     Camera = CloneCamera(scene.Camera),
                     Canvas = scene.Canvas,
+                    BlockGrid = scene.BlockGrid?.Capture(),
                     RulerGuides = RulerGuideValidation.Copy(scene.RulerGuides),
                     CanvasWelcomeDismissed = scene.CanvasWelcomeDismissed,
                     Lights = scene.Lights.Select(CreateLightRestartSnapshot).ToArray(),
@@ -1207,6 +1225,7 @@ internal sealed partial class VectorProject
                 Detail = item.Detail,
                 Dimension = item.Dimension,
                 Camera = CloneCamera(item.Camera),
+                BlockGrid = item.BlockGrid is { } grid ? new SceneBlockGrid(grid) : null,
                 CreatedAt = item.CreatedAt
             };
             scene.RestoreLights(CreateRestartLights(item), item.Lights is not null);

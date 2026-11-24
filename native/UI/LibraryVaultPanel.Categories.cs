@@ -1,4 +1,4 @@
-namespace VectorAnimationEngine;
+﻿namespace VectorAnimationEngine;
 
 internal sealed record ExternalSvgAssetDragData(string ProjectId, string AssetId);
 
@@ -84,7 +84,8 @@ internal sealed partial class LibraryVaultPanel
     }
 
     /// <summary>
-    /// Host-supplied decode hook used for list and hover thumbnails. Decoding stays in
+    /// Host-supplied decode hook used for hover and nested-symbol previews.
+    /// Image rows use the separate background thumbnail path. Decoding stays in
     /// <see cref="BitmapImageRasterizer"/> so the preview shares the render cache instead of
     /// reading the file a second time with different settings.
     /// </summary>
@@ -239,7 +240,7 @@ internal sealed partial class LibraryVaultPanel
 
     private bool DrawingObjectMatchesActiveCategory(DrawingObjectDefinition drawingObject)
     {
-        if (drawingObject.IsOpenCanvas) return false;
+        if (!drawingObject.IsLibrarySymbol) return false;
         var threeDimensional = DrawingObjectAssetKinds.IsThreeDimensional(drawingObject.Kind);
         return _activeAssetCategory switch
         {

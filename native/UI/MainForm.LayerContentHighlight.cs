@@ -46,6 +46,20 @@ internal sealed partial class MainForm
             return;
         }
 
+        if (_timeline.Context is SceneBlockChunkTimeline chunkEditor)
+        {
+            var targetId = chunkEditor.Timeline.FindTrack(_timeline.ActiveTrackId ?? "")?.TargetId;
+            if (targetId is not null && chunkEditor.TryGetDepth(targetId, out var depth)
+                && chunkEditor.Grid.Layers.TryGetValue(depth, out var layerId)
+                && chunkEditor.Scene.FindLayer(layerId) is { Visible: true } layer)
+            {
+                _stage.SetBlockLayerHighlight(chunkEditor.Grid, layerId, depth,
+                    chunkEditor.Grid.SectionDepth > 0 ? chunkEditor.Chunk : null, Color.FromArgb(layer.ColorArgb));
+            }
+            else _stage.ClearLayerContentHighlight();
+            return;
+        }
+
         if (IsSceneBuildingContext())
         {
             RefreshSceneLayerContentHighlight();
@@ -72,7 +86,9 @@ internal sealed partial class MainForm
             ? null
             : string.IsNullOrWhiteSpace(selectedTrackId)
                 ? sceneDefinition.FindLayer(sceneDefinition.ActiveLayerId)
-                : sceneDefinition.FindLayer(selectedTrackId);
+                : sceneDefinition.Timeline.FindTrack(selectedTrackId) is { } track
+                    ? sceneDefinition.FindLayer(track.TargetId)
+                    : null;
         if (sceneDefinition is null || layer is null)
         {
             _stage.ClearLayerContentHighlight();
@@ -110,6 +126,12 @@ internal sealed partial class MainForm
         if (layer.Kind != SceneLayerKind.Content || !layer.Visible)
         {
             _stage.ClearLayerContentHighlight();
+            return;
+        }
+
+        if (sceneDefinition.BlockGrid is { } grid && grid.Layers.Values.Contains(layer.Id, StringComparer.Ordinal))
+        {
+            _stage.SetBlockLayerHighlight(grid, layer.Id, null, null, color);
             return;
         }
 

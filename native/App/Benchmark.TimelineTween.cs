@@ -426,6 +426,68 @@ internal static partial class Benchmark
         RunTimelineTweenGradientRegression();
         RunTimelineTweenComplexTopologyRegression();
         RunTimelineTweenCurveRegression();
+        RunInterruptedTimelineTweenRegression();
+    }
+
+    private static void RunInterruptedTimelineTweenRegression()
+    {
+        foreach (var kind in new[] { TimelineTweenKind.Classic, TimelineTweenKind.Shape })
+        {
+            var empty = new AnimationTimelineTrack("empty", "layer", 12,
+                [new(0, TimelineKeyframeKind.Blank), new(8, TimelineKeyframeKind.Blank)]);
+            AssertTimeline(empty.TryResolveTweenSpan(0, 8, out var start, out var end, allowBlankEndpoints: true)
+                && empty.TryCreateEmptyTween(start, end, kind)
+                && empty.EvaluateInterruptedTween(2) is { StartFrame: 0, EndFrame: 8, IsEmptyPlaceholder: true }
+                && empty.EvaluateTween(2) is null,
+                "A tween between blank endpoints must show a solid placeholder without interpolating.");
+            AssertTimeline(empty.TrySplitTweenAtKeyframe(4)
+                && empty.EvaluateExposure(4) is { IsKeyframe: true, HasContent: false }
+                && empty.EvaluateInterruptedTween(3) is { StartFrame: 0, EndFrame: 4, IsEmptyPlaceholder: true }
+                && empty.EvaluateInterruptedTween(4) is { StartFrame: 4, EndFrame: 8, IsEmptyPlaceholder: true },
+                "Insert Keyframe must split a blank placeholder into adjacent solid arrows.");
+            AssertTimeline(empty.InsertKeyframe(6, TimelineKeyframeKind.Blank)
+                && empty.EvaluateInterruptedTween(5) is { StartFrame: 4, EndFrame: 6, IsEmptyPlaceholder: false }
+                && empty.EvaluateInterruptedTween(7) is null,
+                "Insert Blank Keyframe must retain a dashed placeholder arrow up to the new key.");
+
+            var populated = new AnimationTimelineTrack("populated", "layer", 12,
+                [new(0, TimelineKeyframeKind.Populated), new(4, TimelineKeyframeKind.Populated),
+                    new(8, TimelineKeyframeKind.Populated)]);
+            AssertTimeline(populated.TryCreateTween(0, 8, kind, out _)
+                && populated.TrySplitTweenAtKeyframe(4)
+                && populated.EvaluateTween(3) is { StartFrame: 0, EndFrame: 4 }
+                && populated.EvaluateTween(4) is { StartFrame: 4, EndFrame: 8 },
+                "Insert Keyframe must promote a materialized frame into a shared tween endpoint.");
+
+            foreach (var materialized in new[] { false, true })
+            {
+                var track = new AnimationTimelineTrack("track", "layer", 12,
+                    [new(0, TimelineKeyframeKind.Populated), new(8, TimelineKeyframeKind.Populated)]);
+                if (materialized) track.InsertKeyframe(4, TimelineKeyframeKind.Populated);
+                AssertTimeline(track.TryCreateTween(0, 8, kind, out _)
+                    && track.InsertKeyframe(4, TimelineKeyframeKind.Blank)
+                    && track.EvaluateTween(3) is null && track.EvaluateTween(6) is null
+                    && track.EvaluateInterruptedTween(3) == new TimelineTween(0, 4, kind)
+                    && track.EvaluateInterruptedTween(5) is null,
+                    "A blank key must interrupt playback and retain only the dashed prefix.");
+
+                var snapshot = track.CreateSnapshot();
+                var restored = new AnimationTimeline();
+                restored.RestoreSnapshot(new AnimationTimelineSnapshot { Tracks = [snapshot] });
+                var restoredTrack = restored.FindTrack(track.Id)!;
+                AssertTimeline(restoredTrack.EvaluateInterruptedTween(4) == new TimelineTween(0, 4, kind)
+                    && restoredTrack.InsertFrame(2, 2)
+                    && restoredTrack.EvaluateInterruptedTween(6) == new TimelineTween(0, 6, kind)
+                    && restoredTrack.ClearKeyframe(6) && restoredTrack.InterruptedTweens.Count == 0,
+                    "Interrupted tween snapshots or endpoint edits did not preserve the display state.");
+            }
+        }
+
+        var plainTrack = new AnimationTimelineTrack("plain", "layer", 12,
+            [new(0, TimelineKeyframeKind.Populated), new(8, TimelineKeyframeKind.Populated)]);
+        AssertTimeline(plainTrack.InsertKeyframe(4, TimelineKeyframeKind.Blank)
+            && plainTrack.EvaluateInterruptedTween(3) is null,
+            "Ordinary blank keys must not be displayed as interrupted tweens.");
     }
 
     private static void RunTimelineTweenDeletionRegression()

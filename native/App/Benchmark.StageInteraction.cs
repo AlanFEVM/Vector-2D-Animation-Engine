@@ -2455,7 +2455,7 @@ internal static partial class Benchmark
         var gizmoHideMotionGeneration = stage.SpatialTransformGizmoMotionGeneration;
         PressPointer(MouseButtons.Left, emptyStagePoint);
         ReleasePointer(MouseButtons.Left, emptyStagePoint);
-        Application.DoEvents();
+        // Inspect the transient exit before pumping messages, which can already finish it.
         var gizmoExitPresented = stage.TryGetSpatialGizmoRenderGeometry(
             out var gizmoExitGeometry,
             out _,

@@ -51,6 +51,10 @@ internal sealed partial class MainForm : Form
             || _fillEdgeBezierArmedSession is not null
             || _fillEdgeBezierEditSession is not null) return;
 
+        var extensionHandled = false;
+        HandleNativeExtensionStageDoubleClick(e, ref extensionHandled);
+        if (extensionHandled) return;
+
         var world = _stage.ScreenToWorld(e.Location);
         var hit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
         if (IsSceneCompositionContext() && !IsSceneDrawingContext())
@@ -73,7 +77,12 @@ internal sealed partial class MainForm : Form
             var owner = new SceneCompositionObjectOwner(nestedInstance.Id,
                 nestedInstance.DrawingObjectId, nestedInstance.Id);
             if ((IsSymbolEditing || IsSceneDrawingContext()) && BeginSceneSymbolEditing(owner)) return;
-            if (OpenDrawingObjectEditor(owner.DrawingObjectId)) return;
+            var parent = ActiveDrawingObject();
+            if (OpenDrawingObjectEditor(owner.DrawingObjectId))
+            {
+                if (parent is not null) _basicSymbolParents.Push((parent.Id, owner.DrawingObjectId));
+                return;
+            }
         }
 
         if (_tool is ToolMode.ObjectSelect or ToolMode.Select or ToolMode.Transform or ToolMode.Distort
@@ -248,7 +257,7 @@ internal sealed partial class MainForm : Form
         }
         if (IsBrushTool(_tool) || _tool == ToolMode.Eraser)
         {
-            _stage.SetBrushTipCursor(e.Location, _brushShape, ActiveStrokeUnits(), _tool == ToolMode.Eraser);
+            _stage.SetBrushTipCursor(e.Location, ActiveBrushShape(), ActiveStrokeUnits(), _tool == ToolMode.Eraser);
         }
         else if (_tool == ToolMode.Fill)
         {
@@ -3309,6 +3318,13 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (e.Data?.GetDataPresent(typeof(VaultStageDragData)) == true)
+        {
+            ClearDrawingObjectDragPreview();
+            ClearImportedObjectDragPreview();
+            e.Effect = TryResolveLibraryStageDrop(e.Data, out _) ? DragDropEffects.Copy : DragDropEffects.None;
+            return;
+        }
         if (TryResolveDroppedExternalSvgAsset(e.Data, out var externalSvgAsset, out var externalSvgPath))
         {
             UpdateFileDropFeedback(
@@ -3890,6 +3906,15 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (e.Data?.GetDataPresent(typeof(VaultStageDragData)) == true)
+        {
+            var dropPosition = DragEventWorldPosition(e);
+            ClearDrawingObjectDragPreview();
+            ClearImportedObjectDragPreview();
+            e.Effect = TryResolveLibraryStageDrop(e.Data, out var batch) && PlaceLibraryAssets(batch, dropPosition)
+                ? DragDropEffects.Copy : DragDropEffects.None;
+            return;
+        }
         if (TryResolveDroppedExternalSvgAsset(e.Data, out var externalSvgAsset, out _))
         {
             var dropPosition = DragEventWorldPosition(e);

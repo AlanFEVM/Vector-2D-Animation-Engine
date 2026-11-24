@@ -102,9 +102,8 @@ internal sealed partial class StageControl
         _rulerMenuButton.Disposed += (_, _) => menu.Dispose();
         Controls.AddRange([_horizontalRuler, _verticalRuler, _rulerMenuButton]);
         SizeChanged += (_, _) => LayoutRulers();
-        Invalidated += (_, _) => { _horizontalRuler.Invalidate(); _verticalRuler.Invalidate(); };
-        // Scene navigation can present a scheduled GPU frame without invalidating
-        // the parent HWND. Refresh child rulers after the camera frame is presented.
+        // Mark the child HWNDs dirty from both camera paths. WinForms folds
+        // these notifications into one paint instead of blocking the stage.
         ViewChanged += (_, _) => RefreshVisibleRulers();
         FrameRendered += (_, _) => RefreshVisibleRulers();
         LayoutRulers();
@@ -115,8 +114,6 @@ internal sealed partial class StageControl
         if (!_rulersVisible || IsDisposed || Disposing) return;
         _horizontalRuler?.Invalidate();
         _verticalRuler?.Invalidate();
-        _horizontalRuler?.Update();
-        _verticalRuler?.Update();
     }
 
     private void SetRulerUnit(string? unit)

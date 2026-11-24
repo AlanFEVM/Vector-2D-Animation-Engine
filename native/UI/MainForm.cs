@@ -334,6 +334,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private bool _layingOutTopBar;
     private readonly ToolStripMenuItem _deleteNestedInstanceMenuItem = new("Delete");
     private readonly ToolStripMenuItem _breakApartMenuItem = new("Break Apart");
+    private readonly ToolStripMenuItem _groupSelectionMenuItem = new("Group") { Tag = ShortcutCommandIds.Group };
     private readonly ToolStripMenuItem _convertToSymbolMenuItem = new("Convert to Symbol")
     {
         Tag = ShortcutCommandIds.ConvertToSymbol
@@ -1086,6 +1087,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         {
             _deleteNestedInstanceMenuItem,
             _convertToSymbolMenuItem,
+            _groupSelectionMenuItem,
             _breakApartMenuItem,
             _lineGroupMenuItem,
             _transformGroupMenuItem,
@@ -1100,6 +1102,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _mergeAndSimplifyLinesMenuItem.Tag = ShortcutCommandIds.MergeLines;
         _breakApartMenuItem.Click += (_, _) => BreakApartStageSelection();
         _convertToSymbolMenuItem.Click += (_, _) => ConvertStageSelectionToSymbol();
+        _groupSelectionMenuItem.Click += (_, _) => GroupStageSelection();
         _flipHorizontalMenuItem.Click += (_, _) => FlipSelectedDrawingObjects(horizontal: true);
         _flipVerticalMenuItem.Click += (_, _) => FlipSelectedDrawingObjects(horizontal: false);
         _fitBitmapToCanvasMenuItem.Click += (_, _) => FitSelectedBitmapsToCanvas();
@@ -1180,6 +1183,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
                 : _scene.CanMoveObjectsInLayerStack(drawingTargets, -1, _frame);
             _deleteNestedInstanceMenuItem.Visible = canDeleteNestedInstance;
             _convertToSymbolMenuItem.Enabled = CanConvertStageSelectionToSymbol();
+            _groupSelectionMenuItem.Enabled = CanGroupStageSelection();
             _breakApartMenuItem.Visible = breakApartWorkspace && hasBreakApartTarget;
             _breakApartMenuItem.Enabled = canBreakInstances || canBreakObject;
             var containsNonFlippableObject = !canDeleteNestedInstance
@@ -1743,13 +1747,20 @@ internal sealed partial class MainForm : Form, IMessageFilter
             Command("Delete", () => DeleteSelectedObject(), ShortcutCommandIds.Delete)
         ]);
 
+        // Extensions stay off the top bar until this View option is ticked, so the
+        // menu opens with no extension entries until the user opts in.
+        var showExtensions = new ToolStripMenuItem("Show Extensions") { CheckOnClick = true };
+        showExtensions.AccessibleDescription = "Show or hide the Extensions menu";
+
         var view = Root("View");
         view.DropDownItems.AddRange([
             Command("Fit Stage", () => _stage.Fit()),
             new ToolStripSeparator(),
             Command("Properties", ToggleInspectorPanel),
             Command("Timeline", ToggleTimelinePanel),
-            Command("Hierarchy", () => _hierarchyWindow?.ToggleFor(this))
+            Command("Hierarchy", () => _hierarchyWindow?.ToggleFor(this)),
+            new ToolStripSeparator(),
+            showExtensions
         ]);
 
         var insert = Root("Insert");
@@ -1759,6 +1770,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         edit.DropDownItems.AddRange([
             new ToolStripSeparator(),
             Command("Break Apart", BreakApartStageSelection, ShortcutCommandIds.BreakApart),
+            Command("Group", () => GroupStageSelection(), ShortcutCommandIds.Group),
             Command("Convert to Symbol", () => ConvertStageSelectionToSymbol(), ShortcutCommandIds.ConvertToSymbol),
             Command("Flip Horizontal", () => FlipSelectedDrawingObjects(horizontal: true), ShortcutCommandIds.FlipHorizontal),
             Command("Flip Vertical", () => FlipSelectedDrawingObjects(horizontal: false), ShortcutCommandIds.FlipVertical),
@@ -1775,10 +1787,24 @@ internal sealed partial class MainForm : Form, IMessageFilter
             Command("Stop", StopPlayback)
         ]);
 
+        var extensions = Root("Extensions");
+        AddNativeExtensionCommands((label, action) => extensions.DropDownItems.Add(Command(label, action)));
+        if (!extensions.HasDropDownItems)
+        {
+            extensions.DropDownItems.Add(Command("Available Extensions...", ShowExtensionsEmptyState));
+        }
+
         var help = Root("Help");
         help.DropDownItems.AddRange([releaseNotes, acknowledgements]);
 
         _menuBar.Items.AddRange([file, edit, view, insert, control, help]);
+        showExtensions.CheckedChanged += (_, _) =>
+        {
+            if (showExtensions.Checked)
+                _menuBar.Items.Insert(_menuBar.Items.IndexOf(help), extensions);
+            else
+                _menuBar.Items.Remove(extensions);
+        };
         foreach (var root in _menuBar.Items.OfType<ToolStripMenuItem>())
         {
             root.DropDownOpening += (_, _) =>
@@ -2007,6 +2033,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             _applicationSettings.ToolbarPosition);
         dialog.ExperimentalSceneLightingEnabled = _applicationSettings.ExperimentalSceneLightingEnabled;
         dialog.NavigationPreviewEnabled = _applicationSettings.NavigationPreviewEnabled;
+        dialog.ImageImportAutoPlaceLimit = _applicationSettings.ImageImportAutoPlaceLimit;
         dialog.SetWorkspaceColor(Color.FromArgb(_applicationSettings.WorkspaceColorArgb));
         dialog.SetCodexSettings(_applicationSettings, AppHost.Current?.CodexBridgeStatus ?? "Stopped");
         dialog.SetSelectionSettings(_applicationSettings.SelectionArrows);
@@ -2029,6 +2056,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         dialog.OperationPreferencesSaveRequested = child => CommitPanelSettings(_applicationSettings with
         {
             FreeTransformShiftProportionalEnabled = child.FreeTransformShiftProportionalEnabled,
+            ImageImportAutoPlaceLimit = child.ImageImportAutoPlaceLimit,
             ToolbarPosition = child.SelectedToolbarPosition
         }, child);
         dialog.ShortcutProfilesSaveRequested = child => CommitPanelSettings(_applicationSettings with
@@ -2826,7 +2854,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         button.MouseMove += (_, e) =>
         {
             var current = _drawingObjects.FirstOrDefault(item => Equals(button.Tag, item.Id));
-            if (e.Button != MouseButtons.Left || current is null || current.Kind == "Scene" || current.IsOpenCanvas) return;
+            if (e.Button != MouseButtons.Left || current is null || !current.IsLibrarySymbol) return;
             if (Math.Abs(e.X - dragStart.X) < SystemInformation.DragSize.Width / 2 && Math.Abs(e.Y - dragStart.Y) < SystemInformation.DragSize.Height / 2) return;
             var dragData = new DataObject();
             dragData.SetData(typeof(DrawingObjectDragData), new DrawingObjectDragData(_project.Id, current.Id));
@@ -2873,7 +2901,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             && _stage.ReferenceDimension == SceneDimension.ThreeD;
     }
 
-    private bool IsSceneBuildingContext() => _timeline.Context is SceneDefinition;
+    private bool IsSceneBuildingContext() => _timeline.Context is SceneDefinition or SceneBlockChunkTimeline;
 
     private bool IsShotDirectorContext() =>
         IsSceneWorkspaceSelected && IsSceneCompositionContext()
@@ -2904,6 +2932,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
     private bool DrawingToolsBlocked()
     {
+        if (_timeline.Context is SceneBlockChunkTimeline) return true;
         var source = IsSceneDrawingAvailable() ? ActiveScene()!.DrawingScene : _scene;
         return !IsEditableDrawingContext() && !IsSceneDrawingAvailable()
             || IsShotDirectorContext()
@@ -3207,7 +3236,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         }
 
         if (index < 0) return;
-        if (_drawingObjects.Count(item => !item.IsOpenCanvas) <= 1)
+        if (_drawingObjects.Count(item => item.IsLibrarySymbol) <= 1)
         {
             ModernMessageDialog.Show(
                 this,
@@ -3331,6 +3360,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
     private void BindSceneEditStageCore(bool resetView, bool preserveHistory)
     {
+        CloseNativeExtensionChunk(restoreTimeline: false);
         if (_inspectorGeometryGesture) CompleteInspectorGeometryEdit();
         if (_anchorGesture) CompleteAnchorEdit();
         if (IsSymbolEditing) ClearSymbolEditingSession();

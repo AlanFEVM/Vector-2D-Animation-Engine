@@ -1046,10 +1046,16 @@ internal static partial class Benchmark
         AssertTimeline(changes == 1 && requested == new ShapeSettingsState(ShapeKind.Star, 13),
             "Standalone shape editing did not emit typed intent.");
         using var image = new ImageInspectorPanel();
+        host.Controls.Add(image);
         string? requestedAsset = null;
         image.SettingsRequested += (_, e) => requestedAsset = e.AssetId;
         image.SetState(new("asset-a", "Image A"));
         var edit = (Button)RequireField(typeof(ImageInspectorPanel), "_edit").GetValue(image)!;
+        var disclosure = (ShotDirectorPanel.CameraSectionToggle)RequireField(typeof(ImageInspectorPanel),
+            "_settingsDisclosure").GetValue(image)!;
+        AssertTimeline(!edit.Visible && requestedAsset is null, "Collapsed image settings exposed an edit action.");
+        disclosure.PerformClick();
+        AssertTimeline(disclosure.Expanded && edit.Visible && edit.Enabled, "Image settings could not be opened for an editable asset.");
         edit.PerformClick();
         AssertTimeline(requestedAsset == "asset-a", "Image settings intent lost the asset ID.");
         image.SetState(null);

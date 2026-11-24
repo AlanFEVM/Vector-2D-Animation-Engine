@@ -32,7 +32,7 @@ internal sealed partial class MainForm
         {
             Margin = new Padding(0, 4, 0, 4),
             AccessibleName = "Object Drawing",
-            AccessibleDescription = "Draw each gesture as an independent editable symbol",
+            AccessibleDescription = UiLocalization.T("Draw each gesture as an independent editable group"),
             AccessibleRole = AccessibleRole.CheckButton
         };
         _objectDrawingButton = button;
@@ -40,7 +40,7 @@ internal sealed partial class MainForm
         button.MouseEnter += (_, _) => _toolTip.ShowFor(button,
             IsOpenDrawingScope
                 ? "Object Drawing: switch to Current scope"
-                : "Draw each gesture as an independent editable symbol");
+                : "Draw each gesture as an independent editable group");
         button.MouseLeave += (_, _) => _toolTip.HideTip();
         button.Click += (_, _) =>
         {
@@ -90,7 +90,7 @@ internal sealed partial class MainForm
         if (targets.Length == 0 || commit.Frame != _frame
             || !_project.TryConvertDrawingObjectsToSymbol(
                 commit.Container?.Id ?? commit.SceneContainer!.Id, targets, commit.Frame,
-                out symbol, out instance)
+                out symbol, out instance, asGroup: true)
             || symbol is null || instance is null)
         {
             if (commit.Container is not null) commit.Container.RestoreInstanceSnapshot(commit.Instances);

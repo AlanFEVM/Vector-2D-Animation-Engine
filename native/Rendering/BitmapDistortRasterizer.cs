@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace VectorAnimationEngine;
 
 /// <summary>A view-independent image and the world rectangle occupied by its pixels.</summary>
@@ -16,6 +18,10 @@ internal static class BitmapDistortRasterizer
     private const int StripRows = 32;
     private const int CoverageScale = 2;
     private const long SubpixelScale = 256;
+    private static readonly ParallelOptions PreviewMeshWorkers = new()
+    {
+        MaxDegreeOfParallelism = Math.Min(6, Environment.ProcessorCount)
+    };
 
     // The center and both triangle interiors supplement the four edge midpoints.
     // A regular mesh keeps shared edges identical when a curved cell is subdivided.
@@ -189,16 +195,27 @@ internal static class BitmapDistortRasterizer
     }
 
     private static Mesh? BuildMesh(Placement placement, double density,
-        int sourceWidth, int sourceHeight, long maximumBytes, CancellationToken cancellationToken)
+        int sourceWidth, int sourceHeight, long maximumBytes, CancellationToken cancellationToken,
+        PreviewMeshScratch? scratch = null)
     {
         var columns = Math.Clamp((sourceWidth + 31) / 32, 8, 128);
         var rows = Math.Clamp((sourceHeight + 31) / 32, 8, 128);
+        var warp = default(DistortWarp);
+        var share = scratch is not null && TryGetSeparableWarp(placement, out warp);
         while (true)
         {
             var vertexCount = checked((long)(columns + 1) * (rows + 1));
             if (vertexCount > MaximumMeshVertices || vertexCount * 8 > maximumBytes)
                 return null;
-            var points = new PointF[checked((int)vertexCount)];
+            var count = checked((int)vertexCount);
+            var points = scratch is null ? new PointF[count] : scratch.GetPoints(count);
+            if (share && TryBuildSharedMesh(placement, warp, scratch!, columns, rows, points, density, cancellationToken, out var shared))
+            {
+                if (shared is not null) return shared;
+                columns = checked(columns * 2);
+                rows = checked(rows * 2);
+                continue;
+            }
             var left = double.PositiveInfinity;
             var top = double.PositiveInfinity;
             var right = double.NegativeInfinity;
@@ -218,16 +235,117 @@ internal static class BitmapDistortRasterizer
                 }
             }
             var mesh = new Mesh(points, columns, rows, left, top, right, bottom);
-            if (MeshMeetsTolerance(mesh, placement, density, cancellationToken)) return mesh;
+            if (MeshMeetsTolerance(mesh, placement, density, cancellationToken, scratch)) return mesh;
             columns = checked(columns * 2);
             rows = checked(rows * 2);
         }
     }
 
-    private static bool MeshMeetsTolerance(Mesh mesh, Placement placement, double density, CancellationToken cancellationToken)
+    private static bool TryGetSeparableWarp(Placement placement, out DistortWarp warp)
+    {
+        warp = placement.Distortions.Count == 1 ? placement.Distortions[0] : default;
+        return placement.Sin == 0 && warp.IsValid && warp.Source.AxisX.Y == 0 && warp.Source.AxisY.X == 0;
+    }
+
+    // The same boundary points serve every vertex in a row or column. Use
+    // the identical Coons blend as the individual forward map.
+    private static bool TryBuildSharedMesh(Placement placement, DistortWarp warp, PreviewMeshScratch scratch,
+        int columns, int rows, PointF[] points, double density, CancellationToken cancellationToken, out Mesh? result)
+    {
+        result = null;
+        var (horizontal, vertical) = scratch.GetSamples(columns + 1, rows + 1);
+        for (var x = 0; x <= columns; x++)
+            if (!TrySampleBoundary(placement, warp, x / (double)columns, true, out horizontal[x])) return false;
+        for (var y = 0; y <= rows; y++)
+            if (!TrySampleBoundary(placement, warp, y / (double)rows, false, out vertical[y])) return false;
+
+        var corners = new BoundaryCorners(warp.Envelope);
+        var min = new Vector2(float.PositiveInfinity);
+        var max = new Vector2(float.NegativeInfinity);
+        for (var y = 0; y <= rows; y++)
+        for (var x = 0; x <= columns; x++)
+        {
+            var point = BlendBoundary(horizontal[x], vertical[y], corners);
+            if (!float.IsFinite(point.X) || !float.IsFinite(point.Y)) return false;
+            points[y * (columns + 1) + x] = new PointF(point.X, point.Y);
+            min = Vector2.Min(min, point);
+            max = Vector2.Max(max, point);
+        }
+        var mesh = new Mesh(points, columns, rows, min.X, min.Y, max.X, max.Y);
+        if (MeshMeetsTolerance(mesh, placement, density, cancellationToken, scratch)) result = mesh;
+        return true;
+    }
+
+    private static bool TrySampleBoundary(Placement placement, DistortWarp warp, double position, bool horizontal,
+        out BoundarySample sample)
+    {
+        var p = horizontal ? placement.SourcePoint(position, .5) : placement.SourcePoint(.5, position);
+        var valid = DistortEnvelope.TryGetSourceCoordinates(warp.Source, p, out var u, out var v);
+        var t = horizontal ? u : v;
+        sample = new(t, ToVector(warp.Envelope.BoundaryPoint(horizontal ? DistortSide.Top : DistortSide.Left, t)),
+            ToVector(warp.Envelope.BoundaryPoint(horizontal ? DistortSide.Bottom : DistortSide.Right, t)));
+        return valid;
+    }
+
+    private static Vector2 ToVector(PointF point) => new(point.X, point.Y);
+
+    private readonly record struct BoundaryCorners(Vector2 TopLeft, Vector2 TopRight, Vector2 BottomLeft, Vector2 BottomRight)
+    {
+        internal BoundaryCorners(DistortEnvelope envelope) : this(ToVector(envelope.TopLeft), ToVector(envelope.TopRight),
+            ToVector(envelope.BottomLeft), ToVector(envelope.BottomRight)) { }
+    }
+
+    private static Vector2 BlendBoundary(BoundarySample horizontal, BoundarySample vertical, BoundaryCorners corners)
+    {
+        var u = horizontal.T; var v = vertical.T;
+        var inverseU = 1f - u; var inverseV = 1f - v;
+        var bilinear = (corners.TopLeft * (inverseU * inverseV) + corners.TopRight * (u * inverseV))
+            + (corners.BottomLeft * (inverseU * v) + corners.BottomRight * (u * v));
+        return ((horizontal.First * inverseV + horizontal.Last * v)
+            + (vertical.First * inverseU + vertical.Last * u)) - bilinear;
+    }
+
+    private static bool MeshMeetsTolerance(Mesh mesh, Placement placement, double density,
+        CancellationToken cancellationToken, PreviewMeshScratch? scratch)
     {
         var toleranceSquared = Math.Pow(MaximumMeshErrorPixels / density, 2);
+        var warp = default(DistortWarp);
+        var share = scratch is not null && TryGetSeparableWarp(placement, out warp);
+        var corners = share ? new BoundaryCorners(warp.Envelope) : default;
+        var count = ErrorSamples.Length;
+        var (horizontal, vertical) = share ? scratch!.GetSamples(mesh.Columns * count, mesh.Rows * count)
+            : (Array.Empty<BoundarySample>(), Array.Empty<BoundarySample>());
+        if (share)
+        {
+            // An axis-aligned placement maps the two source coordinates independently.
+            // The same cubic samples are reused by every cell in a row or column.
+            for (var column = 0; column < mesh.Columns; column++)
+            for (var i = 0; i < count; i++)
+            {
+                share &= TrySampleBoundary(placement, warp, (column + (double)ErrorSamples[i].X) / mesh.Columns,
+                    true, out horizontal[column * count + i]);
+            }
+            for (var row = 0; row < mesh.Rows; row++)
+            for (var i = 0; i < count; i++)
+            {
+                share &= TrySampleBoundary(placement, warp, (row + (double)ErrorSamples[i].Y) / mesh.Rows,
+                    false, out vertical[row * count + i]);
+            }
+        }
+        if (scratch is not null && mesh.Rows >= 32 && PreviewMeshWorkers.MaxDegreeOfParallelism > 1)
+        {
+            if (!CheckRow(0)) return false;
+            var result = Parallel.For(1, mesh.Rows, PreviewMeshWorkers, (row, state) =>
+            {
+                if (!state.IsStopped && !CheckRow(row)) state.Stop();
+            });
+            return result.IsCompleted;
+        }
         for (var row = 0; row < mesh.Rows; row++)
+            if (!CheckRow(row)) return false;
+        return true;
+
+        bool CheckRow(int row)
         {
             cancellationToken.ThrowIfCancellationRequested();
             for (var column = 0; column < mesh.Columns; column++)
@@ -237,9 +355,16 @@ internal static class BitmapDistortRasterizer
                 var p10 = mesh.Points[index + 1];
                 var p01 = mesh.Points[index + mesh.Columns + 1];
                 var p11 = mesh.Points[index + mesh.Columns + 2];
-                foreach (var sample in ErrorSamples)
+                for (var i = 0; i < count; i++)
                 {
-                    var actual = placement.Map((column + (double)sample.X) / mesh.Columns,
+                    var sample = ErrorSamples[i];
+                    PointF actual;
+                    if (share)
+                    {
+                        var point = BlendBoundary(horizontal[column * count + i], vertical[row * count + i], corners);
+                        actual = new PointF(point.X, point.Y);
+                    }
+                    else actual = placement.Map((column + (double)sample.X) / mesh.Columns,
                         (row + (double)sample.Y) / mesh.Rows);
                     if (!float.IsFinite(actual.X) || !float.IsFinite(actual.Y)) return false;
                     double x, y;
@@ -258,8 +383,9 @@ internal static class BitmapDistortRasterizer
                     if (dx * dx + dy * dy > toleranceSquared) return false;
                 }
             }
+            return true;
         }
-        return true;
+
     }
 
     private static List<int>[]? BuildStripBins(RasterVertex[] vertices,
@@ -414,18 +540,52 @@ internal static class BitmapDistortRasterizer
 
     private readonly record struct RasterVertex(long X, long Y);
     private readonly record struct TexturePoint(double X, double Y);
-    private sealed record Mesh(PointF[] Points, int Columns, int Rows,
+    internal readonly record struct BoundarySample(float T, Vector2 First, Vector2 Last);
+    internal sealed record Mesh(PointF[] Points, int Columns, int Rows,
         double Left, double Top, double Right, double Bottom);
+
+    // Owned by the renderer thread. A preview mesh is consumed before the next
+    // mesh build. Native rasterization deliberately owns its separate buffers.
+    internal sealed class PreviewMeshScratch
+    {
+        private PointF[] _points = [];
+        private BoundarySample[] _horizontal = [];
+        private BoundarySample[] _vertical = [];
+
+        internal PointF[] GetPoints(int count)
+        {
+            if (_points.Length < count) _points = new PointF[count];
+            return _points;
+        }
+
+        internal (BoundarySample[] Horizontal, BoundarySample[] Vertical) GetSamples(int horizontal, int vertical)
+        {
+            if (_horizontal.Length < horizontal) _horizontal = new BoundarySample[horizontal];
+            if (_vertical.Length < vertical) _vertical = new BoundarySample[vertical];
+            return (_horizontal, _vertical);
+        }
+    }
+
+    internal static Mesh? BuildPreviewMesh(VectorScene scene, int index,
+        IReadOnlyList<DistortWarp> distortions, double density, PreviewMeshScratch scratch) =>
+        BuildMesh(new Placement(scene.X[index], scene.Y[index], scene.Width[index], scene.Height[index],
+            Math.Cos(scene.Angle[index]), Math.Sin(scene.Angle[index]), distortions),
+            density, 256, 256, 16L * 1024 * 1024, default, scratch);
 
     private sealed record Placement(double X, double Y, double Width, double Height,
         double Cos, double Sin, IReadOnlyList<DistortWarp> Distortions)
     {
-        internal PointF Map(double u, double v)
+        internal PointF SourcePoint(double u, double v)
         {
             var localX = (u - 0.5) * Width;
             var localY = (v - 0.5) * Height;
-            var point = new PointF((float)(X + localX * Cos - localY * Sin),
+            return new PointF((float)(X + localX * Cos - localY * Sin),
                 (float)(Y + localX * Sin + localY * Cos));
+        }
+
+        internal PointF Map(double u, double v)
+        {
+            var point = SourcePoint(u, v);
             // IReadOnlyList's enumerable path boxes an enumerator at every mesh
             // sample. A curved preview evaluates tens of thousands per frame.
             for (var index = 0; index < Distortions.Count; index++) point = Distortions[index].Map(point);

@@ -6,6 +6,7 @@ internal static partial class Benchmark
 {
     private static void RunSelectionArrowRegression()
     {
+        RunHighlightOcclusionRegression();
         RunBitmapBreakApartSelectionArrowRegression();
         var defaults = new SelectionArrowSettings();
         AssertTimeline(defaults.BehaviorFor(ToolMode.ObjectSelect) == SelectionArrowBehavior.Object

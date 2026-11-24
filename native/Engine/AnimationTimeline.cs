@@ -38,6 +38,7 @@ internal sealed class AnimationTimelineTrack
 {
     private readonly List<TimelineKeyframe> _keyframes = [];
     private readonly List<TimelineTween> _tweens = [];
+    private readonly List<TimelineTween> _interruptedTweens = [];
 
     internal AnimationTimelineTrack(
         string id,
@@ -46,7 +47,8 @@ internal sealed class AnimationTimelineTrack
         IEnumerable<TimelineKeyframe>? keyframes = null,
         IEnumerable<TimelineTween>? tweens = null,
         string? tabGroupId = null,
-        bool isCollisionTerrain = false)
+        bool isCollisionTerrain = false,
+        IEnumerable<TimelineTween>? interruptedTweens = null)
     {
         Id = string.IsNullOrWhiteSpace(id) ? Guid.NewGuid().ToString("N") : id;
         TargetId = targetId;
@@ -57,6 +59,18 @@ internal sealed class AnimationTimelineTrack
         IsCollisionTerrain = isCollisionTerrain;
         if (keyframes is not null) RestoreKeyframes(keyframes);
         if (tweens is not null) RestoreTweens(tweens);
+        if (interruptedTweens is not null)
+        {
+            foreach (var tween in interruptedTweens.OrderBy(item => item.StartFrame))
+            {
+                if (IsInterruptedTweenValid(tween)
+                    && (_interruptedTweens.Count == 0 || tween.StartFrame >= _interruptedTweens[^1].EndFrame)
+                    && !_tweens.Any(active => active.StartFrame < tween.EndFrame && active.EndFrame > tween.StartFrame))
+                {
+                    _interruptedTweens.Add(tween);
+                }
+            }
+        }
     }
 
     public string Id { get; }
@@ -66,6 +80,7 @@ internal sealed class AnimationTimelineTrack
     public int Duration { get; private set; }
     public IReadOnlyList<TimelineKeyframe> Keyframes => _keyframes;
     public IReadOnlyList<TimelineTween> Tweens => _tweens;
+    public IReadOnlyList<TimelineTween> InterruptedTweens => _interruptedTweens;
 
     public TimelineExposure EvaluateExposure(int frame)
     {
@@ -96,7 +111,8 @@ internal sealed class AnimationTimelineTrack
         }
 
         Duration += count;
-        AdjustTweensAfterInsert(frame, count);
+        AdjustTweensAfterInsert(_tweens, frame, count);
+        AdjustTweensAfterInsert(_interruptedTweens, frame, count);
         return true;
     }
 
@@ -127,6 +143,8 @@ internal sealed class AnimationTimelineTrack
         }
 
         Duration -= removeCount;
+        _interruptedTweens.RemoveAll(tween => tween.StartFrame < removeEnd && tween.EndFrame >= frame);
+        AdjustTweensAfterInsert(_interruptedTweens, frame, -removeCount);
         AdjustTweensAfterRemove(frame, removeCount);
         if (preserveRemovedSource)
         {
@@ -160,11 +178,13 @@ internal sealed class AnimationTimelineTrack
         if (index < _keyframes.Count && _keyframes[index].Frame == frame)
         {
             if (_keyframes[index].Kind == kind) return changed;
+            UpdateInterruptedTweensForKeyframe(frame, kind);
             _keyframes[index] = new TimelineKeyframe(frame, kind);
             PruneInvalidTweens();
             return true;
         }
 
+        UpdateInterruptedTweensForKeyframe(frame, kind);
         _keyframes.Insert(index, new TimelineKeyframe(frame, kind));
         PruneTweensCrossing(frame);
         return true;
@@ -220,6 +240,7 @@ internal sealed class AnimationTimelineTrack
         if (error != TimelineTweenValidationError.None) return false;
 
         var tween = new TimelineTween(startFrame, endFrame, kind);
+        _interruptedTweens.RemoveAll(item => startFrame < item.EndFrame && endFrame > item.StartFrame);
         _tweens.Add(tween);
         _tweens.Sort(static (left, right) => left.StartFrame.CompareTo(right.StartFrame));
         return true;
@@ -244,7 +265,8 @@ internal sealed class AnimationTimelineTrack
         int firstFrame,
         int lastFrame,
         out int startFrame,
-        out int endFrame)
+        out int endFrame,
+        bool allowBlankEndpoints = false)
     {
         startFrame = -1;
         endFrame = -1;
@@ -255,7 +277,7 @@ internal sealed class AnimationTimelineTrack
 
         lastFrame = Math.Min(lastFrame, Duration - 1);
         var exposure = EvaluateExposure(firstFrame);
-        if (!exposure.HasContent || exposure.SourceKeyframeFrame < 0)
+        if (exposure.SourceKeyframeFrame < 0 || (!exposure.HasContent && !allowBlankEndpoints))
         {
             return false;
         }
@@ -267,7 +289,7 @@ internal sealed class AnimationTimelineTrack
             return false;
         }
 
-        if (TryResolveForward(startIndex, lastFrame, out startFrame, out endFrame))
+        if (TryResolveForward(startIndex, lastFrame, out startFrame, out endFrame, allowBlankEndpoints))
         {
             return true;
         }
@@ -280,7 +302,7 @@ internal sealed class AnimationTimelineTrack
         }
 
         var previous = _keyframes[startIndex - 1];
-        if (!previous.HasContent) return false;
+        if (previous.HasContent != exposure.HasContent) return false;
         startFrame = previous.Frame;
         endFrame = exposure.SourceKeyframeFrame;
         return true;
@@ -290,7 +312,8 @@ internal sealed class AnimationTimelineTrack
         int startIndex,
         int selectedEndFrame,
         out int startFrame,
-        out int endFrame)
+        out int endFrame,
+        bool allowBlankEndpoints)
     {
         startFrame = -1;
         endFrame = -1;
@@ -298,7 +321,8 @@ internal sealed class AnimationTimelineTrack
 
         var start = _keyframes[startIndex];
         var end = _keyframes[startIndex + 1];
-        if (!start.HasContent || !end.HasContent || selectedEndFrame > end.Frame)
+        if (start.HasContent != end.HasContent || (!start.HasContent && !allowBlankEndpoints)
+            || selectedEndFrame > end.Frame)
         {
             return false;
         }
@@ -315,6 +339,51 @@ internal sealed class AnimationTimelineTrack
         _tweens.RemoveAt(index);
         return true;
     }
+
+    internal bool CanCreateEmptyTween(int startFrame, int endFrame) =>
+        startFrame < endFrame && EvaluateExposure(startFrame) is
+            { IsKeyframe: true, SourceKind: TimelineKeyframeKind.Blank } start
+        && start.EndFrame == endFrame - 1
+        && EvaluateExposure(endFrame) is { IsKeyframe: true, SourceKind: TimelineKeyframeKind.Blank }
+        && !_tweens.Any(tween => startFrame < tween.EndFrame && endFrame > tween.StartFrame)
+        && !_interruptedTweens.Any(tween => startFrame < tween.EndFrame && endFrame > tween.StartFrame);
+
+    internal bool TryCreateEmptyTween(int startFrame, int endFrame, TimelineTweenKind kind)
+    {
+        if (kind is not (TimelineTweenKind.Classic or TimelineTweenKind.Shape)
+            || !CanCreateEmptyTween(startFrame, endFrame)) return false;
+        _interruptedTweens.Add(new TimelineTween(startFrame, endFrame, kind) { IsEmptyPlaceholder = true });
+        _interruptedTweens.Sort(static (left, right) => left.StartFrame.CompareTo(right.StartFrame));
+        return true;
+    }
+
+    internal bool TrySplitTweenAtKeyframe(int frame)
+    {
+        var exposure = EvaluateExposure(frame);
+        if (EvaluateTween(frame) is { } tween && tween.StartFrame < frame && frame < tween.EndFrame
+            && exposure is { IsKeyframe: true, HasContent: true })
+        {
+            var index = _tweens.IndexOf(tween);
+            _tweens[index] = tween.Slice(tween.StartFrame, frame);
+            _tweens.Insert(index + 1, tween.Slice(frame, tween.EndFrame));
+            return true;
+        }
+
+        if (EvaluateInterruptedTween(frame) is not { IsEmptyPlaceholder: true } empty
+            || frame <= empty.StartFrame || frame >= empty.EndFrame || exposure.HasContent || exposure.IsKeyframe)
+        {
+            return false;
+        }
+
+        _keyframes.Insert(LowerBound(frame), new TimelineKeyframe(frame, TimelineKeyframeKind.Blank));
+        var emptyIndex = _interruptedTweens.IndexOf(empty);
+        _interruptedTweens[emptyIndex] = empty with { EndFrame = frame };
+        _interruptedTweens.Insert(emptyIndex + 1, empty with { StartFrame = frame });
+        return true;
+    }
+
+    internal bool RemoveDisplayTween(int startFrame, int endFrame) => _interruptedTweens.RemoveAll(
+        tween => tween.StartFrame == startFrame && tween.EndFrame == endFrame) > 0;
 
     internal bool ReplaceTweenCurve(
         int startFrame,
@@ -343,6 +412,22 @@ internal sealed class AnimationTimelineTrack
         return index >= 0 && _tweens[index].Contains(frame) ? _tweens[index] : null;
     }
 
+    public TimelineTween? EvaluateInterruptedTween(int frame)
+    {
+        var low = 0;
+        var high = _interruptedTweens.Count;
+        while (low < high)
+        {
+            var middle = low + (high - low) / 2;
+            if (_interruptedTweens[middle].StartFrame <= frame) low = middle + 1;
+            else high = middle;
+        }
+
+        return low > 0 && _interruptedTweens[low - 1].EndFrame >= frame
+            ? _interruptedTweens[low - 1]
+            : null;
+    }
+
     internal AnimationTimelineTrackSnapshot CreateSnapshot()
     {
         return new AnimationTimelineTrackSnapshot
@@ -353,7 +438,8 @@ internal sealed class AnimationTimelineTrack
             IsCollisionTerrain = IsCollisionTerrain,
             Duration = Duration,
             Keyframes = _keyframes.ToArray(),
-            Tweens = _tweens.ToArray()
+            Tweens = _tweens.ToArray(),
+            InterruptedTweens = _interruptedTweens.ToArray()
         };
     }
 
@@ -454,6 +540,34 @@ internal sealed class AnimationTimelineTrack
     {
         _tweens.RemoveAll(tween =>
             ValidateTweenEndpoints(tween.StartFrame, tween.EndFrame) != TimelineTweenValidationError.None);
+        _interruptedTweens.RemoveAll(tween => !IsInterruptedTweenValid(tween));
+    }
+
+    private void UpdateInterruptedTweensForKeyframe(int frame, TimelineKeyframeKind kind)
+    {
+        var display = EvaluateInterruptedTween(frame);
+        _interruptedTweens.RemoveAll(item => item.StartFrame < frame && frame < item.EndFrame);
+        if (kind == TimelineKeyframeKind.Blank && display is { IsEmptyPlaceholder: true } empty
+            && empty.StartFrame < frame && frame < empty.EndFrame)
+        {
+            _interruptedTweens.Add(empty with { EndFrame = frame, IsEmptyPlaceholder = false });
+            _interruptedTweens.Sort(static (left, right) => left.StartFrame.CompareTo(right.StartFrame));
+        }
+        if (kind != TimelineKeyframeKind.Blank || EvaluateTween(frame) is not { } tween
+            || frame <= tween.StartFrame || frame >= tween.EndFrame) return;
+
+        _tweens.Remove(tween);
+        _interruptedTweens.Add(new TimelineTween(tween.StartFrame, frame, tween.Kind));
+        _interruptedTweens.Sort(static (left, right) => left.StartFrame.CompareTo(right.StartFrame));
+    }
+
+    private bool IsInterruptedTweenValid(TimelineTween tween)
+    {
+        if (!tween.IsValid || tween.EndFrame >= Duration) return false;
+        var start = EvaluateExposure(tween.StartFrame);
+        var end = EvaluateExposure(tween.EndFrame);
+        return start is { IsKeyframe: true } && end is { IsKeyframe: true, SourceKind: TimelineKeyframeKind.Blank }
+            && (!tween.IsEmptyPlaceholder || (!start.HasContent && start.EndFrame == tween.EndFrame - 1));
     }
 
     private TimelineTweenValidationError ValidateTweenEndpoints(int startFrame, int endFrame)
@@ -480,16 +594,16 @@ internal sealed class AnimationTimelineTrack
             : TimelineTweenValidationError.BlankEndpoint;
     }
 
-    private void AdjustTweensAfterInsert(int frame, int count)
+    private static void AdjustTweensAfterInsert(List<TimelineTween> tweens, int frame, int count)
     {
-        for (var i = 0; i < _tweens.Count; i++)
+        for (var i = 0; i < tweens.Count; i++)
         {
-            var tween = _tweens[i];
+            var tween = tweens[i];
             // Timeline insertion preserves the keyframe at the insertion
             // frame; only frames strictly after it move forward.
             var start = tween.StartFrame > frame ? tween.StartFrame + count : tween.StartFrame;
             var end = tween.EndFrame > frame ? tween.EndFrame + count : tween.EndFrame;
-            _tweens[i] = tween with { StartFrame = start, EndFrame = end };
+            tweens[i] = tween with { StartFrame = start, EndFrame = end };
         }
     }
 
@@ -716,7 +830,8 @@ internal sealed partial class AnimationTimeline
                 item.Keyframes,
                 item.Tweens,
                 NormalizeTrackTabGroupId(item.TabGroupId),
-                item.IsCollisionTerrain));
+                item.IsCollisionTerrain,
+                item.InterruptedTweens));
         }
 
         RebuildLookups();
@@ -766,6 +881,27 @@ internal sealed partial class AnimationTimeline
         }
 
         return track.CanCreateTween(startFrame, endFrame, kind, out error);
+    }
+
+    internal bool TryCreateEmptyTween(string trackId, int startFrame, int endFrame, TimelineTweenKind kind)
+    {
+        if (FindTrack(trackId)?.TryCreateEmptyTween(startFrame, endFrame, kind) != true) return false;
+        OnChanged();
+        return true;
+    }
+
+    internal bool TrySplitTweenAtKeyframe(string trackId, int frame)
+    {
+        if (FindTrack(trackId)?.TrySplitTweenAtKeyframe(frame) != true) return false;
+        OnChanged();
+        return true;
+    }
+
+    internal bool RemoveDisplayTween(string trackId, int startFrame, int endFrame)
+    {
+        if (FindTrack(trackId)?.RemoveDisplayTween(startFrame, endFrame) != true) return false;
+        OnChanged();
+        return true;
     }
 
     public bool RemoveTween(string trackId, int startFrame, int endFrame)
@@ -913,4 +1049,5 @@ internal sealed class AnimationTimelineTrackSnapshot
     public int Duration { get; init; } = AnimationTimeline.DefaultDuration;
     public TimelineKeyframe[] Keyframes { get; init; } = [];
     public TimelineTween[] Tweens { get; init; } = [];
+    public TimelineTween[] InterruptedTweens { get; init; } = [];
 }

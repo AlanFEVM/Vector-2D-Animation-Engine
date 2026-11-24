@@ -23,6 +23,10 @@ internal sealed partial class VectorScene
     private static BitmapObjectData BitmapFillData(BitmapObjectData data, PointF[][]? contours, bool broken) => new()
     {
         ImageAssetId = data.ImageAssetId,
+        ShadowCorners = data.ShadowCorners,
+        WarmLightCorners = data.WarmLightCorners,
+        BiomeTintArgb = data.BiomeTintArgb,
+        BiomeTintGrassSide = data.BiomeTintGrassSide,
         PlacedSize = data.PlacedSize,
         VisibleContours = contours,
         IsBrokenApart = broken

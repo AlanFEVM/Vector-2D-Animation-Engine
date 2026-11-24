@@ -348,6 +348,7 @@ internal sealed class SettingsDialog : ModernDialogForm
     public bool Experimental3DEnabled => _experimental3D.Checked;
     public WindowCornerStyle SelectedWindowCornerStyle => _selectedWindowCornerStyle;
     public bool FreeTransformShiftProportionalEnabled => _freeTransformShiftProportionalEnabled;
+    public int ImageImportAutoPlaceLimit { get; set; } = ApplicationSettings.DefaultImageImportAutoPlaceLimit;
     internal event EventHandler? ThemePreviewChanged;
     internal event EventHandler? CornerPreviewChanged;
     internal Func<SettingsDialog, bool>? SaveRequested { get; set; }
@@ -373,12 +374,14 @@ internal sealed class SettingsDialog : ModernDialogForm
 
     private void OpenOperationPreferences()
     {
-        using var dialog = new OperationPreferencesDialog(_freeTransformShiftProportionalEnabled, SelectedToolbarPosition);
+        using var dialog = new OperationPreferencesDialog(_freeTransformShiftProportionalEnabled, SelectedToolbarPosition,
+            ImageImportAutoPlaceLimit);
         dialog.ApplyRequested = () => OperationPreferencesSaveRequested?.Invoke(dialog) ?? true;
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
             _freeTransformShiftProportionalEnabled = dialog.FreeTransformShiftProportionalEnabled;
             SelectedToolbarPosition = dialog.SelectedToolbarPosition;
+            ImageImportAutoPlaceLimit = dialog.ImageImportAutoPlaceLimit;
         }
     }
 

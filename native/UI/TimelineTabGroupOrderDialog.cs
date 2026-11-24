@@ -5,10 +5,17 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
     private readonly List<TimelineTabGroup> _groups;
     private readonly Dictionary<string, string[]> _layerNames;
     private readonly GroupScrollHost _tags = new() { Dock = DockStyle.Fill, Margin = Padding.Empty };
-    private readonly Button _rename = new() { Text = UiLocalization.T("Rename tab group") };
-    private readonly Button _delete = new() { Text = UiLocalization.T("Delete tab group") };
-    private readonly Button _color = new() { Text = UiLocalization.T("Tab group color") };
-    private readonly Button _resetColor = new() { Text = UiLocalization.T("Reset tab group color") };
+    private readonly SurfaceButton _rename = new() { Text = UiLocalization.T("Rename") };
+    private readonly SurfaceButton _delete = new() { Text = UiLocalization.T("Delete") };
+    private readonly SurfaceButton _color = new() { Text = UiLocalization.T("Color") };
+    private readonly SurfaceButton _resetColor = new() { Text = UiLocalization.T("Reset") };
+    private readonly SurfaceButton _lower = new() { Text = UiLocalization.T("Move left / lower") };
+    private readonly SurfaceButton _higher = new() { Text = UiLocalization.T("Move right / higher") };
+    private readonly Label _empty = new()
+    {
+        Dock = DockStyle.Fill, Text = UiLocalization.T("No layers in this group"),
+        TextAlign = ContentAlignment.MiddleCenter, ForeColor = Theme.SecondaryText
+    };
     private readonly ListBox _layers = new()
     {
         Dock = DockStyle.Fill, BorderStyle = BorderStyle.None,
@@ -16,7 +23,7 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
         DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = 36,
         IntegralHeight = false, SelectionMode = SelectionMode.None
     };
-    private readonly Label _layerTitle = InspectorModuleStyle.CreateTitle("Layers");
+    private readonly Label _layerTitle = new SingleLineLabel { ForeColor = Theme.Text, AutoEllipsis = true };
     private readonly Label _count = new() { Dock = DockStyle.Fill, ForeColor = Theme.SecondaryText, AutoEllipsis = true };
     private readonly ToolTip _toolTip = new();
     private int _dropMarkerX = -1;
@@ -25,43 +32,69 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
     private Point _dragStart;
 
     public TimelineTabGroupOrderDialog(AnimationTimeline timeline, IReadOnlyDictionary<string, string> names, Func<string, string?>? rename = null)
-        : base(UiLocalization.T("Layer group order"), ManagementDialogSize)
+        : base(UiLocalization.T("Layer group order"), new Size(800, 520))
     {
+        MinimumSize = new Size(680, 480);
         _groups = timeline.TabGroups.ToList();
         _layerNames = timeline.Tracks.GroupBy(track => track.TabGroupId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Select(track => names.GetValueOrDefault(track.TargetId, track.TargetId)).ToArray(), StringComparer.Ordinal);
         _selectedId = _groups.FirstOrDefault()?.Id;
         var layout = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Margin = Padding.Empty
+            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 7, Margin = Padding.Empty
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 94));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 8));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         layout.Controls.Add(new Label
         {
             Text = UiLocalization.T("Drag to reorder · Left: bottom  →  Right: top"),
-            Dock = DockStyle.Fill, ForeColor = Theme.SecondaryText, AutoEllipsis = true, Margin = Padding.Empty
+            Dock = DockStyle.Fill, ForeColor = Theme.AccentLabel, AutoEllipsis = true,
+            TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0),
+            BackColor = Theme.AccentSurface, Margin = new Padding(0, 0, 0, 8)
         }, 0, 0);
         layout.Controls.Add(_tags, 0, 1);
         _tags.Items.Paint += (_, e) =>
         {
             if (_dropMarkerX < 0) return;
-            using var pen = new Pen(Theme.Accent, 2);
-            e.Graphics.DrawLine(pen, _dropMarkerX + _tags.ScrollOffset, 5, _dropMarkerX + _tags.ScrollOffset, 54);
+            var scale = _tags.DeviceDpi / 96f;
+            using var pen = new Pen(Theme.Accent, 2 * scale);
+            e.Graphics.DrawLine(pen, _dropMarkerX + _tags.ScrollOffset, 5 * scale, _dropMarkerX + _tags.ScrollOffset, 62 * scale);
         };
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false, Margin = Padding.Empty };
+        var orderActions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty };
+        foreach (var button in new[] { _lower, _higher })
+        {
+            StyleActionButton(button);
+            button.AutoSize = true;
+            button.Height = Theme.ControlHeight;
+            button.Margin = new Padding(0, 0, 8, 0);
+            orderActions.Controls.Add(button);
+        }
+        _lower.Click += (_, _) => MoveSelected(-1);
+        _higher.Click += (_, _) => MoveSelected(1);
+        _toolTip.SetToolTip(_lower, UiLocalization.T("Ctrl+Left/Right changes the group order"));
+        _toolTip.SetToolTip(_higher, UiLocalization.T("Ctrl+Left/Right changes the group order"));
+        layout.Controls.Add(orderActions, 0, 2);
+        var actions = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1, Margin = Padding.Empty, Padding = new Padding(0, 8, 0, 8) };
+        actions.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         foreach (var button in new[] { _rename, _delete, _color, _resetColor })
         {
-            Theme.StyleButton(button);
-            button.AutoSize = true;
-            button.Height = 28;
-            button.Margin = new Padding(0, 4, 8, 0);
+            StyleActionButton(button);
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+            button.Dock = DockStyle.Fill;
+            button.Height = Theme.ControlHeight;
+            button.Margin = new Padding(0, 0, 8, 0);
             actions.Controls.Add(button);
         }
+        _toolTip.SetToolTip(_rename, UiLocalization.T("Rename tab group"));
+        _toolTip.SetToolTip(_delete, UiLocalization.T("Delete tab group"));
+        _toolTip.SetToolTip(_color, UiLocalization.T("Tab group color"));
+        _toolTip.SetToolTip(_resetColor, UiLocalization.T("Reset tab group color"));
         _rename.Click += (_, _) =>
         {
             var group = _groups.FirstOrDefault(item => item.Id == _selectedId);
@@ -95,31 +128,41 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
             var group = _groups.FirstOrDefault(item => item.Id == _selectedId);
             if (group is not null) ReplaceSelected(group with { ColorArgb = null });
         };
-        var sectionHeader = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty
-        };
-        sectionHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        sectionHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _layerTitle.Dock = DockStyle.Fill;
+        _layerTitle.Font = Theme.UiFont(11, FontStyle.Bold);
         _layerTitle.TextAlign = ContentAlignment.MiddleLeft;
         _layerTitle.Margin = Padding.Empty;
-        sectionHeader.Controls.Add(_layerTitle, 0, 0);
-        sectionHeader.Controls.Add(actions, 1, 0);
-        layout.Controls.Add(sectionHeader, 0, 2);
+        var detailHeader = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+        detailHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        detailHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 320));
+        detailHeader.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        detailHeader.Controls.Add(_layerTitle, 0, 0);
+        detailHeader.Controls.Add(actions, 1, 0);
+        layout.Controls.Add(detailHeader, 0, 3);
         _layers.DrawItem += (_, e) =>
         {
             if (e.Index < 0 || e.Index >= _layers.Items.Count) return;
             var scale = _layers.DeviceDpi / 96f;
-            using var fill = new SolidBrush(e.Index % 2 == 0 ? Theme.Mix(Theme.Panel, Theme.PanelStrong, 0.45f) : Theme.Panel);
+            using var fill = new SolidBrush(Theme.Field);
             e.Graphics.FillRectangle(fill, e.Bounds);
+            using var separator = new Pen(Theme.Mix(Theme.Field, Theme.Border, 0.30f));
+            e.Graphics.DrawLine(separator, e.Bounds.Left + 14, e.Bounds.Bottom - 1, e.Bounds.Right - 14, e.Bounds.Bottom - 1);
+            TextRenderer.DrawText(e.Graphics, $"{e.Index + 1:00}", Font,
+                new Rectangle(e.Bounds.Left + (int)(12 * scale), e.Bounds.Top, (int)(32 * scale), e.Bounds.Height), Theme.SecondaryText,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
             TextRenderer.DrawText(e.Graphics, _layers.Items[e.Index]?.ToString(), Font,
-                Rectangle.Inflate(e.Bounds, -(int)(12 * scale), 0), Theme.Text,
+                new Rectangle(e.Bounds.Left + (int)(48 * scale), e.Bounds.Top,
+                    Math.Max(0, e.Bounds.Width - (int)(60 * scale)), e.Bounds.Height), Theme.Text,
                 TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         };
+        _layers.BackColor = Theme.Field;
         _layers.Margin = new Padding(0, 0, 0, 8);
-        layout.Controls.Add(_layers, 0, 3);
-        layout.Controls.Add(_count, 0, 4);
+        _empty.BackColor = Theme.Field;
+        var layerHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(1), Margin = new Padding(0, 0, 0, 8), BackColor = Theme.Mix(Theme.Field, Theme.Border, 0.45f) };
+        layerHost.Controls.Add(_layers);
+        layerHost.Controls.Add(_empty);
+        layout.Controls.Add(layerHost, 0, 5);
+        layout.Controls.Add(_count, 0, 6);
         DialogContent.Controls.Add(layout);
         var ok = AddDialogAction(UiLocalization.T("OK"), DialogResult.OK, DialogActionStyle.Primary);
         var cancel = AddDialogAction(UiLocalization.T("Cancel"), DialogResult.Cancel);
@@ -130,6 +173,68 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
     }
 
     public TimelineTabGroup[] Groups => _groups.ToArray();
+
+    private static void PaintGroupTag(Graphics graphics, Button tag, int index, string name, int layerCount,
+        Color groupColor, bool selected, bool hovered)
+    {
+        var scale = tag.DeviceDpi / 96f;
+        int S(int value) => (int)Math.Round(value * scale);
+        var background = Theme.Mix(Theme.PanelStrong, groupColor, selected ? 0.18f : hovered ? 0.10f : 0.03f);
+        using var fill = new SolidBrush(background);
+        using var border = new Pen(selected ? Theme.Accent : Theme.Mix(background, Theme.Border, hovered ? 0.85f : 0.40f), selected ? 1.5f * scale : scale);
+        Theme.PaintUiSurface(graphics, fill, border, tag.ClientRectangle);
+        using var dot = new SolidBrush(groupColor);
+        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        graphics.FillEllipse(dot, S(14), S(13), S(7), S(7));
+        using var indexFont = Theme.UiFont(8f, FontStyle.Bold);
+        using var nameFont = Theme.UiFont(10f, FontStyle.Bold);
+        using var countFont = Theme.UiFont(8.3f);
+        TextRenderer.DrawText(graphics, $"{index + 1:00}", indexFont,
+            new Rectangle(S(27), S(6), tag.Width - S(42), S(20)), Theme.SecondaryText,
+            TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        TextRenderer.DrawText(graphics, name, nameFont,
+            new Rectangle(S(12), S(25), tag.Width - S(24), S(22)), Theme.Text,
+            TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
+        TextRenderer.DrawText(graphics, string.Format(UiLocalization.T("{0} layers"), layerCount), countFont,
+            new Rectangle(S(12), S(48), tag.Width - S(24), S(18)), Theme.SecondaryText,
+            TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        // A grip makes the drag affordance visible without adding another command.
+        using var grip = new SolidBrush(Theme.Mix(background, Theme.Text, selected ? 0.60f : 0.35f));
+        for (var row = 0; row < 3; row++)
+            for (var column = 0; column < 2; column++)
+                graphics.FillEllipse(grip, tag.Width - S(22) + S(column * 5), S(10 + row * 5), S(2), S(2));
+        if (tag.Focused) Theme.DrawKeyboardFocus(graphics, Rectangle.Inflate(tag.ClientRectangle, -S(6), -S(5)), Theme.AccentLabel, background);
+    }
+
+    private static void StyleActionButton(SurfaceButton button)
+    {
+        button.FlatStyle = FlatStyle.Flat;
+        button.FlatAppearance.BorderSize = 0;
+        button.BackColor = Theme.PanelStrong;
+        button.ForeColor = Theme.Text;
+        button.Cursor = Cursors.Hand;
+        button.Padding = new Padding(10, 0, 10, 0);
+        var hover = false;
+        var pressed = false;
+        button.MouseEnter += (_, _) => { hover = true; button.Invalidate(); };
+        button.MouseLeave += (_, _) => { hover = false; button.Invalidate(); };
+        button.MouseDown += (_, _) => { pressed = true; button.Invalidate(); };
+        button.MouseUp += (_, _) => { pressed = false; button.Invalidate(); };
+        button.MouseCaptureChanged += (_, _) => { if (!button.Capture) pressed = false; button.Invalidate(); };
+        button.PaintContent = graphics =>
+        {
+            var background = !button.Enabled ? Theme.Panel : pressed ? Theme.AccentPressedSurface
+                : hover ? Theme.PanelHover : Theme.PanelStrong;
+            using var fill = new SolidBrush(background);
+            using var border = new Pen(Theme.Mix(background, Theme.Border, hover ? 0.8f : 0.35f));
+            Theme.PaintUiSurface(graphics, fill, border, button.ClientRectangle);
+            TextRenderer.DrawText(graphics, button.Text, button.Font,
+                Rectangle.Inflate(button.ClientRectangle, -4, -2),
+                button.Enabled ? Theme.Text : Theme.DisabledText,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPrefix);
+            if (button.Focused) Theme.DrawKeyboardFocus(graphics, Rectangle.Inflate(button.ClientRectangle, -5, -4));
+        };
+    }
 
     private static bool IsBuiltIn(string id) => id is AnimationTimeline.DefaultTabGroupId or AnimationTimeline.TerrainTabGroupId or AnimationTimeline.ShotTabGroupId;
 
@@ -166,7 +271,7 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
         _groups.Insert(to, group);
         _selectedId = group.Id;
         // Defer recreation until OLE has finished its drop callback.
-        if (IsHandleCreated) BeginInvoke((Action)RefreshTags);
+        if (IsHandleCreated) BeginInvoke((Action)(() => { if (!IsDisposed) RefreshTags(); }));
         else RefreshTags();
     }
 
@@ -174,24 +279,35 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
     {
         var restoreFocus = _tags.ContainsFocus;
         var scrollX = -_tags.AutoScrollPosition.X;
+        var scale = DeviceDpi / 96f;
         _tags.Items.SuspendLayout();
         foreach (var child in _tags.Items.Controls.Cast<Control>().ToArray()) child.Dispose();
         for (var index = 0; index < _groups.Count; index++)
         {
             var group = _groups[index];
             var text = GroupName(group);
-            var tag = new Button
+            var layers = _layerNames.GetValueOrDefault(group.Id, []);
+            var width = Math.Clamp(TextRenderer.MeasureText(text, Font).Width + (int)(62 * scale), (int)(140 * scale), (int)(240 * scale));
+            var tag = new SurfaceButton
             {
-                Text = text, Tag = group.Id, Width = Math.Clamp(TextRenderer.MeasureText(text, Font).Width + 30, 100, 200),
-                Height = 42, Margin = new Padding(3), AllowDrop = true, AutoEllipsis = true,
+                Text = string.Empty,
+                Tag = group.Id, Width = width, UseMnemonic = false,
+                Height = (int)(72 * scale), Margin = new Padding(0, 0, (int)(10 * scale), 0), AllowDrop = true, AutoEllipsis = true,
                 AccessibleName = $"{index + 1} · {text}", AccessibleDescription = UiLocalization.T("Ctrl+Left/Right changes the group order")
             };
-            Theme.StyleButton(tag);
-            tag.BackColor = group.ColorArgb is { } argb ? Color.FromArgb(argb) : Theme.PanelStrong;
-            tag.ForeColor = Theme.ReadableText(tag.BackColor, Theme.Text);
+            tag.FlatStyle = FlatStyle.Flat;
+            tag.BackColor = Theme.PanelStrong;
+            tag.ForeColor = Theme.Text;
+            tag.Cursor = Cursors.Hand;
             tag.FlatAppearance.BorderSize = group.Id == _selectedId ? 2 : 1;
             tag.FlatAppearance.BorderColor = group.Id == _selectedId ? Theme.Accent : Theme.Border;
-            var layers = _layerNames.GetValueOrDefault(group.Id, []);
+            var customColor = group.ColorArgb is { } argb ? Color.FromArgb(argb) : Theme.Accent;
+            var hovered = false;
+            var ordinal = index;
+            tag.MouseEnter += (_, _) => { hovered = true; tag.Invalidate(); };
+            tag.MouseLeave += (_, _) => { hovered = false; tag.Invalidate(); };
+            tag.PaintContent = graphics => PaintGroupTag(graphics, tag, ordinal, text, layers.Length,
+                customColor, group.Id == _selectedId, hovered);
             _toolTip.SetToolTip(tag, $"{index + 1} · {text}\n" + tag.AccessibleDescription
                 + (layers.Length == 0 ? "" : "\n" + string.Join("\n", layers.Take(8))));
             tag.Click += (_, _) => SelectGroup(group.Id);
@@ -201,21 +317,13 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
                 if (e.Button != MouseButtons.Left || _dragId != group.Id
                     || new Rectangle(_dragStart.X - SystemInformation.DragSize.Width / 2, _dragStart.Y - SystemInformation.DragSize.Height / 2,
                         SystemInformation.DragSize.Width, SystemInformation.DragSize.Height).Contains(e.Location)) return;
-                var dragging = true;
-                PaintEventHandler paintOrigin = (_, paint) =>
-                {
-                    if (!dragging) return;
-                    using var veil = new SolidBrush(Color.FromArgb(191, _tags.Items.BackColor));
-                    paint.Graphics.FillRectangle(veil, tag.ClientRectangle);
-                };
-                tag.Paint += paintOrigin;
+                tag.DragSource = true;
                 tag.Invalidate();
                 tag.Update();
                 try { tag.DoDragDrop(group.Id, DragDropEffects.Move); }
                 finally
                 {
-                    dragging = false;
-                    tag.Paint -= paintOrigin;
+                    tag.DragSource = false;
                     if (!tag.IsDisposed) tag.Invalidate();
                     _dragId = null;
                     _dropMarkerX = -1;
@@ -258,14 +366,11 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
         _tags.Items.ResumeLayout();
         _tags.AutoScrollPosition = new Point(scrollX, 0);
         SelectGroup(_selectedId);
-        if (restoreFocus)
+        var selected = _tags.Items.Controls.OfType<Button>().FirstOrDefault(tag => tag.Tag as string == _selectedId);
+        if (selected is not null)
         {
-            var selected = _tags.Items.Controls.OfType<Button>().FirstOrDefault(tag => tag.Tag as string == _selectedId);
-            if (selected is not null)
-            {
-                _tags.EnsureVisible(selected);
-                selected.Focus();
-            }
+            _tags.EnsureVisible(selected);
+            if (restoreFocus) selected.Focus();
         }
     }
 
@@ -274,21 +379,30 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
         _selectedId = id;
         var selectedGroup = _groups.FirstOrDefault(item => item.Id == id);
         _layerTitle.Text = selectedGroup is null ? UiLocalization.T("Layers")
-            : $"{GroupName(selectedGroup)} · {UiLocalization.T("Layers")}";
+            : $"{GroupName(selectedGroup)}  /  {string.Format(UiLocalization.T("{0} layers"), _layerNames.GetValueOrDefault(selectedGroup.Id, []).Length)}";
+        _layerTitle.AccessibleName = _layerTitle.Text;
+        _toolTip.SetToolTip(_layerTitle, _layerTitle.Text);
         _layers.ItemHeight = (int)Math.Round(36 * DeviceDpi / 96f);
         _layers.BeginUpdate();
         _layers.Items.Clear();
         if (id is not null) _layers.Items.AddRange(_layerNames.GetValueOrDefault(id, []).Cast<object>().ToArray());
         _layers.EndUpdate();
+        _layers.Visible = _layers.Items.Count > 0;
+        _empty.Visible = _layers.Items.Count == 0;
+        if (_layers.Items.Count == 0) _empty.BringToFront();
         _count.Text = string.Format(UiLocalization.T("{0}/32 custom groups · Ctrl+Left/Right to reorder"), _groups.Count(group => !IsBuiltIn(group.Id)));
         var group = _groups.FirstOrDefault(item => item.Id == id);
         _rename.Enabled = _delete.Enabled = group is not null && !IsBuiltIn(group.Id);
         _color.Enabled = group is not null;
         _resetColor.Enabled = group?.ColorArgb is not null;
+        var selectedIndex = _groups.FindIndex(item => item.Id == id);
+        _lower.Enabled = selectedIndex > 0;
+        _higher.Enabled = selectedIndex >= 0 && selectedIndex < _groups.Count - 1;
         foreach (var tag in _tags.Items.Controls.OfType<Button>())
         {
             tag.FlatAppearance.BorderSize = tag.Tag as string == id ? 2 : 1;
             tag.FlatAppearance.BorderColor = tag.Tag as string == id ? Theme.Accent : Theme.Border;
+            tag.Invalidate();
         }
     }
 
@@ -296,6 +410,32 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
     {
         if (disposing) _toolTip.Dispose();
         base.Dispose(disposing);
+    }
+
+    // Paint after the shared corner adapter so custom typography survives both
+    // square and rounded application themes. Button retains keyboard/UIA behavior.
+    private sealed class SurfaceButton : Button
+    {
+        internal Action<Graphics>? PaintContent { get; set; }
+        internal bool DragSource { get; set; }
+
+        internal SurfaceButton() => DoubleBuffered = true;
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            PaintContent?.Invoke(e.Graphics);
+            if (!DragSource) return;
+            using var veil = new SolidBrush(Color.FromArgb(191, Theme.Panel));
+            e.Graphics.FillRectangle(veil, ClientRectangle);
+        }
+    }
+
+    private sealed class SingleLineLabel : Label
+    {
+        protected override void OnPaint(PaintEventArgs e) => TextRenderer.DrawText(e.Graphics, Text, Font,
+            ClientRectangle, ForeColor, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis
+                | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
     }
     private sealed class GroupScrollHost : Panel
     {

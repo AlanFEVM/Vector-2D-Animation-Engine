@@ -46,7 +46,7 @@ internal sealed class BrushShape
         IsDefaultSoftRound = isDefaultSoftRound;
         IsTraditionalBrush = isTraditionalBrush;
         TraditionalTipKind = traditionalTipKind;
-        TraditionalWidthPercent = Math.Clamp(traditionalWidthPercent, 25, 400);
+        TraditionalWidthPercent = Math.Clamp(traditionalWidthPercent, 1, 400);
         TraditionalDirectionDegrees = NormalizeDegrees(traditionalDirectionDegrees);
         IsRadiallySymmetric = isTraditionalBrush
             ? traditionalTipKind == TraditionalBrushTipKind.Round && TraditionalWidthPercent == 100
@@ -223,7 +223,7 @@ internal sealed class BrushShape
         float widthScale,
         int directionDegrees)
     {
-        widthScale = Math.Clamp(widthScale, 0.25f, 4f);
+        widthScale = Math.Clamp(widthScale, 0.01f, 4f);
         PointF[] contour;
         if (tipKind == TraditionalBrushTipKind.Square)
         {

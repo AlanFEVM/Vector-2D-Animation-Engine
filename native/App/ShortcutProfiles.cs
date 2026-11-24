@@ -95,6 +95,7 @@ internal static class ShortcutCommandIds
     public const string ZoomOut = "stage.zoomout";
     public const string ZoomSelection = "stage.zoomselection";
     public const string BreakApart = "stage.breakapart";
+    public const string Group = "stage.group";
     public const string LinkedDuplicate = "stage.linkedduplicate";
     public const string TogglePanels = "stage.togglepanels";
     public const string ParentSymbol = "stage.parentsymbol";
@@ -200,6 +201,7 @@ internal static class ShortcutProfiles
         Workbench(ShortcutCommandIds.ZoomOut, "Zoom Out", Keys.Control | Keys.OemMinus),
         Workbench(ShortcutCommandIds.ZoomSelection, "Zoom to Selection", Keys.Shift | Keys.D2),
         Workbench(ShortcutCommandIds.BreakApart, "Break Apart", Keys.Control | Keys.B),
+        Workbench(ShortcutCommandIds.Group, "Group", Keys.Control | Keys.G),
         Workbench(ShortcutCommandIds.LinkedDuplicate, "Linked Duplicate", Keys.Alt | Keys.D),
         Workbench(ShortcutCommandIds.TogglePanels, "Toggle Panel Group", Keys.Control | Keys.Shift | Keys.H),
         Workbench(ShortcutCommandIds.ParentSymbol, "Parent Symbol", Keys.PageUp),

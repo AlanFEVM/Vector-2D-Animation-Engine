@@ -41,6 +41,11 @@ internal sealed partial class MainForm
 
     private void HandleVaultBatchAction(VaultBatchActionEventArgs request)
     {
+        if (request.Action == "Place")
+        {
+            PlaceLibraryAssets(new(_project.Id, request.SymbolIds, request.ImageIds, request.SvgIds), null);
+            return;
+        }
         if (!CommitTextEdit()) return;
         var symbols = request.SymbolIds.Distinct(StringComparer.Ordinal)
             .Where(id => FindVaultSymbol(id) is { IsOpenCanvas: false }).ToArray();
@@ -78,7 +83,7 @@ internal sealed partial class MainForm
 
     private void DeleteVaultSelection(string[] symbols, string[] images, string[] svgs, string[] folders)
     {
-        if (_project.DrawingObjects.Count(symbol => !symbol.IsOpenCanvas) - symbols.Length < 1)
+        if (_project.DrawingObjects.Count(symbol => symbol.IsLibrarySymbol) - symbols.Length < 1)
         {
             ShowVaultNotice(UiLocalization.T("A project must retain at least one symbol."));
             return;

@@ -83,7 +83,8 @@ export default function workspaceOverview({ fileURL }) {
         { src: '/images/grid-cartesian.png', caption: '直角坐标网格', className: 'wiki-grid-images' },
         { src: '/images/grid-golden-spiral.png', caption: '黄金螺旋网格', className: 'wiki-grid-images' },
         { src: '/images/grid-polar.png', caption: '极坐标网格', className: 'wiki-grid-images' },
-        { src: '/images/properties-panel.png', caption: '文本工具的属性子页面' },
+        { src: '/images/properties-panel.png', caption: '文字工具页', className: 'wiki-inspector-images' },
+        { src: '/images/properties-object.png', caption: '选中绘制对象后的对象页', className: 'wiki-inspector-images' },
         { src: '/images/timeline-panel.png', caption: '图层与时间轴', className: 'wiki-timeline-images' },
         { src: '/images/workspace-tabs.png', caption: '工作区与编辑范围切换' },
       ];

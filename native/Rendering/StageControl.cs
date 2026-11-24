@@ -1274,7 +1274,12 @@ internal sealed partial class StageControl : Control
     /// </summary>
     internal Func<string, BitmapImageRaster?>? BitmapImageResolver { get; set; }
     internal Func<string, BitmapImageRasterKey?>? BitmapImageKeyResolver { get; set; }
+    internal Func<string, BitmapImageRasterKey, bool>? BitmapImageOpacityProvider { get; set; }
+    internal bool IsBitmapImageKnownOpaque(string assetId, BitmapImageRasterKey key) =>
+        BitmapImageOpacityProvider?.Invoke(assetId, key) ?? BitmapImageRasterizer.IsKnownOpaqueSource(key);
     private readonly Dictionary<string, BitmapImageRasterKey?> _paintBitmapKeys = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ImageAssetDefinition?> _paintBitmapAssets = new(StringComparer.Ordinal);
+    internal Dictionary<string, ImageAssetDefinition?>? PaintBitmapAssets => _paintInProgress ? _paintBitmapAssets : null;
 
     internal bool TryGetBitmapImageKey(string assetId, out BitmapImageRasterKey key)
     {
@@ -1290,6 +1295,13 @@ internal sealed partial class StageControl : Control
         return true;
     }
 
+    internal bool TryGetBitmapImageKey(BitmapObjectData data, out BitmapImageRasterKey key)
+    {
+        if (!TryGetBitmapImageKey(data.ImageAssetId, out key)) return false;
+        key = BitmapImageRasterizer.ObjectAppearanceKey(key, data);
+        return true;
+    }
+
     // Origin feedback, artwork and software fallback share one asset lookup per
     // paint. Never retain it across paints: file/settings/provider changes must
     // be observed on the next frame, and idle stages must not pin decoded pixels.
@@ -1298,7 +1310,8 @@ internal sealed partial class StageControl : Control
     internal ISet<string>? PaintBitmapValidatedPaths => _paintInProgress ? _paintBitmapValidatedPaths : null;
     private readonly Dictionary<string, Dictionary<string, FileInfo>?> _paintBitmapDirectoryFiles = new(StringComparer.OrdinalIgnoreCase);
     internal Dictionary<string, Dictionary<string, FileInfo>?>? PaintBitmapDirectoryFiles =>
-        _paintInProgress && SelectionMoveFeedbackActive && SelectedObjects.Count >= 8 ? _paintBitmapDirectoryFiles : null;
+        _paintInProgress && (Scene.ObjectCount >= 64 || SelectionMoveFeedbackActive && SelectedObjects.Count >= 8)
+            ? _paintBitmapDirectoryFiles : null;
 
     /// <summary>
     /// Host-supplied sampling mode for an image asset, derived from its import filter mode.
@@ -1317,6 +1330,14 @@ internal sealed partial class StageControl : Control
         }
         if (resolved is null) return false;
         raster = resolved;
+        return true;
+    }
+
+    internal bool TryDecodeBitmapImage(BitmapObjectData data, out BitmapImageRaster raster)
+    {
+        if (!TryDecodeBitmapImage(data.ImageAssetId, out raster)) return false;
+        raster = BitmapImageRasterizer.ApplyObjectAppearance(raster,
+            BitmapImageRasterizer.ObjectAppearanceKey(raster.Key, data));
         return true;
     }
 
@@ -1831,6 +1852,7 @@ internal sealed partial class StageControl : Control
     internal bool IsObjectHiddenForRendering(VectorScene scene, int objectIndex)
     {
         return IsHiddenByDragPreview(scene, objectIndex)
+            || IsOtherSlabInFocusedChunk(scene, objectIndex)
             || (ReferenceEquals(scene, _editingTextScene) && objectIndex == _editingTextObject);
     }
 
@@ -1840,14 +1862,23 @@ internal sealed partial class StageControl : Control
     {
         ArgumentNullException.ThrowIfNull(scene);
         ArgumentNullException.ThrowIfNull(overrides);
-        var next = overrides
-            .Where(item => (uint)item.Key < scene.ObjectCount
-                && item.Value is { Length: > 0 }
-                && item.Value.All(distortion => distortion.IsValid))
-            .ToDictionary(item => item.Key, item => item.Value);
-        var targetsChanged = !ReferenceEquals(_distortPreviewScene, scene)
-            || !_distortPreviewOverrides.Keys.OrderBy(index => index)
-                .SequenceEqual(next.Keys.OrderBy(index => index));
+        var next = new Dictionary<int, DistortWarp[]>(overrides.Count);
+        var targetsChanged = !ReferenceEquals(_distortPreviewScene, scene);
+        foreach (var (index, warps) in overrides)
+        {
+            if ((uint)index >= scene.ObjectCount || warps is not { Length: > 0 }) continue;
+            var valid = true;
+            foreach (var warp in warps)
+            {
+                if (warp.IsValid) continue;
+                valid = false;
+                break;
+            }
+            if (!valid) continue;
+            next.Add(index, warps);
+            if (!targetsChanged && !_distortPreviewOverrides.ContainsKey(index)) targetsChanged = true;
+        }
+        targetsChanged |= next.Count != _distortPreviewOverrides.Count;
         if (targetsChanged) ClearDistortRasterCache();
         _distortPreviewScene = next.Count > 0 ? scene : null;
         _distortPreviewOverrides = next;
@@ -1906,7 +1937,7 @@ internal sealed partial class StageControl : Control
                 || ReferenceEquals(scene, _distortPreviewScene) && _distortPreviewOverrides.Count > 0);
     }
 
-    private bool TryGetObjectDistortionsForRendering(
+    internal bool TryGetObjectDistortionsForRendering(
         VectorScene scene,
         int objectIndex,
         out IReadOnlyList<DistortWarp> distortions)
@@ -2306,6 +2337,8 @@ internal sealed partial class StageControl : Control
         var sin = MathF.Sin(CanvasRotation);
         CameraX -= VectorUnits.FromPixels((dx * cos + dy * sin) / Zoom);
         CameraY -= VectorUnits.FromPixels((-dx * sin + dy * cos) / Zoom);
+        _lastPlanarNavigationInput = Stopwatch.GetTimestamp();
+        PulsePlanarPanHighlightPreview();
         RequestStageFrame(
             basePresentationChanged: true,
             preserveReference3DWorkspaceFrameCache: true,
@@ -2333,8 +2366,7 @@ internal sealed partial class StageControl : Control
             if (interactivePreview
                 && (_zoomLodPreviewActive || _distortZoomPreviewActive || _selectionZoomPreviewActive))
             {
-                _zoomLodPreviewTimer.Stop();
-                _zoomLodPreviewTimer.Start();
+                PulsePlanarZoomLodPreview();
             }
             return;
         }
@@ -2342,6 +2374,7 @@ internal sealed partial class StageControl : Control
         Zoom = newZoom;
         CameraX = (float)(anchorX - offsetX / newZoom * VectorUnits.UnitsPerPixel);
         CameraY = (float)(anchorY - offsetY / newZoom * VectorUnits.UnitsPerPixel);
+        _lastPlanarNavigationInput = Stopwatch.GetTimestamp();
         var rasterPreview = interactivePreview && ShouldUseGdiRasterZoomPreview();
         var objectLodPreview = interactivePreview
             && ShouldUseZoomLodPreview(Scene.ObjectCount, Scene.HasDisplayLayerEffects);
@@ -2598,11 +2631,17 @@ internal sealed partial class StageControl : Control
             return;
         }
 
+        var toolChanged = DistortMode != distortMode;
         DistortMode = distortMode;
         DistortBoundsVisible = visible;
         _distortFrame = nextFrame;
         _transformOverlayUsesReferenceProjection = nextUsesReference;
         _transformOverlayFlatToScene = nextReferenceTransform;
+        if (toolChanged)
+        {
+            if (distortMode) _pendingDistortBake?.Cancellation.Cancel();
+            RequestStageFrame(basePresentationChanged: true);
+        }
         InvalidateSelectionState();
     }
 
@@ -2732,22 +2771,11 @@ internal sealed partial class StageControl : Control
             out hit);
     }
 
-    internal DistortOverlayScreenGeometry GetDistortOverlayScreenGeometry()
+    internal (DistortOverlayBezierSegment[] BezierSegments, DistortOverlayVisualHandle[] VisualHandles)
+        GetDistortOverlayScreenGuides()
     {
-        if (!_distortFrame.IsValid)
-        {
-            return new DistortOverlayScreenGeometry([], [], [], [], []);
-        }
-
         var envelope = _distortFrame;
-        var sides = Enum.GetValues<DistortSide>()
-            .Select(side => envelope.GetBoundaryPolyline(side)
-                .Select(TransformOverlayPointToScreen)
-                .ToArray())
-            .ToArray();
-        var contour = envelope.GetBoundaryContour()
-            .Select(TransformOverlayPointToScreen)
-            .ToArray();
+        if (!envelope.IsValid) return ([], []);
         var segments = Enum.GetValues<DistortSide>()
             .SelectMany(side => envelope.GetSegments(side))
             .Select(segment => new DistortOverlayBezierSegment(
@@ -2772,6 +2800,27 @@ internal sealed partial class StageControl : Control
                     anchor);
             })
             .ToArray();
+
+        return (segments, visualHandles);
+    }
+
+    internal DistortOverlayScreenGeometry GetDistortOverlayScreenGeometry()
+    {
+        if (!_distortFrame.IsValid)
+        {
+            return new DistortOverlayScreenGeometry([], [], [], [], []);
+        }
+
+        var envelope = _distortFrame;
+        var sides = Enum.GetValues<DistortSide>()
+            .Select(side => envelope.GetBoundaryPolyline(side)
+                .Select(TransformOverlayPointToScreen)
+                .ToArray())
+            .ToArray();
+        var contour = envelope.GetBoundaryContour()
+            .Select(TransformOverlayPointToScreen)
+            .ToArray();
+        var (segments, visualHandles) = GetDistortOverlayScreenGuides();
 
         var topLeft = sides.Length > 0 && sides[0].Length > 0 ? sides[0][0] : PointF.Empty;
         var topRight = sides.Length > 0 && sides[0].Length > 0 ? sides[0][^1] : PointF.Empty;
@@ -3194,6 +3243,7 @@ internal sealed partial class StageControl : Control
         }
         var rendered = false;
         _paintInProgress = true;
+        _highlightOcclusionPrepared = false;
         try
         {
             if (_direct2DRenderer.TryRenderReference3DPlaybackGdi(this, e.Graphics, out var fastStats))
@@ -3257,6 +3307,7 @@ internal sealed partial class StageControl : Control
             _paintInProgress = false;
             _paintBitmapImages.Clear();
             _paintBitmapKeys.Clear();
+            _paintBitmapAssets.Clear();
             _paintBitmapValidatedPaths.Clear();
             _paintBitmapDirectoryFiles.Clear();
         }
@@ -3266,6 +3317,7 @@ internal sealed partial class StageControl : Control
             var presentedAt = Stopwatch.GetTimestamp();
             _lastFramePresentedAt = presentedAt;
             _lastFrameRenderMilliseconds = ElapsedMilliseconds(frameStarted, presentedAt);
+            ReportSlowBlockNavigation(presentedAt);
             RenderedFrameCount++;
             _paintedCameraX = CameraX;
             _paintedCameraY = CameraY;
@@ -3781,6 +3833,8 @@ internal sealed partial class StageControl : Control
                 Scene = editableScene;
             }
         }
+        DrawBlockChunkEditingMask(g);
+        DrawBlockLayerHighlight(g);
         DrawReference3DSelection(g);
         DrawTransformOverlay(g);
         DrawDistortOverlay(g);
@@ -3895,6 +3949,8 @@ internal sealed partial class StageControl : Control
         if (editableStats.TileLod) DrawLodDetailObjects(g);
         if (!PlaybackActive)
         {
+            DrawBlockChunkEditingMask(g);
+            DrawBlockLayerHighlight(g);
             if (!MarqueeLodPreviewActive) DrawActiveMaskOutline(g);
             DrawLayerContentHighlight(g);
             DrawSelection(g);
@@ -4261,6 +4317,7 @@ internal sealed partial class StageControl : Control
         BrushShape? brushShape = null,
         bool continuous = true)
     {
+        PressureInkPieces = [];
         FreehandPreviewVisible = points.Count > 0;
         FreehandPreviewPoints = points;
         FreehandPreviewDiameters = diameters is { Count: > 0 } ? diameters : Array.Empty<float>();
@@ -4302,6 +4359,7 @@ internal sealed partial class StageControl : Control
 
     public void ClearFreehandPreview()
     {
+        PressureInkPieces = [];
         if (!FreehandPreviewVisible && FreehandPreviewPoints.Count == 0) return;
         FreehandPreviewVisible = false;
         FreehandPreviewPoints = Array.Empty<PointF>();
@@ -5694,13 +5752,15 @@ internal sealed partial class StageControl : Control
         _zoomLodPreviewActive = objectLodPreview;
         _distortZoomPreviewActive = distortPreview;
         _selectionHighlightTimer.Stop();
-        _zoomLodPreviewTimer.Stop();
-        _zoomLodPreviewTimer.Start();
+        PulsePlanarZoomLodPreview();
     }
 
     private void EndZoomLodPreview(bool invalidate)
     {
         _zoomLodPreviewTimer.Stop();
+        var panHighlightPreview = _planarPanHighlightPreviewActive;
+        _planarPanHighlightPreviewActive = false;
+        if (panHighlightPreview && invalidate) InvalidateOverlay();
         if (!_gdiRasterZoomPreviewActive && !_zoomLodPreviewActive && !_distortZoomPreviewActive && !_selectionZoomPreviewActive && !_referenceNavigationPreviewActive) return;
         var navigationPreview = _referenceNavigationPreviewActive;
         _gdiRasterZoomPreviewActive = false;

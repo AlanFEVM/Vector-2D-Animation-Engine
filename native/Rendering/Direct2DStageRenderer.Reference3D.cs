@@ -3264,7 +3264,7 @@ internal sealed partial class Direct2DStageRenderer
     {
         var scene = stage.Scene;
         if (!scene.TryGetBitmapObjectData(objectIndex, out var data)) return;
-        if (!stage.TryDecodeBitmapImage(data.ImageAssetId, out var decoded)) return;
+        if (!stage.TryDecodeBitmapImage(data, out var decoded)) return;
         decoded = BitmapImageRasterizer.ApplyObjectClip(decoded, data);
         var interpolation = stage.BitmapImageSampling(data.ImageAssetId) == BitmapSampling.Point
             ? BitmapInterpolationMode.NearestNeighbor
@@ -3274,7 +3274,8 @@ internal sealed partial class Direct2DStageRenderer
             stage,
             objectIndex,
             (_, _) => BitmapObjectBitmap(decoded),
-            interpolation);
+            interpolation,
+            data);
     }
 
     /// <summary>
@@ -3286,7 +3287,8 @@ internal sealed partial class Direct2DStageRenderer
         StageControl stage,
         int objectIndex,
         Func<float, float, ID2D1Bitmap> resolveBitmap,
-        BitmapInterpolationMode interpolation)
+        BitmapInterpolationMode interpolation,
+        BitmapObjectData? bitmapData = null)
     {
         var scene = stage.Scene;
         var contour = stage.GetReference3DProjectedContours(objectIndex)
@@ -3374,6 +3376,17 @@ internal sealed partial class Direct2DStageRenderer
                     });
             }
             return;
+        }
+
+        if (bitmapData?.BlockGridKey is not null
+            && StageControl.TrySnapBlockBitmapFrame(bitmapData, new(topLeft,
+                    new(topRight.X - topLeft.X, topRight.Y - topLeft.Y),
+                    new(bottomLeft.X - topLeft.X, bottomLeft.Y - topLeft.Y)),
+                interpolation == BitmapInterpolationMode.NearestNeighbor ? BitmapSampling.Point : BitmapSampling.Linear, out var snapped))
+        {
+            topLeft = snapped.TopLeft;
+            topRight = snapped.TopRight;
+            bottomLeft = snapped.BottomLeft;
         }
 
         var transform = new Matrix3x2(

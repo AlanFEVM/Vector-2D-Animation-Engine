@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Reflection;
@@ -289,6 +289,7 @@ internal static partial class Benchmark
 
     private static void RunBitmapRasterSourceCacheRegression()
     {
+        RunBitmapAssetIdentityLifetimeRegression();
         RunTimelineScrubRefreshRegression();
         RunTimelineFrameReadoutRegression();
         var root = CreateTemporaryDirectory("bitmap-source-cache");
@@ -406,6 +407,114 @@ internal static partial class Benchmark
             BitmapImageRasterizer.ClearCache();
             DeleteTemporaryDirectory(root);
         }
+    }
+
+    private static void RunBitmapAssetIdentityLifetimeRegression()
+    {
+        var root = CreateTemporaryDirectory("bitmap-asset-identities");
+        var assets = new List<ImageAssetDefinition>();
+        var keys = new List<BitmapImageRasterKey>();
+        try
+        {
+            BitmapImageRasterizer.ClearCache();
+            for (var index = 0; index < 620; index++)
+            {
+                var path = Path.Combine(root, $"{index}.png");
+                using (var image = new Bitmap(4, 4))
+                {
+                    using var graphics = Graphics.FromImage(image);
+                    graphics.Clear(Color.FromArgb(index % 8 == 0 ? 128 : 255, index % 256, index / 256, 120));
+                    image.Save(path, ImageFormat.Png);
+                }
+                var asset = new ImageAssetDefinition { SourcePath = path };
+                assets.Add(asset);
+                keys.Add(BitmapImageRasterizer.Decode(new FileInfo(path), asset.ImportSettings, asset).Key);
+                typeof(BitmapImageRasterizer).GetMethod("EvictFor",
+                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!
+                    .Invoke(null, [512L * 1024 * 1024]);
+            }
+            typeof(BitmapImageRasterizer).GetMethod("EvictFor",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!
+                .Invoke(null, [512L * 1024 * 1024]);
+            var reads = BitmapImageRasterizer.SourceReadCount;
+            for (var index = 0; index < assets.Count; index++)
+            {
+                var asset = assets[index];
+                AssertTimeline(BitmapImageRasterizer.TryGetSourceKey(new FileInfo(asset.SourcePath), asset.ImportSettings,
+                    out var key, asset) && key == keys[index],
+                    "A live project asset lost its GPU identity after the global source/pixel cache evicted it.");
+                AssertTimeline(BitmapImageRasterizer.IsKnownOpaqueSource(key, asset) == (index % 8 != 0),
+                    "Live asset opacity became stale or was lost after global metadata eviction.");
+            }
+            AssertTimeline(BitmapImageRasterizer.SourceReadCount == reads,
+                "Validating 620 live asset identities reread source image bytes.");
+            var first = assets[0];
+            var originalWrite = File.GetLastWriteTimeUtc(first.SourcePath);
+            File.SetLastWriteTimeUtc(first.SourcePath, originalWrite.AddSeconds(2));
+            AssertTimeline(!BitmapImageRasterizer.TryGetSourceKey(new FileInfo(first.SourcePath), first.ImportSettings,
+                out _, first), "A modified asset retained its old validation proof.");
+            AssertTimeline(BitmapImageRasterizer.TryGetSourceKey(new FileInfo(assets[1].SourcePath), first.ImportSettings,
+                out var rebound, first) && rebound == keys[1] && rebound != keys[0],
+                "Rebinding an asset path reused its old validation proof.");
+            AssertTimeline(!BitmapImageRasterizer.TryGetSourceKey(new FileInfo(assets[1].SourcePath),
+                assets[1].ImportSettings with { FlipHorizontal = true }, out _, assets[1]),
+                "Changing asset import settings reused its old validation proof.");
+            File.Delete(assets[2].SourcePath);
+            AssertTimeline(!BitmapImageRasterizer.TryGetSourceKey(new FileInfo(assets[2].SourcePath), assets[2].ImportSettings,
+                out _, assets[2]), "A deleted asset retained its old validation proof.");
+            BitmapImageRasterizer.ClearCache();
+            AssertTimeline(!BitmapImageRasterizer.TryGetSourceKey(new FileInfo(assets[3].SourcePath), assets[3].ImportSettings,
+                out _, assets[3]) && !BitmapImageRasterizer.IsKnownOpaqueSource(keys[3], assets[3]),
+                "Cache clearing retained a project asset identity or opacity proof.");
+            RunBitmapPaintAssetLookupRegression(assets[1].SourcePath);
+            Console.WriteLine("bitmap_live_asset_identities=620,cpu_pixels_evicted,source_reads=0,opacity=ok,invalidation=ok");
+        }
+        finally
+        {
+            BitmapImageRasterizer.ClearCache();
+            DeleteTemporaryDirectory(root);
+        }
+    }
+
+    private static void RunBitmapPaintAssetLookupRegression(string source)
+    {
+        using var form = new MainForm { ClientSize = new Size(900, 600), ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual, Location = new Point(-3000, -3000) };
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        AssertTimeline(project.TryAddImageAssetFromSource("Lookup", source,
+            BitmapImageRasterizer.ComputeSha256(source), 4, 4, 96,
+            BitmapImageImportSettings.Default, out var asset), "Could not create paint lookup fixture.");
+        form.Show();
+        var find = RequireMethod(typeof(MainForm), "FindImageAsset", [typeof(string), typeof(StageControl)]);
+        var painting = RequireField(typeof(StageControl), "_paintInProgress");
+        var cache = (System.Collections.IDictionary)RequireField(typeof(StageControl), "_paintBitmapAssets").GetValue(stage)!;
+        var history = project.CaptureLibraryHistory();
+        var id = asset!.Id;
+        ImageAssetDefinition? Find(string key) => (ImageAssetDefinition?)find.Invoke(form, [key, stage]);
+        try
+        {
+            painting.SetValue(stage, true);
+            AssertTimeline(ReferenceEquals(Find(id), asset) && Find("missing") is null && cache.Count == 1,
+                "Per-paint lookup lost an asset or invented a missing reference.");
+        }
+        finally { painting.SetValue(stage, false); }
+        stage.Invalidate(); PaintStage(stage);
+        AssertTimeline(cache.Count == 0, "Paint completion retained asset objects across frames.");
+        AssertTimeline(project.TryRemoveImageAsset(id, out _) && Find(id) is null,
+            "Deleting an asset retained the old paint lookup.");
+        project.RestoreLibraryHistory(history);
+        var restored = Find(id);
+        AssertTimeline(restored is not null && !ReferenceEquals(restored, asset),
+            "Undo reused a stale asset object from an earlier paint.");
+        var previous = project;
+        try
+        {
+            RequireField(typeof(MainForm), "_project").SetValue(form, VectorProject.CreateEmpty());
+            AssertTimeline(Find(id) is null, "Switching projects retained an old paint lookup.");
+        }
+        finally { RequireField(typeof(MainForm), "_project").SetValue(form, previous); }
+        Console.WriteLine("bitmap_paint_asset_lookup=ok,frame_cleanup=ok,delete=ok,undo_identity=ok,project_switch=ok");
     }
 
     private static void RunTimelineScrubRefreshRegression()

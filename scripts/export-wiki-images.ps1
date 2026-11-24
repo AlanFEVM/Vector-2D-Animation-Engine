@@ -11,7 +11,7 @@ param(
     [bool]$SimpleSelectionHighlight = $true,
     [ValidateRange(0, 100)]
     [int]$GridOpacity = 100,
-    [ValidateSet('All', 'tool-palette', 'stage-area', 'stage-context-menu', 'stage-context-menu-selection', 'scene-canvas-start-detail', 'scene-canvas-dialog', 'stage-view-controls', 'grid-cartesian', 'grid-polar', 'grid-golden-spiral')]
+    [ValidateSet('All', 'tool-palette', 'stage-area', 'stage-context-menu', 'stage-context-menu-selection', 'scene-canvas-start-detail', 'scene-canvas-dialog', 'stage-view-controls', 'grid-cartesian', 'grid-polar', 'grid-golden-spiral', 'properties-panel', 'properties-object')]
     [string[]]$Image = @('All'),
     [switch]$SkipBuild,
     [switch]$UpdateWiki
@@ -277,6 +277,19 @@ try {
     $dialogHost.Show()
     Settle
     Export-Control $dialogHost 'scene-canvas-dialog.png'
+    if ('All' -in $Image -or 'properties-panel' -in $Image -or 'properties-object' -in $Image) {
+        $form.ClientSize = [Drawing.Size]::new(1850, 850)
+        $form.PerformLayout()
+        Settle
+        if (-not (Field $form '_inspectorPanelOpen')) { Call $form 'ToggleInspectorPanel' | Out-Null }
+        $objectCategory = [Enum]::Parse((Engine-Type 'MainForm+InspectorCategory'), 'None')
+        Call $form 'RevealInspectorCategory' @($objectCategory, 'wiki object example') | Out-Null
+        Settle
+        Export-Control (Field $form '_inspectorHost') 'properties-object.png'
+        Call $form 'ActivateTool' @([Enum]::Parse((Engine-Type 'ToolMode'), 'Text')) | Out-Null
+        Settle
+        Export-Control (Field $form '_inspectorHost') 'properties-panel.png'
+    }
     $manifest = [ordered]@{
         Schema = 1; Theme = $Theme; WorkspaceColor = $WorkspaceColor; Language = 'SimplifiedChinese'
         GridOpacity = $GridOpacity; DeviceDpi = $form.DeviceDpi

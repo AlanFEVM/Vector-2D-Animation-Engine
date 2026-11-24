@@ -916,7 +916,9 @@ internal sealed partial class MainForm : Form
         _freehandMixingBrush = _tool == ToolMode.MixingBrush;
         _freehandErasing = _tool == ToolMode.Eraser;
         _freehandPencilSmoothing = _drawSettings.PencilSmoothing;
-        _freehandBrushSmoothing = _drawSettings.PressureBrushSmoothing;
+        _freehandPressureOptions = _drawSettings.PressureBrushOptions.Clamped();
+        _freehandBrushSmoothing = _freehandPressureBrush
+            ? _freehandPressureOptions.Smoothing : _drawSettings.PressureBrushSmoothing;
         _freehandPencilWorldPerPixel = _stage.ScreenLengthToWorld(1);
         _freehandPencilPreviewSampleCount = 0;
         _freehandPencilPreviewUpdatedAt = 0;
@@ -984,7 +986,11 @@ internal sealed partial class MainForm : Form
 
         var start = _freehandSamples[^1];
         var end = _stage.ScreenToWorld(screen);
-        var steps = Math.Max(1, (int)MathF.Ceiling(distancePixels / 2f));
+        if (_freehandPressureBrush)
+            end = _freehandPressureOptions.Stabilize(start, end, _freehandPencilWorldPerPixel);
+        // Retain the device's pressure knots. Densifying the chord here hides the
+        // real event boundaries from curve interpolation and magnifies preview work.
+        var steps = _freehandPressureBrush ? 1 : Math.Max(1, (int)MathF.Ceiling(distancePixels / 2f));
         var sampleSeconds = Math.Max(0.001, Stopwatch.GetElapsedTime(_freehandLastSampleTimestamp, sampleTimestamp).TotalSeconds);
         var instantSpeed = Math.Clamp((float)(distancePixels / sampleSeconds), 0, 5000);
         // Low-pass the speed in the time domain: a raw per-event derivative is dominated by
@@ -1076,10 +1082,11 @@ internal sealed partial class MainForm : Form
 
     private void UpdateFreehandPreview()
     {
+        if (_freehandPressureBrush && UpdatePressureInkPreview()) return;
         if (_freehandMixingBrush && TryUpdateMixingBrushPreview()) return;
         if ((_freehandBrushStroke || _freehandPressureBrush)
             && !_freehandMixingBrush && !_freehandErasing
-            && _drawSettings.BrushContinuous && !_brushShape.IsRadiallySymmetric
+            && ActiveBrushContinuous() && (_freehandPressureBrush || !ActiveBrushShape().IsRadiallySymmetric)
             && TryUpdateBrushAreaPreviewSafely()) return;
 
         if ((_freehandBrushStroke || _freehandPressureBrush) && !_freehandMixingBrush && !_freehandErasing)
@@ -1094,7 +1101,7 @@ internal sealed partial class MainForm : Form
         }
 
         var tipShape = _freehandBrushStroke || _freehandPressureBrush || _freehandErasing
-            ? _brushShape
+            ? ActiveBrushShape()
             : null;
         var previewLimit = tipShape is { IsTraditionalBrush: true, IsRadiallySymmetric: false }
             ? MaxStampBrushPreviewPoints
@@ -1108,7 +1115,8 @@ internal sealed partial class MainForm : Form
                 _pressureBrushSamples,
                 _freehandStrokeUnits,
                 _brushAreaPressureProfile,
-                _brushAreaPressureDistances);
+                _brushAreaPressureDistances,
+                _freehandPressureOptions);
             IReadOnlyList<PressureBrushPoint> profile = ProcessBrushPressurePreview();
             var pressurePreviewPoints = new PointF[profile.Count];
             var previewDiameters = new float[profile.Count];
@@ -1123,7 +1131,7 @@ internal sealed partial class MainForm : Form
                 _freehandStrokeUnits,
                 previewDiameters,
                 tipShape,
-                continuous: _drawSettings.BrushContinuous);
+                continuous: ActiveBrushContinuous());
             return;
         }
 
@@ -1161,7 +1169,7 @@ internal sealed partial class MainForm : Form
             _freehandColor,
             _freehandStrokeUnits,
             brushShape: tipShape,
-            continuous: _freehandBrushStroke && _drawSettings.BrushContinuous);
+            continuous: _freehandBrushStroke && ActiveBrushContinuous());
     }
 
     private bool TryUpdateMixingBrushPreview()
@@ -1220,7 +1228,7 @@ internal sealed partial class MainForm : Form
         };
     }
 
-    private bool TryUpdateBrushAreaPreview()
+    private bool TryUpdateBrushAreaPreview(bool force = false)
     {
         if ((!_freehandBrushStroke && !_freehandPressureBrush)
             || _freehandErasing
@@ -1231,7 +1239,7 @@ internal sealed partial class MainForm : Form
         }
 
         var now = Stopwatch.GetTimestamp();
-        if (IsBrushAreaPreviewBound
+        if (!force && IsBrushAreaPreviewBound
             && Stopwatch.GetElapsedTime(_shapeGradientPreviewUpdatedAt, now).TotalMilliseconds
                 < ShapeGradientPreviewIntervalMilliseconds)
         {
@@ -1265,19 +1273,20 @@ internal sealed partial class MainForm : Form
                     segment,
                     _freehandStrokeUnits,
                     _freehandColor,
-                    _brushShape,
+                    ActiveBrushShape(),
                     _freehandBrushSmoothing,
                     _freehandPencilWorldPerPixel,
                     _drawSettings.BrushFrequency,
-                    _drawSettings.BrushContinuous);
+                    ActiveBrushContinuous());
             }
 
             if (additions.Length > 0)
             {
-                _brushAreaPreviewStage.MergeSameColorFillsAroundNewObjects(
-                    additions,
-                    connectNearby: false,
-                    frame: 0);
+                if (!_freehandPressureBrush)
+                    _brushAreaPreviewStage.MergeSameColorFillsAroundNewObjects(
+                        additions,
+                        connectNearby: false,
+                        frame: 0);
                 _brushAreaPreviewSampleCount = sourceCount;
             }
         }
@@ -1376,6 +1385,8 @@ internal sealed partial class MainForm : Form
         _brushAreaPreviewSampleCount = 0;
         _brushAreaPressureProfile.Clear();
         _brushAreaPressureDistances.Clear();
+        _brushPressureGeometry = null;
+        _pressureInk = null;
         var layerCount = Math.Max(1, _scene.LayerCount);
         var frameCount = Math.Max(1, _scene.FrameCount);
         _brushAreaPreviewStage.CreateEmpty(layerCount, frameCount);
@@ -1410,17 +1421,7 @@ internal sealed partial class MainForm : Form
         {
             UpdatePressureBrushHoldTime(Stopwatch.GetTimestamp());
             var commit = BeginDrawingToolCommit();
-            var objects = BuildBrushStrokeForCommit(commit, () => BrushStrokeBuilder.AddPressureStroke(
-                _scene,
-                _scene.ActiveLayer,
-                _pressureBrushSamples,
-                _freehandStrokeUnits,
-                _freehandColor,
-                _brushShape,
-                _freehandBrushSmoothing,
-                _freehandPencilWorldPerPixel,
-                _drawSettings.BrushFrequency,
-                _drawSettings.BrushContinuous));
+            var objects = BuildBrushStrokeForCommit(commit, CommitPressureBrushPreview);
             if (objects.Length > 0)
             {
                 var gradientPath = _pressureBrushSamples.Select(sample => sample.Point).ToArray();
@@ -1577,11 +1578,11 @@ internal sealed partial class MainForm : Form
                 _freehandSamples,
                 _freehandStrokeUnits,
                 _freehandColor,
-                _brushShape,
+                ActiveBrushShape(),
                 _freehandBrushSmoothing,
                 _freehandPencilWorldPerPixel,
                 _drawSettings.BrushFrequency,
-                _drawSettings.BrushContinuous));
+                ActiveBrushContinuous()));
             if (objects.Length > 0)
             {
                 ApplyFillGradientToBrushObjects(objects, points, points[0], points[^1]);
@@ -1706,11 +1707,11 @@ internal sealed partial class MainForm : Form
                 _frame,
                 points,
                 _freehandStrokeUnits,
-                _brushShape,
+                ActiveBrushShape(),
                 _drawSettings.EraseLines,
                 _drawSettings.EraseFills,
                 _drawSettings.BrushFrequency,
-                _drawSettings.BrushContinuous,
+                ActiveBrushContinuous(),
                 materializeAutoKeyframes: autoKeyframe)) return;
 
         ClearSelection();
@@ -1751,6 +1752,7 @@ internal sealed partial class MainForm : Form
         _brushAreaPreviewSampleCount = 0;
         _brushAreaPressureProfile.Clear();
         _brushAreaPressureDistances.Clear();
+        _pressureInk = null;
         _stage.ClearFreehandPreview();
     }
 

@@ -164,6 +164,7 @@ internal static partial class Benchmark
     /// </summary>
     private static void RunImageDropRegression()
     {
+        RunLibraryStagePlacementRegression();
         var temporaryRoot = CreateTemporaryDirectory("image-drop-regression");
         var sourceDirectory = Path.Combine(temporaryRoot, "source");
         var imagePath = Path.Combine(sourceDirectory, "sprite.png");
@@ -296,6 +297,7 @@ internal static partial class Benchmark
                 },
                 (count, _, _) => processed = count, () => false));
             AssertTimeline(Count(result, "Imported") == 3000 && Count(result, "Skipped") == 2
+                && Count(result, "PlacementCandidateCount") == 3000
                 && Count(result, "Failed") == 1 && !Cancelled(result) && processed == 3000
                 && settingsCalls == 1 && project.ImageAssets.Count == 3000 && changed == 3000
                 && project.ImageAssets.All(asset => asset.ImportSettings == sharedSettings)

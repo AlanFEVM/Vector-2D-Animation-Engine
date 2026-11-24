@@ -153,6 +153,11 @@ internal sealed partial class TimelineStrip : Control
         {
             DrawHeaderIconButton(
                 graphics,
+                SoloUnlockButtonBounds(layout),
+                SvgIconKind.SoloUnlockLayerVisible,
+                _hoveredHeaderCommand == HeaderCommand.SoloUnlock);
+            DrawHeaderIconButton(
+                graphics,
                 soloBounds,
                 SvgIconKind.SoloLayerVisible,
                 _hoveredHeaderCommand == HeaderCommand.Solo);
@@ -226,7 +231,7 @@ internal sealed partial class TimelineStrip : Control
         if (!_shotFilterActive)
         {
             DrawSeparator(TimelineTitleIconBounds().Right + ScaleTimelineMetric(6));
-            DrawSeparator(SoloButtonBounds(layout).Left - ScaleTimelineMetric(6));
+            DrawSeparator(SoloUnlockButtonBounds(layout).Left - ScaleTimelineMetric(6));
             DrawSeparator(AllButtonBounds(layout).Right + ScaleTimelineMetric(10));
         }
         if (_autoKeyframeToggle.Visible)
@@ -694,14 +699,20 @@ internal sealed partial class TimelineStrip : Control
             Theme.Mix(Theme.Panel, Theme.PanelStrong, 0.38f)));
         using var activeRowBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(40, 46, 51), Theme.AccentSurface));
         using var activeEdgeBrush = new SolidBrush(Theme.Accent);
-        using var populatedExposureBrush = new SolidBrush(Color.FromArgb(62, 78, 126, 154));
-        using var blankExposureBrush = new SolidBrush(Color.FromArgb(42, 105, 116, 122));
-        using var populatedLinePen = new Pen(Color.FromArgb(184, 128, 174, 202), 1f);
-        using var blankLinePen = new Pen(Color.FromArgb(150, 139, 151, 157), 1f);
+        using var populatedExposureBrush = new SolidBrush(SystemInformation.HighContrast
+            ? SystemColors.Highlight : Theme.Mix(Theme.Panel, Theme.Accent, 0.18f));
+        using var paleExposureBrush = new SolidBrush(SystemInformation.HighContrast
+            ? SystemColors.Highlight : Theme.Mix(Theme.Panel, populatedExposureBrush.Color, 0.45f));
+        using var populatedLinePen = new Pen(SystemInformation.HighContrast
+            ? SystemColors.WindowText : Theme.Mix(Theme.Panel, Theme.Text, 0.42f), 1f);
+        using var blankLinePen = new Pen(SystemInformation.HighContrast
+            ? SystemColors.WindowText : Theme.Mix(Theme.Panel, Theme.Text, 0.25f), 1f);
         using var classicTweenBrush = new SolidBrush(Color.FromArgb(220, 92, 151, 222));
         using var shapeTweenBrush = new SolidBrush(Color.FromArgb(220, 78, 181, 132));
-        using var gridPen = new Pen(ThemeNeutral(Color.FromArgb(44, 50, 54), Theme.Border));
-        using var majorGridPen = new Pen(ThemeNeutral(Color.FromArgb(65, 73, 79), Theme.BorderHover));
+        using var gridPen = new Pen(SystemInformation.HighContrast
+            ? SystemColors.WindowText : Theme.Mix(Theme.Panel, Theme.Text, 0.055f));
+        using var majorGridPen = new Pen(SystemInformation.HighContrast
+            ? SystemColors.WindowText : Theme.Mix(Theme.Panel, Theme.Text, 0.14f));
         var editingPulse = EditingHighlightPulse;
         using var currentCellPen = new Pen(EditingHighlightEdgeColor, 1.6f + editingPulse * 0.4f);
         using var selectionPen = new Pen(Color.FromArgb(120, EditingHighlightEdgeColor), 1.6f);
@@ -829,11 +840,12 @@ internal sealed partial class TimelineStrip : Control
                 var layerDepth = GetTrackDisplayDepth(trackIndex);
                 var labelLeft = GetTrackLabelLeft(trackIndex);
                 DrawLayerHierarchyGuide(graphics, layerDepth, y, labelLeft, textBackground);
-                if (IsTrackCollapsible(trackIndex)) DrawLayerGroupDisclosure(graphics, LayerGroupDisclosureBounds(trackIndex, y), IsTrackCollapsed(trackIndex));
+                if (IsCollapsedTabGroupRow(trackIndex) || IsTrackCollapsible(trackIndex))
+                    DrawLayerGroupDisclosure(graphics, LayerGroupDisclosureBounds(trackIndex, y), IsCollapsedTabGroupRow(trackIndex) || IsTrackCollapsed(trackIndex));
                 DrawTrackKindGlyph(graphics, trackIndex, labelLeft, y + _rowHeight / 2, textBackground);
                 TextRenderer.DrawText(
                     graphics,
-                    UiLocalization.T(GetTrackName(trackIndex)),
+                    GetPresentedTrackName(trackIndex),
                     Font,
                     new Rectangle(labelLeft + ScaleTimelineMetric(18), y, Math.Max(1, layout.TrackLeft - labelLeft - VerticalScrollWidth - ScaleTimelineMetric(24)), _rowHeight),
                     Theme.ReadableText(textBackground, preferredTextColor),
@@ -849,7 +861,7 @@ internal sealed partial class TimelineStrip : Control
                 active,
                 visible,
                 populatedExposureBrush,
-                blankExposureBrush,
+                paleExposureBrush,
                 populatedLinePen,
                 blankLinePen,
                 classicTweenBrush,
@@ -993,11 +1005,11 @@ internal sealed partial class TimelineStrip : Control
         bool active,
         bool visible,
         Brush populatedExposureBrush,
-        Brush blankExposureBrush,
+        Brush paleExposureBrush,
         Pen populatedLinePen,
         Pen blankLinePen,
-        Brush classicTweenBrush,
-        Brush shapeTweenBrush,
+        SolidBrush classicTweenBrush,
+        SolidBrush shapeTweenBrush,
         Pen gridPen,
         Pen majorGridPen,
         Pen currentCellPen,
@@ -1029,6 +1041,7 @@ internal sealed partial class TimelineStrip : Control
         var maximumSelectableFrame = MaximumSelectableFrame(layout);
         var exposure = TimelineExposure.None(_firstVisibleFrame + firstColumn);
         var exposureEndFrame = _firstVisibleFrame + firstColumn - 1;
+        var exposureEndsAtBlankKeyframe = false;
         for (var column = firstColumn; column < lastColumnExclusive; column++)
         {
             var frame = _firstVisibleFrame + column;
@@ -1037,6 +1050,7 @@ internal sealed partial class TimelineStrip : Control
             if (!graphics.IsVisible(Rectangle.Inflate(cellBounds, 2, 2))) continue;
             var inTimelineRange = frame <= EndFrame;
             var inSelectableRange = frame <= maximumSelectableFrame;
+            var hasExposure = false;
             if (inSelectableRange)
             {
                 if (trackIndex == _hoverTrack && frame == _hoverFrame && frame != CurrentFrame)
@@ -1053,48 +1067,63 @@ internal sealed partial class TimelineStrip : Control
                         exposureEndFrame = exposure.SourceKind is null
                             ? track.Duration <= frame ? EndFrame : frame
                             : exposure.EndFrame;
+                        exposureEndsAtBlankKeyframe = false;
+                        if (!cameraTrack && exposure.SourceKind is not null && exposure.EndFrame < track.Duration - 1)
+                        {
+                            var nextExposure = track.EvaluateExposure(exposure.EndFrame + 1);
+                            exposureEndsAtBlankKeyframe = nextExposure.SourceKind is { } nextKind
+                                && ResolveDisplayedKeyframeKind(_sceneDefinition, track.TargetId,
+                                    nextKind, nextExposure.SourceKeyframeFrame) == TimelineKeyframeKind.Blank;
+                        }
                     }
                     if (exposure.SourceKind is { } sourceKind)
                     {
+                        hasExposure = true;
                         var effectiveKind = ResolveDisplayedKeyframeKind(
                             _sceneDefinition,
                             track.TargetId,
                             sourceKind,
                             frame);
-                        var tween = effectiveKind == TimelineKeyframeKind.Populated
-                            ? track.EvaluateTween(frame)
-                            : null;
-                        var tweenInterior = tween is { } span
+                        var tween = !cameraTrack || effectiveKind == TimelineKeyframeKind.Populated
+                            ? track.EvaluateTween(frame) : null;
+                        var interruptedTween = cameraTrack ? null : track.EvaluateInterruptedTween(frame);
+                        var tweenInterior = (tween ?? interruptedTween) is { } span
                             && frame > span.StartFrame
                             && frame < span.EndFrame;
                         var isKeyframe = cameraTrack
                             ? ShouldDisplayKeyframeMarker(track, exposure, frame)
                             : exposure.SourceKeyframeFrame == frame && !tweenInterior;
-                        var exposureBounds = new Rectangle(x + 1, y + 2, _frameCellWidth, _rowHeight - 4);
-                        var exposureBrush = effectiveKind == TimelineKeyframeKind.Populated
-                            ? cameraTrack ? cameraExposureBrush! : populatedExposureBrush
-                            : blankExposureBrush;
+                        var bandInset = Math.Max(ScaleTimelineMetric(3), _rowHeight / 4);
+                        var bandTop = y + bandInset;
+                        var bandBottom = y + _rowHeight - bandInset;
+                        var segmentEnd = frame == exposure.EndFrame && !tweenInterior;
+                        var segmentLeft = x + (isKeyframe ? ScaleTimelineMetric(2) : 0);
+                        var segmentRight = x + _frameCellWidth - (segmentEnd ? ScaleTimelineMetric(2) : 0);
+                        var exposureBounds = Rectangle.FromLTRB(segmentLeft, bandTop, segmentRight, bandBottom);
                         var exposurePen = effectiveKind == TimelineKeyframeKind.Populated
                             ? cameraTrack ? cameraLinePen! : populatedLinePen
                             : blankLinePen;
-                        graphics.FillRectangle(exposureBrush, exposureBounds);
-                        var continuationStart = isKeyframe
-                            ? x + _frameCellWidth / 2f + 3.5f
-                            : x + 1;
-                        graphics.DrawLine(
-                            exposurePen,
-                            continuationStart,
-                            y + _rowHeight / 2f,
-                            x + _frameCellWidth,
-                            y + _rowHeight / 2f);
-                        if (frame == exposure.EndFrame && !tweenInterior)
+                        if (!cameraTrack)
+                        {
+                            graphics.FillRectangle(effectiveKind == TimelineKeyframeKind.Blank || exposureEndsAtBlankKeyframe
+                                ? paleExposureBrush : populatedExposureBrush, exposureBounds);
+                        }
+                        else if (effectiveKind == TimelineKeyframeKind.Populated)
+                        {
+                            graphics.FillRectangle(cameraExposureBrush!, exposureBounds);
+                        }
+                        if (cameraTrack && effectiveKind == TimelineKeyframeKind.Blank)
+                        {
+                            graphics.DrawLine(blankLinePen, segmentLeft, bandBottom - 1, segmentRight - 1, bandBottom - 1);
+                        }
+                        if (segmentEnd && (cameraTrack || effectiveKind == TimelineKeyframeKind.Populated))
                         {
                             graphics.DrawLine(
                                 exposurePen,
-                                x + _frameCellWidth - 2,
-                                y + 4,
-                                x + _frameCellWidth - 2,
-                                y + _rowHeight - 4);
+                                segmentRight - 1,
+                                bandBottom - ScaleTimelineMetric(3),
+                                segmentRight - 1,
+                                bandBottom - 1);
                         }
 
                         if (isKeyframe)
@@ -1112,51 +1141,74 @@ internal sealed partial class TimelineStrip : Control
                         {
                             if (cameraTrack && tweenSpan.Kind == TimelineTweenKind.Classic)
                             {
-                                var bandTop = y + Math.Max(4, _rowHeight / 3);
-                                var bandBottom = y + _rowHeight - Math.Max(4, _rowHeight / 4);
-                                var bandHeight = Math.Max(4, bandBottom - bandTop);
+                                var cameraBandTop = y + Math.Max(4, _rowHeight / 3);
+                                var cameraBandBottom = y + _rowHeight - Math.Max(4, _rowHeight / 4);
+                                var bandHeight = Math.Max(4, cameraBandBottom - cameraBandTop);
                                 graphics.FillRectangle(
                                     cameraTweenBrush!,
                                     x + 1,
-                                    bandTop,
+                                    cameraBandTop,
                                     _frameCellWidth,
                                     bandHeight);
                                 graphics.DrawLine(
                                     cameraTweenEdgePen!,
                                     x + 1,
-                                    bandTop,
+                                    cameraBandTop,
                                     x + _frameCellWidth,
-                                    bandTop);
+                                    cameraBandTop);
                                 graphics.DrawLine(
                                     cameraTweenEdgePen!,
                                     x + 1,
-                                    bandBottom - 1,
+                                    cameraBandBottom - 1,
                                     x + _frameCellWidth,
-                                    bandBottom - 1);
+                                    cameraBandBottom - 1);
                                 graphics.DrawLine(
                                     cameraTweenCenterPen!,
                                     x + 1,
-                                    bandTop + bandHeight / 2f,
+                                    cameraBandTop + bandHeight / 2f,
                                     x + _frameCellWidth,
-                                    bandTop + bandHeight / 2f);
+                                    cameraBandTop + bandHeight / 2f);
                             }
                             else
                             {
-                                graphics.FillRectangle(
-                                    tweenSpan.Kind == TimelineTweenKind.Classic
-                                        ? classicTweenBrush
-                                        : shapeTweenBrush,
-                                    x + 1,
-                                    y + _rowHeight - 5,
-                                    _frameCellWidth,
-                                    3);
+                                DrawTimelineTweenArrow(graphics, layout, cellBounds, tweenSpan,
+                                    tweenSpan.Kind == TimelineTweenKind.Classic ? classicTweenBrush.Color : shapeTweenBrush.Color);
+                                if (frame == tweenSpan.StartFrame && track.EvaluateTween(frame - 1) is { } previous
+                                    && previous.EndFrame == frame)
+                                {
+                                    DrawTimelineTweenArrow(graphics, layout, cellBounds, previous,
+                                        previous.Kind == TimelineTweenKind.Classic ? classicTweenBrush.Color : shapeTweenBrush.Color);
+                                }
+                            }
+                        }
+                        if (interruptedTween is { } interrupted)
+                        {
+                            DrawTimelineTweenArrow(graphics, layout, cellBounds, interrupted,
+                                interrupted.Kind == TimelineTweenKind.Classic ? classicTweenBrush.Color : shapeTweenBrush.Color,
+                                interrupted: !interrupted.IsEmptyPlaceholder);
+                            if (frame == interrupted.StartFrame && track.EvaluateInterruptedTween(frame - 1) is { } previous
+                                && previous.EndFrame == frame)
+                            {
+                                DrawTimelineTweenArrow(graphics, layout, cellBounds, previous,
+                                    previous.Kind == TimelineTweenKind.Classic ? classicTweenBrush.Color : shapeTweenBrush.Color,
+                                    interrupted: !previous.IsEmptyPlaceholder);
                             }
                         }
                     }
                 }
             }
 
-            graphics.DrawLine(inSelectableRange && frame % 5 == 0 ? majorGridPen : gridPen, x, y, x, y + _rowHeight);
+            var cellGridPen = inSelectableRange && frame % 5 == 0 ? majorGridPen : gridPen;
+            if (hasExposure)
+            {
+                var tickHeight = Math.Max(1, ScaleTimelineMetric(2));
+                graphics.DrawLine(cellGridPen, x, y, x, y + tickHeight);
+                graphics.DrawLine(cellGridPen, x, y + _rowHeight - tickHeight, x, y + _rowHeight - 1);
+            }
+            else
+            {
+                graphics.DrawLine(cellGridPen, x, y, x, y + _rowHeight);
+            }
             graphics.DrawLine(gridPen, x, y + _rowHeight - 1, x + _frameCellWidth, y + _rowHeight - 1);
             if (inSelectableRange && !visible) graphics.FillRectangle(hiddenBrush, cellBounds);
 
@@ -1168,6 +1220,29 @@ internal sealed partial class TimelineStrip : Control
             }
         }
 
+        graphics.Restore(state);
+    }
+
+    private void DrawTimelineTweenArrow(
+        Graphics graphics, TimelineLayout layout, Rectangle cellBounds, TimelineTween tween, Color color,
+        bool interrupted = false)
+    {
+        var markerOffset = _frameCellWidth / 2f;
+        var clearance = Math.Min(ScaleTimelineMetric(4), _frameCellWidth / 3f);
+        var arrowStart = layout.TrackLeft + ((long)tween.StartFrame - _firstVisibleFrame) * _frameCellWidth
+            + markerOffset + clearance;
+        var arrowEnd = layout.TrackLeft + ((long)tween.EndFrame - _firstVisibleFrame) * _frameCellWidth
+            + markerOffset - clearance;
+        var arrowY = cellBounds.Top + _rowHeight / 2f;
+        var arrowSize = Math.Min(ScaleTimelineMetric(3), (arrowEnd - arrowStart) / 2f);
+        var state = graphics.Save();
+        graphics.SetClip(cellBounds, CombineMode.Intersect);
+        using var pen = new Pen(SystemInformation.HighContrast ? SystemColors.WindowText : color,
+            Math.Max(1f, DeviceDpi / 96f)) { DashStyle = interrupted ? DashStyle.Dash : DashStyle.Solid };
+        graphics.DrawLine(pen, arrowStart, arrowY, arrowEnd, arrowY);
+        pen.DashStyle = DashStyle.Solid;
+        graphics.DrawLine(pen, arrowEnd - arrowSize, arrowY - arrowSize, arrowEnd, arrowY);
+        graphics.DrawLine(pen, arrowEnd - arrowSize, arrowY + arrowSize, arrowEnd, arrowY);
         graphics.Restore(state);
     }
 
@@ -1434,7 +1509,7 @@ internal sealed partial class TimelineStrip : Control
         return blocks;
     }
 
-    private static void DrawKeyframeMarker(
+    private void DrawKeyframeMarker(
         Graphics graphics,
         TimelineKeyframeKind kind,
         float centerX,
@@ -1465,19 +1540,21 @@ internal sealed partial class TimelineStrip : Control
             return;
         }
 
-        var bounds = new RectangleF(centerX - radius, centerY - radius, radius * 2, radius * 2);
-        using var roundOutlinePen = new Pen(ThemeNeutral(Color.FromArgb(232, 220, 228, 231), Theme.Text), 1.1f);
+        var markerWidth = Math.Max(4f, Math.Min(ScaleTimelineMetric(5), _frameCellWidth - ScaleTimelineMetric(3)));
+        var markerHeight = Math.Max(4, _rowHeight - ScaleTimelineMetric(8));
+        var bounds = new RectangleF(centerX - markerWidth / 2f, centerY - markerHeight / 2f, markerWidth, markerHeight);
+        var keyMarkerColor = SystemInformation.HighContrast ? SystemColors.WindowText : Theme.Text;
         if (kind == TimelineKeyframeKind.Populated)
         {
-            using var fillBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(240, 220, 228, 231), Theme.Text));
-            graphics.FillEllipse(fillBrush, bounds);
-            graphics.DrawEllipse(roundOutlinePen, bounds);
+            using var fillBrush = new SolidBrush(keyMarkerColor);
+            graphics.FillRectangle(fillBrush, bounds);
         }
         else
         {
-            using var fillBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(31, 35, 38), Theme.Panel));
-            graphics.FillEllipse(fillBrush, bounds);
-            graphics.DrawEllipse(roundOutlinePen, bounds);
+            var borderWidth = Math.Min(markerWidth / 3f, Math.Max(1.5f, DeviceDpi / 96f * 1.5f));
+            using var outlinePen = new Pen(keyMarkerColor, borderWidth);
+            graphics.DrawRectangle(outlinePen, bounds.X + borderWidth / 2f, bounds.Y + borderWidth / 2f,
+                bounds.Width - borderWidth, bounds.Height - borderWidth);
         }
     }
 

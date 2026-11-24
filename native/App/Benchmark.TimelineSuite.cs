@@ -5,8 +5,11 @@ namespace VectorAnimationEngine;
 
 internal static partial class Benchmark
 {
+    static partial void RunMinecraftBlockEditingRegression();
+
     public static void RunTimelineRegression()
     {
+        RunMinecraftBlockEditingRegression();
         RunPanelUsabilityRegression();
         RunSceneCanvasModelRegression();
         RunTimelineParentingRegression();
@@ -1801,6 +1804,8 @@ internal static partial class Benchmark
         var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
         var scene = project.Scenes[0];
         var shot = scene.AddShot("Clipboard camera", 20, "", null);
+        AssertTimeline(scene.TryEvaluateShotSettings(shot.Id, 0, out var firstFraming),
+            "Camera frame move fixture has no preceding framing.");
         scene.InsertShotTimelineKeyframe(shot.Id, 4);
         var settings = shot.Settings with { X = 431, Y = -82, FocalLength = 91 };
         scene.UpdateShotAtFrame(shot.Id, 4, settings);
@@ -1826,14 +1831,20 @@ internal static partial class Benchmark
         var moved = RequireMethod(typeof(MainForm), "TransformTimelineFrames").Invoke(form,
             [new TimelineFrameTransformRequestedEventArgs(TimelineFrameTransformMode.Move,
                 [new(new(track.Id, 4), new(track.Id, 12))])]) is true;
-        AssertTimeline(moved && !scene.FindShotTrack(shot.Id)!.EvaluateExposure(4).HasContent
+        var gap = scene.FindShotTrack(shot.Id)!.EvaluateExposure(4);
+        AssertTimeline(moved && !gap.IsKeyframe && gap.SourceKeyframeFrame == 0
+            && scene.TryEvaluateShotSettings(shot.Id, 4, out var held) && held == firstFraming,
+            "Moving a camera keyframe did not extend the preceding camera exposure through the gap.");
+        AssertTimeline(scene.FindShotTrack(shot.Id)!.EvaluateExposure(12).IsKeyframe
             && scene.TryEvaluateShotSettings(shot.Id, 12, out var destination) && destination == settings,
-            "Moving a camera frame lost its source framing.");
+            "Moving a camera keyframe did not preserve its framing at the destination.");
         AssertTimeline(undo.Invoke(form, null) is true
             && scene.TryEvaluateShotSettings(shot.Id, 4, out var restored) && restored == settings
             && !scene.FindShotTrack(shot.Id)!.EvaluateExposure(12).IsKeyframe,
             "Undoing a camera frame move did not restore its source framing.");
         AssertTimeline(redo.Invoke(form, null) is true
+            && !scene.FindShotTrack(shot.Id)!.EvaluateExposure(4).IsKeyframe
+            && scene.TryEvaluateShotSettings(shot.Id, 4, out var heldAgain) && heldAgain == firstFraming
             && scene.TryEvaluateShotSettings(shot.Id, 12, out var movedAgain) && movedAgain == settings,
             "Redoing a camera frame move lost its framing.");
         Console.WriteLine("camera_frame_clipboard_history=ok");
@@ -3301,6 +3312,50 @@ internal static partial class Benchmark
             && restoredDestination
             && timelineStrip.SelectedFrameCells.SequenceEqual([sourceCell]),
             "Undoing a timeline frame transform did not restore the source Cel, remove the destination, and recover selection.");
+
+        foreach (var frameOffset in new[] { 5, 1 })
+        {
+            scene.CreateEmpty(layers: 1);
+            scene.EditFrame = 0;
+            scene.AddObject(0, PointF.Empty, new SizeF(20, 20), 0, 0, Color.Teal, 6, ShapeKind.Rectangle);
+            var consecutiveTrack = scene.Timeline.FindTrackByTargetId(scene.LayerIds[0])
+                ?? throw new InvalidOperationException("Consecutive-key movement regression lost its drawing track.");
+            scene.Timeline.SetTrackDuration(consecutiveTrack.Id, 12);
+            for (var frame = 1; frame < 5; frame++)
+            {
+                AssertTimeline(scene.InsertTimelineKeyframe(0, frame),
+                    "Consecutive-key movement regression could not create five populated keys.");
+            }
+            timelineStrip.RefreshTimeline();
+            var movedSources = Enumerable.Range(2, 3)
+                .Select(frame => new TimelineFrameCell(consecutiveTrack.Id, frame)).ToArray();
+            var movedPairs = movedSources.Select(cell => new TimelineFrameTransformCell(cell,
+                new TimelineFrameCell(cell.TrackId, cell.Frame + frameOffset))).ToArray();
+            timelineStrip.SelectFrameCells(movedSources, movedSources[0]);
+            var undoCountBeforeMove = ((System.Collections.ICollection)undoStackField.GetValue(form)!).Count;
+            var changedCountBeforeMove = timelineChangedCount;
+            var keysMoved = transform.Invoke(form,
+                [new TimelineFrameTransformRequestedEventArgs(TimelineFrameTransformMode.Move, movedPairs)]) is true;
+            var remainingTrack = scene.Timeline.FindTrack(consecutiveTrack.Id)!;
+            AssertTimeline(keysMoved
+                && remainingTrack.Keyframes.Select(key => key.Frame)
+                    .SequenceEqual(new[] { 0, 1, 2 + frameOffset, 3 + frameOffset, 4 + frameOffset })
+                && Enumerable.Range(2, frameOffset).All(frame =>
+                    remainingTrack.EvaluateExposure(frame) is { HasContent: true, IsKeyframe: false, SourceKeyframeFrame: 1 }
+                    && Enumerable.Range(0, scene.ObjectCount).Count(index => scene.IsObjectActive(index, frame)) == 1)
+                && movedPairs.All(pair => remainingTrack.EvaluateExposure(pair.Destination.Frame)
+                    is { HasContent: true, IsKeyframe: true })
+                && timelineStrip.SelectedFrameCells.ToHashSet().SetEquals(movedPairs.Select(pair => pair.Destination))
+                && timelineChangedCount == changedCountBeforeMove + 1
+                && ((System.Collections.ICollection)undoStackField.GetValue(form)!).Count == undoCountBeforeMove + 1,
+                "Moving consecutive keys inserted blank keys into the held gap or broke overlap, selection, notification, or undo grouping.");
+            AssertTimeline(undo.Invoke(form, null) is true
+                && scene.Timeline.FindTrack(consecutiveTrack.Id)!.Keyframes.Select(key => key.Frame)
+                    .SequenceEqual(Enumerable.Range(0, 5))
+                && Enumerable.Range(0, scene.ObjectCount).All(index => scene.ObjectKeyframeFrame[index] is >= 0 and < 5)
+                && timelineStrip.SelectedFrameCells.ToHashSet().SetEquals(movedSources),
+                "Undoing consecutive-key movement did not restore the original keys, Cels, and selection.");
+        }
 
         var drawingObject = timelineStrip.Context as DrawingObjectDefinition
             ?? throw new InvalidOperationException("Timeline transform regression did not bind the drawing-object timeline context.");

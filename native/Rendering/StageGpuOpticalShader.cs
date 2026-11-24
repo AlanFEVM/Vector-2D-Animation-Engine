@@ -157,7 +157,7 @@ internal sealed class StageGpuOpticalShader : IDisposable
 
 
 
-    private static byte[] CompileComputeShader(string source)
+    internal static byte[] CompileComputeShader(string source, string target = "cs_5_0")
     {
         var sourceBytes = Encoding.UTF8.GetBytes(source);
         IntPtr code = IntPtr.Zero;
@@ -171,7 +171,7 @@ internal sealed class StageGpuOpticalShader : IDisposable
                 IntPtr.Zero,
                 IntPtr.Zero,
                 "main",
-                "cs_5_0",
+                target,
                 CompileStrictness | CompileOptimizationLevel3,
                 0,
                 out code,

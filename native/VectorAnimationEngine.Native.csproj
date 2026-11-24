@@ -13,6 +13,18 @@
   <ItemGroup>
     <InternalsVisibleTo Include="VectorAnimationEngine.ReleaseManager" />
   </ItemGroup>
+  <ItemGroup Condition="'$(IncludeMinecraftSceneExtension)' != 'false'">
+    <None Update="Extensions\MinecraftScene\minecraft-scene.v2dextension"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- Keep the complete local texture library out of the size-limited single-EXE payload. -->
+    <None Update="Extensions\MinecraftScene\Textures\**\*"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(IncludeMinecraftSceneExtension)' == 'false'">
+    <Compile Remove="Extensions\MinecraftScene\**\*.cs" />
+    <None Remove="Extensions\MinecraftScene\minecraft-scene.v2dextension" />
+    <None Remove="Extensions\MinecraftScene\Textures\**\*" />
+  </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="$(ApplicationIcon)"
                       LogicalName="$(RootNamespace).Application.ico" />

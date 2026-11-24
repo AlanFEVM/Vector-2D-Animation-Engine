@@ -5,6 +5,7 @@ namespace VectorAnimationEngine;
 internal sealed partial class StageControl
 {
     private const int MaxLayerContentHighlightObjects = 512;
+    private const int DenseBitmapLayerHighlightThreshold = 24;
 
     private readonly record struct LayerContentHighlightCacheKey(
         VectorScene Scene,
@@ -40,7 +41,25 @@ internal sealed partial class StageControl
         && !HasDistortPreview
         && !TransformMode
         && !DistortMode
-        && LayerContentHighlightObjects.Count > 0;
+        && HasLayerContentHighlightForView();
+
+    private bool HasLayerContentHighlightForView()
+    {
+        var objects = LayerContentHighlightObjects;
+        if (objects.Count == 0) return false;
+        return !NavigationPreviewEnabled || !PlanarNavigationHighlightPreviewActive || !HasDenseBitmapLayerHighlight();
+    }
+
+    private bool HasDenseBitmapLayerHighlight()
+    {
+        var objects = LayerContentHighlightObjects;
+        if (objects.Count < DenseBitmapLayerHighlightThreshold) return false;
+        // Bitmap highlight masks are screen-aligned. The idle paint restores
+        // the exact overlay after the camera stops moving.
+        foreach (var index in objects)
+            if ((uint)index < Scene.ObjectCount && Scene.ShapeKind[index] == ShapeKind.Bitmap) return true;
+        return false;
+    }
 
     internal IReadOnlyList<int> LayerContentHighlightObjects
     {
@@ -59,6 +78,7 @@ internal sealed partial class StageControl
     /// </summary>
     internal void SetLayerContentHighlightLayer(int layer, Color color)
     {
+        ClearBlockLayerHighlight();
         if ((uint)layer >= Scene.LayerCount)
         {
             ClearLayerContentHighlight();
@@ -88,6 +108,7 @@ internal sealed partial class StageControl
     /// </summary>
     internal void SetLayerContentHighlightObjects(IReadOnlyList<int> objectIndices, Color color)
     {
+        ClearBlockLayerHighlight();
         ArgumentNullException.ThrowIfNull(objectIndices);
 
         var next = new int[Math.Min(objectIndices.Count, MaxLayerContentHighlightObjects)];
@@ -120,6 +141,7 @@ internal sealed partial class StageControl
 
     internal void ClearLayerContentHighlight()
     {
+        ClearBlockLayerHighlight();
         if (_layerContentHighlightScene is null && _layerContentHighlightColor.IsEmpty) return;
 
         _layerContentHighlightUsesObjectSnapshot = false;
@@ -134,6 +156,17 @@ internal sealed partial class StageControl
 
     internal PointF[][] GetLayerContentHighlightWorldContours(int objectIndex)
     {
+        if ((uint)objectIndex < Scene.ObjectCount && Scene.ShapeKind[objectIndex] == ShapeKind.MixingStroke)
+        {
+            if (Scene.TryGetMixingBrushLocalRegion(objectIndex, out var region))
+                return MixingBrushRegionRasterizer.ExtractBoundaryEdges(region.TriangleIndices)
+                    .Where(edge => (uint)edge.StartVertex < region.Vertices.Length && (uint)edge.EndVertex < region.Vertices.Length)
+                    .Select(edge => new[] { ObjectLocalToWorld(Scene, objectIndex, region.Vertices[edge.StartVertex].Point),
+                        ObjectLocalToWorld(Scene, objectIndex, region.Vertices[edge.EndVertex].Point) }).ToArray();
+            if (!Scene.TryGetMixingStrokeLocalSamples(objectIndex, out var samples)) return [];
+            return [samples.Where(sample => IsFiniteMixingPoint(sample.Point))
+                .Select(sample => ObjectLocalToWorld(Scene, objectIndex, sample.Point)).ToArray()];
+        }
         return (uint)objectIndex < Scene.ObjectCount
             ? GetObjectBoundaryContoursForRendering(Scene, objectIndex)
             : [];
@@ -246,6 +279,31 @@ internal sealed partial class StageControl
         int objectIndex,
         Pen glowPen,
         Pen linePen)
+    {
+        var shape = Scene.ShapeKind[objectIndex];
+        var occlusion = GetHighlightOcclusionContours(objectIndex);
+        if (occlusion.Length > 0)
+        {
+            if (ClipHighlightPolylines(objectIndex,
+                GetLayerContentHighlightWorldContours(objectIndex),
+                closed: shape is not (ShapeKind.Line or ShapeKind.MixingStroke) && !IsFreehandShape(shape)
+                    && !(shape == ShapeKind.Path && !Scene.HasFill(objectIndex)), clipToView: true).Length == 0) return;
+            var state = graphics.Save();
+            try
+            {
+                using var path = new GraphicsPath(FillMode.Alternate);
+                foreach (var contour in occlusion)
+                    if (contour.Length >= 3) path.AddPolygon(contour.Select(WorldToScreen).ToArray());
+                graphics.SetClip(path, CombineMode.Exclude);
+                DrawLayerContentHighlightObjectCore(graphics, objectIndex, glowPen, linePen);
+            }
+            finally { graphics.Restore(state); }
+            return;
+        }
+        DrawLayerContentHighlightObjectCore(graphics, objectIndex, glowPen, linePen);
+    }
+
+    private void DrawLayerContentHighlightObjectCore(Graphics graphics, int objectIndex, Pen glowPen, Pen linePen)
     {
         var shape = Scene.ShapeKind[objectIndex];
         if (shape == ShapeKind.Line)

@@ -7,11 +7,119 @@ internal static partial class Benchmark
 {
     private static void RunAssetLibraryCategoryRegression()
     {
+        RunVaultImageThumbnailRegression();
         RunExternalSvgAssetPersistenceRegression();
         RunSharedSvgAssetReferenceRegression();
         RunImageAssetPersistenceRegression();
         RunSpatialComponentModelRegression();
         Console.WriteLine("asset_library_category_regression=ok");
+    }
+
+    private static void RunVaultImageThumbnailRegression()
+    {
+        var root = CreateTemporaryDirectory("vault-image-thumbnails");
+        try
+        {
+            var project = VectorProject.CreateEmpty();
+            for (var index = 0; index < 300; index++)
+            {
+                var path = Path.Combine(root, $"image-{index:000}.png");
+                WriteFixturePng(path, 32, 24);
+                AssertTimeline(project.TryAddImageAssetFromSource($"Image {index:000}", path,
+                    BitmapImageRasterizer.ComputeSha256(path), 32, 24, 96,
+                    BitmapImageImportSettings.Default, out _), "Could not create thumbnail fixtures.");
+            }
+            using var host = new Form { ClientSize = new Size(420, 720), ShowInTaskbar = false,
+                StartPosition = FormStartPosition.Manual, Location = new Point(-3000, -3000) };
+            using var panel = new LibraryVaultPanel { Dock = DockStyle.Fill };
+            host.Controls.Add(panel);
+            panel.BindProject(project);
+            var previewCalls = 0;
+            panel.SetImageAssetPreviewProvider(_ => { previewCalls++; return null; });
+            var category = typeof(LibraryVaultPanel).GetNestedType("AssetCategory", System.Reflection.BindingFlags.NonPublic)!;
+            RequireMethod(typeof(LibraryVaultPanel), "SelectAssetCategory", [category, typeof(bool)])
+                .Invoke(panel, [Enum.Parse(category, "Images"), true]);
+            var tree = (TreeView)RequireField(typeof(LibraryVaultPanel), "_projectObjects").GetValue(panel)!;
+            var worker = RequireField(typeof(LibraryVaultPanel), "_imageThumbnailWorker");
+            var posted = RequireField(typeof(LibraryVaultPanel), "_imageThumbnailWorkerPosted");
+            var pending = RequireField(typeof(LibraryVaultPanel), "_pendingImageThumbnails");
+            int Pending() => ((System.Collections.IDictionary)pending.GetValue(panel)!).Count;
+            void Settle()
+            {
+                var timeout = System.Diagnostics.Stopwatch.StartNew();
+                do
+                {
+                    Application.DoEvents();
+                    Thread.Sleep(1);
+                    AssertTimeline(timeout.Elapsed < TimeSpan.FromSeconds(30), "Thumbnail worker did not settle.");
+                } while (worker.GetValue(panel) is Task { IsCompleted: false }
+                    || (bool)posted.GetValue(panel)! || Pending() > 0);
+            }
+            host.Show();
+            Application.DoEvents();
+            tree.ExpandAll();
+            var nodes = new List<TreeNode>();
+            for (var node = tree.Nodes[0]; node is not null; node = node.NextVisibleNode) nodes.Add(node);
+            AssertTimeline(nodes.Count == 300, "The thumbnail fixture lost library rows.");
+            using var surface = new Bitmap(tree.Width, tree.Height);
+            void Paint() => tree.DrawToBitmap(surface, new Rectangle(Point.Empty, surface.Size));
+            Settle();
+            var reads = BitmapImageRasterizer.SourceReadCount;
+            var decodeCalls = BitmapImageRasterizer.DecodeCallCount;
+            // Do not pump messages between pages: a scrollbar jump must discard
+            // images passed on the way instead of decoding the entire library.
+            for (var index = 0; index < nodes.Count; index += 10) { tree.TopNode = nodes[index]; Paint(); }
+            Settle();
+            AssertTimeline(BitmapImageRasterizer.SourceReadCount - reads <= 30,
+                "Fast scrolling decoded offscreen thumbnail requests.");
+            for (var index = 0; index < nodes.Count; index += 10)
+            { tree.TopNode = nodes[index]; Paint(); Settle(); }
+            var cachedReads = BitmapImageRasterizer.SourceReadCount;
+            for (var index = nodes.Count - 1; index >= 0; index -= 10)
+            { tree.TopNode = nodes[index]; Paint(); Settle(); }
+            AssertTimeline(cachedReads == BitmapImageRasterizer.SourceReadCount
+                && BitmapImageRasterizer.DecodeCallCount == decodeCalls && previewCalls == 0,
+                "Returning past 256 images reread source files or used full renderer rasters.");
+            var cachedBytes = (long)RequireField(typeof(LibraryVaultPanel), "_imageThumbnailBytes").GetValue(panel)!;
+            AssertTimeline(cachedBytes is > 0 and <= 16 * 1024 * 1024,
+                "Library thumbnail memory was unbounded or no real thumbnails were produced.");
+            // Rebinding while the old generation is queued cannot populate the new project.
+            RequireMethod(typeof(LibraryVaultPanel), "ClearAssetThumbnails", [typeof(bool)]).Invoke(panel, [true]);
+            Paint();
+            panel.BindProject(VectorProject.CreateEmpty());
+            Settle();
+            AssertTimeline((long)RequireField(typeof(LibraryVaultPanel), "_imageThumbnailBytes").GetValue(panel)! == 0,
+                "An obsolete thumbnail generation survived project rebinding.");
+
+            var pattern = Path.Combine(root, "pattern.png");
+            using (var image = new Bitmap(32, 16))
+            {
+                using var graphics = Graphics.FromImage(image);
+                graphics.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+                graphics.Clear(Color.FromArgb(128, 255, 0, 0));
+                using var blue = new SolidBrush(Color.FromArgb(128, 0, 0, 255));
+                graphics.FillRectangle(blue, 16, 0, 16, 16);
+                image.Save(pattern, System.Drawing.Imaging.ImageFormat.Png);
+            }
+            var settings = BitmapImageImportSettings.Default with { FilterMode = ImageFilterMode.Point };
+            using var normal = BitmapImageRasterizer.CreateLibraryThumbnail(pattern, settings, 20, CancellationToken.None);
+            using var flipped = BitmapImageRasterizer.CreateLibraryThumbnail(pattern,
+                settings with { FlipHorizontal = true }, 20, CancellationToken.None);
+            using var cropped = BitmapImageRasterizer.CreateLibraryThumbnail(pattern,
+                settings with { CropX = .5f, CropWidth = .5f, AlphaSource = ImageAlphaSource.None }, 20, CancellationToken.None);
+            AssertTimeline(normal.GetPixel(3, 10).R > 240 && normal.GetPixel(16, 10).B > 240
+                && normal.GetPixel(3, 10).A is >= 120 and <= 135 && normal.GetPixel(10, 0).A == 0
+                && flipped.GetPixel(3, 10).B > 240 && cropped.GetPixel(10, 10).B > 240
+                && cropped.GetPixel(10, 10).A == 255, "Thumbnails lost crop, flip, alpha or aspect ratio.");
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+            var rejected = false;
+            try { using var ignored = BitmapImageRasterizer.CreateLibraryThumbnail(pattern, settings, 20, cancelled.Token); }
+            catch (OperationCanceledException) { rejected = true; }
+            AssertTimeline(rejected, "A cancelled thumbnail request still decoded its source.");
+            Console.WriteLine($"vault_image_thumbnails=passed,rows=300,visible_queue=ok,warm_reads=0,full_raster_calls=0,bytes={cachedBytes},rebind=ok,crop_flip_alpha=ok,cancellation=ok");
+        }
+        finally { DeleteTemporaryDirectory(root); }
     }
 
     private static void RunExternalSvgAssetPersistenceRegression()

@@ -12,6 +12,8 @@ internal sealed partial class MainForm
     private Button? _symbolEditingReturnButton;
     private readonly List<Button> _symbolEditingPathButtons = [];
     private bool IsSymbolEditing => _symbolEditingSession is not null;
+    private SceneBlockChunkTimeline? ActiveBlockChunkBreadcrumb =>
+        _stage.BlockChunkEditing ? _timeline.Context as SceneBlockChunkTimeline : null;
     private bool IsDrawingWorkspaceContext => IsSymbolEditing
         || _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing;
     private WorkspaceView EditingWorkspace => IsSymbolEditing
@@ -140,7 +142,9 @@ internal sealed partial class MainForm
 
     private void UpdateSymbolEditingBreadcrumb()
     {
-        if (IsSymbolEditing)
+        var chunk = ActiveBlockChunkBreadcrumb;
+        var inContext = IsSymbolEditing || chunk is not null;
+        if (inContext)
         {
             if (_symbolEditingReturnButton is null)
             {
@@ -152,20 +156,25 @@ internal sealed partial class MainForm
                     Margin = new Padding(0, 0, ScaleDrawingObjectTabMetric(4), 0)
                 };
                 Theme.StyleButton(_symbolEditingReturnButton);
-                _symbolEditingReturnButton.Click += (_, _) => ExitSceneSymbolEditing();
+                _symbolEditingReturnButton.Click += (_, _) =>
+                {
+                    if (ActiveBlockChunkBreadcrumb is not null) CloseNativeExtensionChunk(restoreTimeline: true);
+                    else ExitSceneSymbolEditing();
+                };
                 _drawingObjectTabs.Controls.Add(_symbolEditingReturnButton);
             }
             var path = new List<SymbolEditingSession>();
             for (var session = _symbolEditingSession; session is not null; session = session.Parent)
                 path.Add(session);
             path.Reverse();
-            var sceneName = _scenes.FirstOrDefault(scene => scene.Id == path[0].SceneId)?.Name
+            var sceneName = chunk?.Scene.Name ?? _scenes.FirstOrDefault(scene => scene.Id == path[0].SceneId)?.Name
                 ?? UiLocalization.T("Scene");
-            _symbolEditingReturnButton.Text = sceneName;
+            _symbolEditingReturnButton.Text = chunk is null ? sceneName : UiLocalization.T("Back to scene");
             _symbolEditingReturnButton.AccessibleName = $"{UiLocalization.T("Back to scene")}: {sceneName}";
             _symbolEditingReturnButton.Visible = true;
             _drawingObjectTabs.Controls.SetChildIndex(_symbolEditingReturnButton, 0);
-            for (var index = 0; index < path.Count; index++)
+            var pathLength = chunk is null ? path.Count : 1;
+            for (var index = 0; index < pathLength; index++)
             {
                 if (index == _symbolEditingPathButtons.Count)
                 {
@@ -185,16 +194,20 @@ internal sealed partial class MainForm
                     _drawingObjectTabs.Controls.Add(button);
                 }
                 var segment = _symbolEditingPathButtons[index];
-                var name = _drawingObjects.FirstOrDefault(symbol => symbol.Id == path[index].SymbolId)?.Name ?? "?";
+                var name = chunk is null
+                    ? _drawingObjects.FirstOrDefault(symbol => symbol.Id == path[index].SymbolId)?.Name ?? "?"
+                    : chunk.Grid.SectionDepth > 0
+                        ? $"{UiLocalization.T("MC Chunk")} ({chunk.Chunk.X}, {chunk.Chunk.Y}, {chunk.Chunk.Z})"
+                        : $"{UiLocalization.T("MC Chunk")} ({chunk.Chunk.X}, {chunk.Chunk.Y})";
                 segment.Text = $"› {name}";
                 segment.AccessibleName = name;
                 segment.Tag = index + 1 < path.Count ? path[index + 1] : null;
-                if (index + 1 == path.Count) Theme.StyleActiveButton(segment);
+                if (index + 1 == pathLength) Theme.StyleActiveButton(segment);
                 else Theme.StyleButton(segment);
                 segment.Visible = true;
                 _drawingObjectTabs.Controls.SetChildIndex(segment, index + 1);
             }
-            for (var index = path.Count; index < _symbolEditingPathButtons.Count; index++)
+            for (var index = pathLength; index < _symbolEditingPathButtons.Count; index++)
             {
                 _symbolEditingPathButtons[index].Visible = false;
                 _symbolEditingPathButtons[index].Tag = null;
@@ -210,10 +223,11 @@ internal sealed partial class MainForm
             }
         }
         // Reserve a scrollbar row so arbitrarily long paths retain every ancestor name.
-        _drawingObjectTabs.AutoScroll = IsSymbolEditing;
-        _drawingObjectRow.Height = ScaleDrawingObjectTabMetric(IsSymbolEditing ? 54 : 36);
+        _drawingObjectTabs.AutoScroll = inContext;
+        _drawingObjectRow.Visible = _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing || inContext;
+        _drawingObjectRow.Height = ScaleDrawingObjectTabMetric(inContext ? 54 : 36);
         _workspaceHeader.Height = _workspaceTabs.Height + _drawingObjectRow.Height;
-        if (_activeDrawingObjectTabButton is { } symbolButton) symbolButton.Visible = !IsSymbolEditing;
-        if (_addDrawingObjectTabButton is { } addButton) addButton.Visible = !IsSymbolEditing;
+        if (_activeDrawingObjectTabButton is { } symbolButton) symbolButton.Visible = !inContext;
+        if (_addDrawingObjectTabButton is { } addButton) addButton.Visible = !inContext;
     }
 }

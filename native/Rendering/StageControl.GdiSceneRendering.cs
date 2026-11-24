@@ -1131,7 +1131,7 @@ internal sealed partial class StageControl : Control
         try
         {
             var imageKey = scene.TryGetBitmapObjectData(objectIndex, out var bitmapData)
-                && TryDecodeBitmapImage(bitmapData.ImageAssetId, out var decoded) ? decoded.Key : default;
+                && TryDecodeBitmapImage(bitmapData, out var decoded) ? decoded.Key : default;
             var sampling = bitmapData is not null ? BitmapImageSampling(bitmapData.ImageAssetId) : BitmapSampling.Linear;
             var cacheKey = new DistortRasterCacheKey(
                 scene,
@@ -1532,13 +1532,22 @@ internal sealed partial class StageControl : Control
         float screenHeight)
     {
         if (!scene.TryGetBitmapObjectData(objectIndex, out var data)) return;
-        if (!TryDecodeBitmapImage(data.ImageAssetId, out var raster)) return;
+        if (!TryDecodeBitmapImage(data, out var raster)) return;
         raster = BitmapImageRasterizer.ApplyObjectClip(raster, data);
 
         using var bitmap = raster.AcquireBitmap();
         var state = graphics.Save();
         try
         {
+            if (scene.Angle[objectIndex] + PlanarCanvasRotation == 0
+                && TrySnapBlockBitmapFrame(data,
+                    new(new(screenCenter.X - screenWidth * .5f, screenCenter.Y - screenHeight * .5f),
+                        new(screenWidth, 0), new(0, screenHeight)),
+                    BitmapImageSampling(data.ImageAssetId), out var snapped))
+            {
+                DrawSnappedBlockBitmap(graphics, raster, bitmap.Bitmap, snapped, Color.FromArgb(scene.Argb[objectIndex]).A / 255f);
+                return;
+            }
             graphics.InterpolationMode = BitmapImageSampling(data.ImageAssetId) == BitmapSampling.Point
                 ? InterpolationMode.NearestNeighbor
                 : InterpolationMode.HighQualityBicubic;

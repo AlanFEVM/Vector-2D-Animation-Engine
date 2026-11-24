@@ -475,7 +475,7 @@ internal sealed partial class MainForm : Form
             && TimelineCellIsAtTrackEnd(timeline, cells[0]);
         var advanceSingleKeyframeInsertion = singleKeyframeInsertion
             && TimelineKeyframeInsertionShouldAdvance(timeline, cells[0])
-            && !IsSceneLightTweenInterior(context, timeline, cells[0]);
+            && !IsEditableTweenInterior(context, timeline, cells[0]);
         int? singleKeyframeDestinationFrame = null;
         if (advanceSingleKeyframeInsertion)
         {
@@ -737,14 +737,13 @@ internal sealed partial class MainForm : Form
             && track.EvaluateExposure(cell.Frame).IsKeyframe;
     }
 
-    private static bool IsSceneLightTweenInterior(
+    private static bool IsEditableTweenInterior(
         ITimelineContext context,
         AnimationTimeline timeline,
         TimelineFrameCell cell)
     {
-        if (context is not SceneDefinition sceneDefinition
-            || timeline.FindTrack(cell.TrackId) is not { } track
-            || sceneDefinition.FindLight(track.TargetId) is null
+        if (timeline.FindTrack(cell.TrackId) is not { } track
+            || context is SceneDefinition sceneDefinition && sceneDefinition.FindShot(track.TargetId) is not null
             || track.EvaluateTween(cell.Frame) is not { } tween)
         {
             return false;
@@ -941,6 +940,11 @@ internal sealed partial class MainForm : Form
             return changed;
         }
 
+        if (edit == TimelineEditKind.InsertKeyframe && timeline.TrySplitTweenAtKeyframe(track.Id, frame))
+        {
+            return true;
+        }
+
         if (drawingScene is not null && layer >= 0)
         {
             changed = edit switch
@@ -1125,6 +1129,7 @@ internal sealed partial class MainForm : Form
 
     private void HandleTimelineCommand(TimelineCommand command, IReadOnlyList<TimelineFrameCell> cells)
     {
+        if (_timeline.Context is SceneBlockChunkTimeline) return;
         if (!AllowsTimelineCellsInCurrentWorkspace(cells)) return;
 
         switch (command)
@@ -1178,7 +1183,7 @@ internal sealed partial class MainForm : Form
             SceneDefinition sceneContext => sceneContext.DrawingScene,
             _ => null
         };
-        var tweenSelection = TimelineStrip.ResolveSingleTweenSelection(context.Timeline, requestedCells);
+        var tweenSelection = TimelineStrip.ResolveSingleTweenSelection(context.Timeline, requestedCells, includeDisplayTweens: true);
         if (drawingScene is null && sceneDefinition is null || tweenSelection is not { } selection) return false;
 
         var track = context.Timeline.FindTrack(selection.TrackId);
@@ -1204,11 +1209,12 @@ internal sealed partial class MainForm : Form
             && sceneDefinition.FindShot(track.TargetId) is not null
                 ? sceneDefinition.CreateShotSnapshot()
                 : null;
-        var removed = sceneDefinition is not null
+        var removed = context.Timeline.RemoveDisplayTween(track.Id, selection.StartFrame, selection.EndFrame)
+            || (sceneDefinition is not null
             ? sceneDefinition.RemoveTimelineTween(track.TargetId, selection.StartFrame, selection.EndFrame)
             : contextDrawingObject is not null
                 ? contextDrawingObject.RemoveTimelineTween(layer, selection.StartFrame, selection.EndFrame)
-                : drawingScene!.RemoveTimelineTween(layer, selection.StartFrame, selection.EndFrame);
+                : drawingScene!.RemoveTimelineTween(layer, selection.StartFrame, selection.EndFrame));
         if (!removed) return false;
 
         var preservedInstanceSelectionIds = _selectedSceneInstanceIds.ToArray();
@@ -1287,7 +1293,8 @@ internal sealed partial class MainForm : Form
                 cells.Min(cell => cell.Frame),
                 cells.Max(cell => cell.Frame),
                 out var startFrame,
-                out var endFrame))
+                out var endFrame,
+                allowBlankEndpoints: TimelineStrip.AllowsBlankTweenEndpoints(sceneDefinition, drawingScene, track.TargetId, kind)))
         {
             return false;
         }
@@ -1302,8 +1309,10 @@ internal sealed partial class MainForm : Form
         var sceneLightSnapshot = sceneDefinition?.Lights.Select(light => light.Clone()).ToArray();
         var sceneShotSnapshot = sceneDefinition?.CreateShotSnapshot();
         var selection = _timeline.CaptureSelectionSnapshot();
-        string error;
-        var created = sceneDefinition is not null
+        var error = string.Empty;
+        var created = !track.EvaluateExposure(startFrame).HasContent
+            ? context.Timeline.TryCreateEmptyTween(track.Id, startFrame, endFrame, kind)
+            : sceneDefinition is not null
             ? sceneDefinition.TryCreateTimelineTween(track.TargetId, startFrame, endFrame, kind, out error)
             : contextDrawingObject is not null
                 ? contextDrawingObject.TryCreateTimelineTween(layer, startFrame, endFrame, kind, out error)
@@ -1790,8 +1799,12 @@ internal sealed partial class MainForm : Form
                     var sourceLayer = drawingScene is null
                         ? -1
                         : Array.IndexOf(drawingScene.LayerIds, sourceTrack.TargetId);
+                    var sourceEdit = request.Mode == TimelineFrameTransformMode.Move
+                        && sourceTrack.EvaluateExposure(sourceCell.Frame).IsKeyframe
+                        ? TimelineEditKind.ClearKeyframe
+                        : TimelineEditKind.InsertBlankKeyframe;
                     ApplyTimelineCellEdit(
-                        TimelineEditKind.InsertBlankKeyframe,
+                        sourceEdit,
                         context,
                         timeline,
                         sourceTrack,
@@ -2953,6 +2966,71 @@ internal sealed partial class MainForm : Form
             PushUndoSnapshot(snapshot);
             ClearInactiveSelection();
         }
+        _timeline.Invalidate();
+        if (context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();
+        else RebuildOnionSkinPreview();
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+        RefreshToolButtons();
+        _stage.Invalidate();
+    }
+
+    /// <summary>
+    /// Locks every layer except the selected ones, the lock-side counterpart of solo visibility.
+    /// </summary>
+    private void SoloUnlockSelectedTimelineLayers()
+    {
+        if (IsShotDirectorContext()) return;
+        var context = _timeline.Context;
+        var drawingScene = context switch
+        {
+            VectorScene vectorScene => vectorScene,
+            DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            SceneDefinition sceneContext => sceneContext.DrawingScene,
+            _ => null
+        };
+        if (drawingScene is null || drawingScene.LayerCount == 0) return;
+        var selectedLayers = SelectedTimelineLayerTargetIds()
+            .Select(targetId => Array.IndexOf(drawingScene.LayerIds, targetId))
+            .Where(layer => layer >= 0)
+            .Distinct()
+            .ToArray();
+        if (selectedLayers.Length == 0) return;
+
+        var sceneDefinition = context as SceneDefinition;
+        var sceneLayers = sceneDefinition?.CreateLayerSnapshot();
+        var snapshot = drawingScene.CreateSnapshot();
+        var unlockedLayers = new HashSet<int>(selectedLayers);
+        // Parent folders stay unlocked too; locking an ancestor would keep the selected child locked.
+        foreach (var layer in selectedLayers)
+        {
+            var parent = drawingScene.GetLayerParentIndex(layer);
+            for (var hop = 0; parent >= 0 && hop < drawingScene.LayerCount; hop++)
+            {
+                if (!unlockedLayers.Add(parent)) break;
+                parent = drawingScene.GetLayerParentIndex(parent);
+            }
+        }
+
+        var changed = false;
+        for (var layer = 0; layer < drawingScene.LayerCount; layer++)
+        {
+            changed |= drawingScene.SetLayerLocked(layer, !unlockedLayers.Contains(layer));
+        }
+
+        if (!changed) return;
+        if (sceneDefinition is not null)
+        {
+            PushSceneTimelineUndo(sceneDefinition, snapshot.Timeline!, layerSnapshot: sceneLayers);
+            ClearSelection();
+            RebuildSceneComposition();
+        }
+        else
+        {
+            PushUndoSnapshot(snapshot);
+            ClearInactiveSelection();
+        }
+
         _timeline.Invalidate();
         if (context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();
         else RebuildOnionSkinPreview();
@@ -4719,6 +4797,7 @@ internal sealed partial class MainForm : Form
             if (index >= 0) pasted.Add(index);
         }
 
+        var previousGroups = CapturePrivateGroupIds();
         var pastedInstances = sceneContainer is not null
             ? PasteSceneDrawingInstances(sceneContainer, offset)
             : PasteCopiedDrawingObjectInstances(container!, offset);
@@ -4734,6 +4813,7 @@ internal sealed partial class MainForm : Form
         if (sceneContainer is not null)
             PushSceneTimelineUndo(sceneContainer, snapshot.Timeline!, sceneLayers, sceneInstances, playheadFrame: _frame);
         else PushUndoSnapshot(snapshot, container, instanceSnapshot);
+        RecordCreatedPrivateGroups(previousGroups);
         SetMixedSelection(
             pasted,
             pastedInstances,
@@ -4882,6 +4962,7 @@ internal sealed partial class MainForm : Form
         var instanceSnapshot = scene.CreateInstanceSnapshot();
         var timelineSelection = _timeline.CaptureSelectionSnapshot();
         var pasted = new List<DrawingObjectInstanceDefinition>(_clipboardDrawingObjectInstances.Count);
+        var previousGroups = CapturePrivateGroupIds();
         foreach (var item in _clipboardDrawingObjectInstances)
         {
             var baseState = item.BaseState with
@@ -4928,6 +5009,7 @@ internal sealed partial class MainForm : Form
             instanceSnapshot: instanceSnapshot,
             playheadFrame: _frame,
             timelineSelection: timelineSelection);
+        RecordCreatedPrivateGroups(previousGroups);
         _timeline.RefreshTimeline();
         SetSceneInstanceSelection(pasted, pasted[^1]);
         RebuildSceneComposition();

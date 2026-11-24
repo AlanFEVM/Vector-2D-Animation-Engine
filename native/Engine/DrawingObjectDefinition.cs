@@ -26,6 +26,8 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition, IEditabl
     public string Name { get; set; } = "Symbol";
     public string Kind { get; set; } = "Symbol";
     public bool IsOpenCanvas => Kind == "OpenCanvas";
+    public bool IsGroup => Kind == "Group";
+    public bool IsLibrarySymbol => !IsOpenCanvas && !IsGroup;
     public string Detail { get; set; } = "Reusable symbol";
     public string AssetFolderId { get; internal set; } = "";
     public IReadOnlyList<string> AssetTagIds => _assetTagIdView;

@@ -18,6 +18,8 @@ namespace VectorAnimationEngine;
 internal static partial class Benchmark
 {
     private const double RealisticInteractionFrameBudgetMilliseconds = 1000d / 60d;
+    private const double Navigation130FrameBudgetMilliseconds = 1000d / 130d;
+    private const int Navigation130SampleFrames = 96;
     private const int RealisticInteractionWarmupFrames = 6;
     private const int RealisticInteractionSampleFrames = 40;
     private const int RealisticInteractionPlaybackFrames = 24;
@@ -53,6 +55,11 @@ internal static partial class Benchmark
                 return;
             }
             var counts = ReadRealisticInteractionCounts();
+            if (Environment.GetEnvironmentVariable("VECTOR_BENCH_NAVIGATION_130") == "1")
+            {
+                RunNavigation130Benchmark(counts);
+                return;
+            }
             var effects = Environment.GetEnvironmentVariable("VECTOR_BENCH_REALISTIC_EFFECTS")?.Trim().ToLowerInvariant()
                 ?? "full";
             Console.WriteLine("realistic_interaction_budget_ms=" + RealisticInteractionFrameBudgetMilliseconds.ToString("0.###"));
@@ -80,6 +87,102 @@ internal static partial class Benchmark
             .Distinct()
             .ToArray();
         return counts.Length > 0 ? counts : RealisticInteractionObjectCounts;
+    }
+
+    private static void RunNavigation130Benchmark(int[] counts)
+    {
+        // A mixed editable scene, including the closed cubic fills emitted by the pressure brush.
+        // Leave the native default renderer, antialiasing, and navigation policy in place.
+        Console.WriteLine($"navigation_130_target_ms={Navigation130FrameBudgetMilliseconds:0.000},"
+            + $"warmup={RealisticInteractionWarmupFrames},samples_per_action={Navigation130SampleFrames}");
+        var allMet = true;
+        foreach (var viewport in RealisticInteractionViewports)
+        foreach (var count in counts)
+        {
+            var scene = CreateRealisticInteractionScene(count, "curves");
+            using var host = new Form
+            {
+                AutoScaleMode = AutoScaleMode.None,
+                FormBorderStyle = FormBorderStyle.None,
+                ShowInTaskbar = false,
+                StartPosition = FormStartPosition.Manual,
+                Location = Point.Empty,
+                ClientSize = viewport
+            };
+            using var stage = new StageControl(scene) { Dock = DockStyle.Fill };
+            host.Controls.Add(stage);
+            host.Show();
+            Application.DoEvents();
+            stage.SetVisibleWorldWidth(RealisticInteractionWorldWidth);
+            PaintStage(stage);
+            var renderer = (Direct2DStageRenderer?)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage);
+            var size = stage.ClientSize;
+            var label = $"{size.Width}x{size.Height}_{scene.ObjectCount}";
+            Console.WriteLine($"navigation_130_tier={label},curves={Enumerable.Range(0, scene.ObjectCount).Count(i => scene.ShapeKind[i] == ShapeKind.Path)},"
+                + $"adapter={renderer?.GpuAdapterName ?? "unavailable"},dpi={stage.DeviceDpi}");
+
+            // Sweep a range of camera offsets and zooms in each direction. Crossing
+            // view and cache boundaries is part of the measurement.
+            const int halfSweep = 24;
+            var anchor = new Point(size.Width / 2 + 40, size.Height / 2 - 20);
+            allMet &= MeasureNavigation130(stage, label, "pan", frame =>
+            {
+                var direction = frame % (halfSweep * 2) < halfSweep ? 1 : -1;
+                stage.Pan(direction * 8, direction * 2);
+            });
+            stage.SetVisibleWorldWidth(RealisticInteractionWorldWidth);
+            PaintStage(stage);
+            allMet &= MeasureNavigation130(stage, label, "zoom", frame =>
+                stage.ZoomAt(anchor, frame % (halfSweep * 2) < halfSweep ? 1.025f : 1f / 1.025f,
+                    interactivePreview: true));
+        }
+
+        Console.WriteLine($"navigation_130_budget_met={allMet.ToString().ToLowerInvariant()}");
+        Console.WriteLine("realistic_interaction=ok");
+    }
+
+    private static bool MeasureNavigation130(StageControl stage, string label, string action, Action<int> update)
+    {
+        for (var i = 0; i < RealisticInteractionWarmupFrames; i++)
+        {
+            update(i);
+            PaintStage(stage);
+        }
+
+        var samples = new double[Navigation130SampleFrames];
+        var paths = new Dictionary<string, int>(StringComparer.Ordinal);
+        var minDrawn = int.MaxValue;
+        var commandPeak = 0d;
+        var presentPeak = 0d;
+        for (var i = 0; i < samples.Length; i++)
+        {
+            var frames = stage.RenderedFrameCount;
+            var started = Stopwatch.GetTimestamp();
+            update(i + RealisticInteractionWarmupFrames);
+            stage.Update();
+            if (stage.RenderedFrameCount == frames) PaintStage(stage);
+            samples[i] = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            minDrawn = Math.Min(minDrawn, stage.LastStats.DrawnObjects);
+            if (stage.LastFrameUsedDirect2D)
+            {
+                commandPeak = Math.Max(commandPeak, stage.LastDirect2DCommandMilliseconds);
+                presentPeak = Math.Max(presentPeak, stage.LastDirect2DPresentMilliseconds);
+            }
+            var path = stage.LastFrameUsedDirect2D ? stage.LastDirect2DSceneDrawPath : "gdi";
+            paths[path] = paths.GetValueOrDefault(path) + 1;
+        }
+
+        AssertTimeline(minDrawn > 0, "A navigation sample rendered without visible scene objects.");
+        Array.Sort(samples);
+        var p95 = samples[(int)Math.Ceiling(samples.Length * 0.95) - 1];
+        var maximum = samples[^1];
+        var met = maximum < Navigation130FrameBudgetMilliseconds;
+        Console.WriteLine($"navigation_130_{label}_{action}: avg_ms={samples.Average():0.000},"
+            + $"p95_ms={p95:0.000},max_ms={maximum:0.000},slow_frames={samples.Count(ms => ms >= Navigation130FrameBudgetMilliseconds)},"
+            + $"d2d_command_max_ms={commandPeak:0.000},d2d_present_max_ms={presentPeak:0.000},"
+            + $"min_drawn={minDrawn},paths={string.Join("|", paths.Select(pair => $"{pair.Key}:{pair.Value}"))}");
+        Console.WriteLine($"navigation_130_{label}_{action}_budget_met={met.ToString().ToLowerInvariant()}");
+        return met;
     }
 
     private static void RunRealisticInteractionTier(Size viewport, int objectCount, string effects)
@@ -999,6 +1102,16 @@ internal static partial class Benchmark
                 var location = new PointF(
                     -1_800f + (column + 0.5f) * cellWidth,
                     -1_050f + (row + 0.5f) * cellHeight);
+                if (effectsMode == "curves" && index % 3 == 0)
+                {
+                    // A varying-width loop of cubics exercises the pressure-fill
+                    // draw path without including stroke creation in the timing.
+                    var contour = CreateNavigationBrushContour(location, objectSize);
+                    AssertTimeline(scene.AppendPathBezierObjectContours(layer, [contour], 0,
+                        colors[index % colors.Length], Color.Transparent, (uint)contour.Length) >= 0,
+                        "The navigation benchmark could not create a Bézier fill.");
+                    continue;
+                }
                 var isLine = index % 7 == 5;
                 var kind = isLine ? ShapeKind.Line : shapeKinds[index % shapeKinds.Length];
                 scene.AppendObject(
@@ -1031,6 +1144,26 @@ internal static partial class Benchmark
         }
         if (includeBlend) scene.LayerBlendModes[effects] = LayerBlendMode.Multiply;
         return scene;
+    }
+
+    private static PathBezierNode[] CreateNavigationBrushContour(PointF center, float size)
+    {
+        const int points = 24;
+        const float step = MathF.Tau / points;
+        var contour = new PathBezierNode[points];
+        for (var i = 0; i < points; i++)
+        {
+            var t = i * step;
+            var sin = MathF.Sin(t);
+            var cos = MathF.Cos(t);
+            var point = new PointF(center.X + size * 0.48f * cos,
+                center.Y + size * (0.15f * sin + 0.06f * MathF.Sin(2 * t)));
+            var tx = -size * 0.48f * sin * step / 3;
+            var ty = size * (0.15f * cos + 0.12f * MathF.Cos(2 * t)) * step / 3;
+            contour[i] = new PathBezierNode(point, new PointF(point.X - tx, point.Y - ty),
+                new PointF(point.X + tx, point.Y + ty));
+        }
+        return contour;
     }
 
     private readonly record struct RealisticInteractionMetrics(

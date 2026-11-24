@@ -14,6 +14,9 @@ internal sealed partial class Direct2DStageRenderer
     private LayerContentHighlightCommandKey _layerContentHighlightCommandKey;
     private PointF _layerContentHighlightCommandCamera;
     private float _layerContentHighlightCommandZoom;
+    private bool _clipBitmapHighlight;
+    private bool _maskedLayerHighlight;
+    private RectangleF _bitmapHighlightViewport;
     internal long LayerContentHighlightCommandBuilds { get; private set; }
     internal long LayerContentHighlightCommandReuses { get; private set; }
 
@@ -27,12 +30,15 @@ internal sealed partial class Direct2DStageRenderer
         long ActiveContentRevision,
         int Frame,
         long VisibilityHash,
+        long OcclusionState,
         float Rotation,
-        System.Drawing.Size Size);
+        System.Drawing.Size Size,
+        StageViewState? BitmapView);
 
     private void DrawLayerContentHighlight(StageControl stage)
     {
-        if (!stage.LayerContentHighlightVisible || stage.RendersReferenceProjection) return;
+        if (!stage.LayerContentHighlightVisible || stage.RendersReferenceProjection)
+        { ClearLayerContentHighlightCommands(); return; }
         if (TryDrawCachedLayerContentHighlight(stage)) return;
         DrawLayerContentHighlightCore(stage);
     }
@@ -57,8 +63,11 @@ internal sealed partial class Direct2DStageRenderer
             stage.Scene.ActiveContentRevision,
             stage.Frame,
             ComputeLayerContentHighlightVisibilityHash(stage),
+            stage.HighlightOcclusionState,
             stage.PlanarCanvasRotation,
-            stage.Size);
+            stage.Size,
+            objects.Any(index => (uint)index < stage.Scene.ObjectCount && stage.Scene.ShapeKind[index] == ShapeKind.Bitmap)
+                ? stage.CaptureViewState() : null);
         if (_layerContentHighlightCommands is null || key != _layerContentHighlightCommandKey)
         {
             ClearLayerContentHighlightCommands();
@@ -144,6 +153,30 @@ internal sealed partial class Direct2DStageRenderer
         ID2D1SolidColorBrush line)
     {
         var shape = stage.Scene.ShapeKind[objectIndex];
+        var occlusion = stage.GetHighlightOcclusionContours(objectIndex);
+        if (occlusion.Length > 0)
+        {
+            if (stage.ClipHighlightPolylines(objectIndex,
+                stage.GetLayerContentHighlightWorldContours(objectIndex),
+                closed: shape is not (ShapeKind.Line or ShapeKind.MixingStroke) && !IsFreehandShape(shape)
+                    && !(shape == ShapeKind.Path && !stage.Scene.HasFill(objectIndex)), clipToView: true).Length == 0) return;
+            using var mask = SelectionMoveMask(stage, occlusion, outside: true);
+            var previousMask = _maskedLayerHighlight;
+            try
+            {
+                _maskedLayerHighlight = true;
+                DrawSelectionMoveOpacity(1, mask, () => DrawLayerContentHighlightObjectCore(stage, objectIndex, glow, line));
+            }
+            finally { _maskedLayerHighlight = previousMask; }
+            return;
+        }
+        DrawLayerContentHighlightObjectCore(stage, objectIndex, glow, line);
+    }
+
+    private void DrawLayerContentHighlightObjectCore(StageControl stage, int objectIndex,
+        ID2D1SolidColorBrush glow, ID2D1SolidColorBrush line)
+    {
+        var shape = stage.Scene.ShapeKind[objectIndex];
         if (shape == ShapeKind.Line)
         {
             if (!stage.Scene.TryGetLineCubic(
@@ -193,11 +226,19 @@ internal sealed partial class Direct2DStageRenderer
         }
 
         var closed = !IsFreehandShape(shape);
-        foreach (var contour in stage.GetLayerContentHighlightWorldContours(objectIndex))
+        var previousClip = _clipBitmapHighlight;
+        _clipBitmapHighlight = shape == ShapeKind.Bitmap && !_maskedLayerHighlight
+            && Environment.GetEnvironmentVariable("VECTOR_DISABLE_BITMAP_HIGHLIGHT_CACHE") != "1";
+        _bitmapHighlightViewport = new RectangleF(-8, -8, stage.Width + 16, stage.Height + 16);
+        try
         {
-            if (contour.Length == 0) continue;
-            DrawLayerContentHighlightPolyline(ToVectors(stage, contour), closed, glow, line);
+            foreach (var contour in stage.GetLayerContentHighlightWorldContours(objectIndex))
+            {
+                if (contour.Length == 0) continue;
+                DrawLayerContentHighlightPolyline(ToVectors(stage, contour), closed, glow, line);
+            }
         }
+        finally { _clipBitmapHighlight = previousClip; }
     }
 
     private void DrawLayerContentHighlightPolyline(
@@ -207,6 +248,8 @@ internal sealed partial class Direct2DStageRenderer
         ID2D1SolidColorBrush line)
     {
         if (points.Length == 0) return;
+        if (_clipBitmapHighlight && closed && points.Length >= 3
+            && DrawClippedBitmapHighlight(points, glow, line)) return;
         if (points.Length == 1)
         {
             _target!.FillEllipse(new Ellipse(points[0], 2.4f, 2.4f), line);

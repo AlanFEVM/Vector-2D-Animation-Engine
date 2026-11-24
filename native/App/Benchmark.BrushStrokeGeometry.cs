@@ -598,14 +598,18 @@ internal static partial class Benchmark
         AssertBrushGeometry(clickIds.Length > 0 && BrushGeometryContains(click, clickIds, new PointF(35, 50)),
             "A minimum-pressure single click vanished on the quantized grid.");
 
-        var spikeSamples = Enumerable.Range(0, 33).Select(index => new PressureBrushSample(
-            new PointF(index * 20, 0), 200, 0.3f, index is >= 12 and <= 20 ? 1 : 0.1f)).ToArray();
-        var spike = NewBrushGeometryScene();
-        var spikeIds = BrushStrokeBuilder.AddPressureStroke(spike, 0, spikeSamples, 240, Color.Black,
-            BrushShape.CreateTraditionalBrush(), 100, 25);
-        AssertBrushGeometry(BrushGeometryContains(spike, spikeIds, new PointF(360, 85))
-            && !BrushGeometryContains(spike, spikeIds, new PointF(0, 85)),
-            "Trajectory resampling removed a pressure extremum.");
+        // The widest filter smooths a brief pulse; a sustained press must still widen the stroke.
+        foreach (var (smoothing, pressStart, pressEnd) in new[] { (45, 12, 20), (100, 10, 26) })
+        {
+            var spikeSamples = Enumerable.Range(0, 37).Select(index => new PressureBrushSample(
+                new PointF(index * 20, 0), 200, 0.3f, index >= pressStart && index <= pressEnd ? 1 : 0.1f)).ToArray();
+            var spike = NewBrushGeometryScene();
+            var spikeIds = BrushStrokeBuilder.AddPressureStroke(spike, 0, spikeSamples, 240, Color.Black,
+                BrushShape.CreateTraditionalBrush(), smoothing, 25);
+            AssertBrushGeometry(BrushGeometryContains(spike, spikeIds, new PointF(360, 85))
+                && !BrushGeometryContains(spike, spikeIds, new PointF(0, 85)),
+                $"Pressure contrast disappeared with smoothing at {smoothing}%.");
+        }
     }
 
     private static void RunBrushGeometryStampFrequency()
@@ -640,15 +644,17 @@ internal static partial class Benchmark
             new PointF(index * 10, MathF.Sin(index * MathF.PI / 96) * 300)).ToArray();
         foreach (var smoothing in new[] { 0, 100 })
         {
-            var processed = BrushStrokeBuilder.ProcessTrajectory(longCurve, smoothing, 10);
+            // Use a view scale with fitting error below the 20-unit curvature oracle.
+            var processed = BrushStrokeBuilder.ProcessTrajectory(longCurve, smoothing, smoothing == 0 ? 10 : 1);
             AssertBrushGeometry(processed.Length > 8 && processed[0] == VectorUnits.Quantize(longCurve[0])
                 && processed[^1] == VectorUnits.Quantize(longCurve[^1]),
                 "Preview trajectory fitting truncated a long stroke or moved its endpoints.");
             for (var peak = 48; peak < longCurve.Length; peak += 96)
             {
                 var expected = longCurve[peak];
-                AssertBrushGeometry(BrushGeometryPolylineDistance(expected, processed) < 20,
-                    "Chunked preview fitting removed a long-stroke curvature extremum.");
+                var distance = BrushGeometryPolylineDistance(expected, processed);
+                AssertBrushGeometry(distance < 20,
+                    $"Chunked preview fitting displaced curvature extremum {peak} by {distance:0.##} units at {smoothing}%.");
             }
         }
         AssertBrushGeometry(BrushStrokeBuilder.ProcessTrajectory([], 100, 25).Length == 0,

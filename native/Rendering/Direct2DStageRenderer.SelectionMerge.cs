@@ -79,6 +79,15 @@ internal sealed partial class Direct2DStageRenderer
     {
         if (!_mergedSelectionActive) return false;
         var scene = stage.Scene;
+        if (stage.GetHighlightOcclusionContours(objectIndex).Length > 0)
+        {
+            foreach (var contour in stage.ClipHighlightPolylines(objectIndex,
+                stage.GetLayerContentHighlightWorldContours(objectIndex),
+                closed: shape is not (ShapeKind.Line or ShapeKind.Freeform or ShapeKind.MixingStroke)))
+                AppendMergedContour(stage, contour, closed: false,
+                    stage.SelectionHighlightForObject(objectIndex, StageControl.SelectionHighlightForShape(shape)));
+            return true;
+        }
 
         if (scene.TryGetObjectDistortionsView(objectIndex, out _))
         {

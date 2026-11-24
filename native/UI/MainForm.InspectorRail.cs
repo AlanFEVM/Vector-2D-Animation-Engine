@@ -17,14 +17,16 @@ internal sealed partial class MainForm
         Camera,
         Scene,
         Tools,
-        Document
+        Document,
+        Extension
     }
 
     private readonly Panel _inspectorRail = new();
     private readonly ComboBox _inspectorCategorySelector = new();
-    private static readonly InspectorCategory[] InspectorCategoryOrder =
+    private InspectorCategory[] _inspectorCategoryOrder =
         [InspectorCategory.None, InspectorCategory.Color,
             InspectorCategory.Camera, InspectorCategory.Scene];
+    private Control? _extensionInspectorPage;
     private static readonly InspectorCategory[] InspectorPropertyOrder =
         [InspectorCategory.None, InspectorCategory.Tools, InspectorCategory.Document];
     private readonly Panel _inspectorPropertyNavigation = new();
@@ -54,6 +56,14 @@ internal sealed partial class MainForm
 
     private void BuildInspectorCategoryRail(Control inspector)
     {
+        CreateNativeExtensionInspector(ref _extensionInspectorPage);
+        if (_extensionInspectorPage is { } extension)
+        {
+            _inspectorCategoryOrder = [.. _inspectorCategoryOrder, InspectorCategory.Extension];
+            extension.Dock = DockStyle.Fill;
+            extension.Visible = false;
+            inspector.Controls.Add(extension);
+        }
         _inspectorRailBasePadding = inspector.Padding;
         _inspectorRail.BackColor = Theme.Panel;
         _inspectorRail.AutoScroll = true;
@@ -61,7 +71,7 @@ internal sealed partial class MainForm
         _inspectorRail.AccessibleName = "Inspector categories";
         PaintLeftBorder(_inspectorRail);
         inspector.Controls.Add(_inspectorRail);
-        foreach (var category in InspectorCategoryOrder)
+        foreach (var category in _inspectorCategoryOrder)
         {
             var label = InspectorCategoryLabel(category);
             var button = new SvgIconButton(InspectorCategoryIcon(category))
@@ -116,7 +126,7 @@ internal sealed partial class MainForm
         _inspectorCategorySelector.SelectedIndexChanged += (_, _) =>
         {
             if (_layingOutInspectorRail || _inspectorCategorySelector.SelectedIndex < 0) return;
-            var category = InspectorCategoryOrder[_inspectorCategorySelector.SelectedIndex];
+            var category = _inspectorCategoryOrder[_inspectorCategorySelector.SelectedIndex];
             RevealInspectorCategory(category == InspectorCategory.None ? AvailableInspectorPropertyCategory() : category,
                 "category selector");
             LayoutInspectorCategoryRail();
@@ -222,13 +232,13 @@ internal sealed partial class MainForm
             _inspectorCategorySelector.Visible = compact;
             if (compact)
             {
-                var labels = InspectorCategoryOrder.Select(category => UiLocalization.T(InspectorCategoryLabel(category))).ToArray();
+                var labels = _inspectorCategoryOrder.Select(category => UiLocalization.T(InspectorCategoryLabel(category))).ToArray();
                 if (!_inspectorCategorySelector.Items.Cast<string>().SequenceEqual(labels))
                 {
                     _inspectorCategorySelector.Items.Clear();
                     _inspectorCategorySelector.Items.AddRange(labels);
                 }
-                _inspectorCategorySelector.SelectedIndex = Array.IndexOf(InspectorCategoryOrder,
+                _inspectorCategorySelector.SelectedIndex = Array.IndexOf(_inspectorCategoryOrder,
                     properties ? InspectorCategory.None : _inspectorCategory);
                 _inspectorCategorySelector.SetBounds(_inspectorRailBasePadding.Left, _inspectorRailBasePadding.Top,
                     Math.Max(1, host.ClientSize.Width - _inspectorRailBasePadding.Horizontal), ScaleResponsive(Theme.ControlHeight, scale));
@@ -250,7 +260,7 @@ internal sealed partial class MainForm
                     Math.Max(1, host.ClientSize.Width - _inspectorRailBasePadding.Horizontal), propertyHeight);
             }
             var top = inset;
-            foreach (var category in InspectorCategoryOrder)
+            foreach (var category in _inspectorCategoryOrder)
             {
                 var button = _inspectorCategoryButtons[category];
                 button.SetBounds(inset, top, Math.Max(1, width - inset * 2), ScaleResponsive(InspectorRailButtonHeight, scale));
@@ -354,6 +364,8 @@ internal sealed partial class MainForm
         _sceneEditPage.Visible = scene && !unavailable;
         _animationPage.Visible = false;
         _shotDirectorPanel.Visible = camera && !unavailable;
+        var extension = _inspectorCategory == InspectorCategory.Extension ? _extensionInspectorPage : null;
+        if (_extensionInspectorPage is { } extensionPage) extensionPage.Visible = extension is not null;
         _layerBlendModePanel.Visible = properties && !document;
         _objectInspector.Visible = properties && !document;
         if (unavailable)
@@ -367,13 +379,13 @@ internal sealed partial class MainForm
         if (_inspectorTransition is not { Visible: true }
             || !ReferenceEquals(_inspectorTransition.Parent, _inspectorHost))
         {
-            Control page = unavailable ? _inspectorUnavailablePage
+            Control page = extension ?? (unavailable ? _inspectorUnavailablePage
                 : color ? _colorInspectorPage
                 : tools ? _toolInspectorPage
                 : camera ? _shotDirectorPanel
                 : document ? _documentInspectorPage
                 : scene ? _sceneEditPage
-                : _basicInspectorPage;
+                : _basicInspectorPage);
             page.BringToFront();
         }
     }
@@ -420,6 +432,7 @@ internal sealed partial class MainForm
         InspectorCategory.Physics => false,
         InspectorCategory.Camera => true,
         InspectorCategory.Scene => true,
+        InspectorCategory.Extension => _extensionInspectorPage is not null,
         _ => false
     };
 
@@ -537,6 +550,7 @@ internal sealed partial class MainForm
 
     private InspectorCategory ResolvePendingObjectInspectorCategory()
     {
+        if (_inspectorCategory == InspectorCategory.Extension) return _inspectorCategory;
         var hasTarget = HasInspectorObjectTarget();
         if (_objectInspectorSelectionPending && _inspectorPanelOpen && !_playing && !_syncingFrame && hasTarget)
             return InspectorCategory.None;
@@ -565,7 +579,7 @@ internal sealed partial class MainForm
     private bool HandleInspectorCategoryKey(Keys keyData)
     {
         if (!_inspectorRail.ContainsFocus && !_inspectorPropertyNavigation.ContainsFocus) return false;
-        var buttons = InspectorCategoryOrder.SelectMany(category => category == InspectorCategory.None
+        var buttons = _inspectorCategoryOrder.SelectMany(category => category == InspectorCategory.None
             ? new[] { _inspectorCategoryButtons[category] }.Concat(_inspectorPropertyButtons.Values)
             : new[] { _inspectorCategoryButtons[category] }).Where(button => button.Visible && button.Enabled).ToArray();
         if (keyData is Keys.Enter or Keys.Space)
@@ -601,6 +615,7 @@ internal sealed partial class MainForm
         InspectorCategory.Physics => "Physics",
         InspectorCategory.Camera => "Camera",
         InspectorCategory.Scene => "Scene",
+        InspectorCategory.Extension => "Extensions",
         _ => "Properties"
     };
 
@@ -628,6 +643,7 @@ internal sealed partial class MainForm
         InspectorCategory.Physics => SvgIconKind.InspectorPhysics,
         InspectorCategory.Camera => SvgIconKind.InspectorCamera,
         InspectorCategory.Scene => SvgIconKind.InspectorScene,
+        InspectorCategory.Extension => SvgIconKind.SceneSlate,
         _ => SvgIconKind.InspectorSettings
     };
 }

@@ -25,6 +25,8 @@ internal sealed class BrushTipPanel : UserControl
     private readonly Label _traditionalDirectionValue = InspectorModuleStyle.CreateTextLabel();
     private readonly ModernSlider _pressureSmoothing = new();
     private readonly Label _pressureSmoothingValue = InspectorModuleStyle.CreateTextLabel();
+    private readonly List<ModernSlider> _pressureInputs = [];
+    private bool _pressureMode;
     private bool _updating;
     private bool _traditionalRowsVisible;
     private bool _layoutReady;
@@ -145,10 +147,63 @@ internal sealed class BrushTipPanel : UserControl
             if (!_updating) PressureSmoothingChanged?.Invoke(this, EventArgs.Empty);
         };
         AddSettingRow("Smooth", _pressureSmoothing, _pressureSmoothingValue);
+        foreach (var (label, minimum, maximum, initial) in new[]
+        {
+            ("Stabilizer", 0, 100, 0), ("Curve smoothing", 0, 100, 100),
+            ("Roundness", 1, 100, 100), ("Tip angle", 0, 180, 90),
+            ("Taper", 0, 100, 0), ("Velocity", -100, 100, 0), ("Pressure", 0, 100, 100)
+        })
+        {
+            var slider = new ModernSlider { AccessibleName = label };
+            var value = InspectorModuleStyle.CreateTextLabel();
+            slider.MinimumSize = new Size(1, 24);
+            ConfigureSlider(slider, minimum, maximum, initial, 20);
+            var hint = label switch
+            {
+                "Stabilizer" => "Higher values let the tip follow behind the pointer to suppress hand jitter.",
+                "Curve smoothing" => "Fit smoother curves with fewer editable segments",
+                "Roundness" => "Minor-axis size as a percentage of the brush diameter.",
+                "Tip angle" => "Ellipse rotation in degrees; a circular tip looks the same at every angle.",
+                "Taper" => "Increase the distance over which both ends of the stroke taper.",
+                "Velocity" => "Positive values make fast strokes thinner; negative values make them thicker. Zero ignores speed.",
+                _ => "Tablet pressure influence on width. Zero ignores pressure; mouse input uses full pressure."
+            };
+            slider.AccessibleDescription = hint;
+            _toolTip.SetToolTip(slider, UiLocalization.T(hint));
+            value.Text = initial.ToString();
+            slider.ValueChanged += (_, _) =>
+            {
+                value.Text = slider.Value.ToString();
+                if (!_updating) PressureOptionsChanged?.Invoke(this, EventArgs.Empty);
+            };
+            _pressureInputs.Add(slider);
+            AddSettingRow(label, slider, value);
+        }
         _layoutReady = true;
         SetBrushShape(BrushShape.CreateTraditionalBrush());
         PerformLayout();
         UiLocalization.Watch(this);
+    }
+
+    public event EventHandler? PressureOptionsChanged;
+    public PressureBrushOptions PressureOptions => new(
+        _pressureInputs[0].Value, _pressureInputs[1].Value, _pressureInputs[2].Value,
+        _pressureInputs[3].Value, _pressureInputs[4].Value, _pressureInputs[5].Value, _pressureInputs[6].Value);
+
+    public void SetPressureMode(bool enabled, PressureBrushOptions options)
+    {
+        _updating = true;
+        _pressureMode = enabled;
+        options = options.Clamped();
+        int[] values = [options.Stabilizer, options.Smoothing, options.Roundness,
+            options.Angle, options.Taper, options.Velocity, options.Pressure];
+        for (var index = 0; index < values.Length; index++) _pressureInputs[index].Value = values[index];
+        _title.Text = UiLocalization.T(enabled ? "Pressure Brush Tool" : "Brush Tip");
+        _preview.Visible = _name.Visible = _import.Visible = _preset.Visible = !enabled;
+        _strokeTitle.Visible = !enabled;
+        _updating = false;
+        PerformLayout();
+        PreferredHeightChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public event EventHandler? ImportRequested;
@@ -172,7 +227,7 @@ internal sealed class BrushTipPanel : UserControl
         : TraditionalBrushTipKind.Round;
     public int TraditionalWidthPercent => (int)_traditionalWidth.Value;
     public int TraditionalDirectionDegrees => _traditionalDirection.Value;
-    public int PreferredHeight => ScaleMetric(SettingsTop + (_compactLayout ? 44 : 0)
+    public int PreferredHeight => _pressureMode ? ScaleMetric(64 + RowPitch * 8 + 16) : ScaleMetric(SettingsTop + (_compactLayout ? 44 : 0)
         + RowPitch * (_traditionalRowsVisible ? 8 : 5) + 48);
 
     public void SetBrushShape(BrushShape brushShape)
@@ -242,6 +297,7 @@ internal sealed class BrushTipPanel : UserControl
         var labelControl = InspectorModuleStyle.CreateFieldLabel(label);
         labelControl.Dock = DockStyle.None;
         labelControl.AutoSize = false;
+        _toolTip.SetToolTip(labelControl, UiLocalization.T(label));
         input.Dock = DockStyle.None;
         input.AccessibleName ??= label;
         if (input is ComboBox or ModernNumericUpDown) InspectorModuleStyle.StyleField(input);
@@ -281,7 +337,7 @@ internal sealed class BrushTipPanel : UserControl
             var width = Math.Max(1, ClientSize.Width - inset * 2);
             var right = inset + width;
             var rowHeight = ScaleMetric(Theme.ControlHeight);
-            var split = inset + (int)Math.Round(width * 0.44);
+            var split = inset + (int)Math.Round(width * 0.48);
             _title.SetBounds(inset + ScaleMetric(24), ScaleMetric(16), Math.Max(1, width - ScaleMetric(24)), ScaleMetric(28));
             _preview.SetBounds(inset, ScaleMetric(70), ScaleMetric(56), ScaleMetric(56));
             var detailsLeft = inset + ScaleMetric(68);
@@ -296,15 +352,16 @@ internal sealed class BrushTipPanel : UserControl
             _import.SetBounds(actionLeft, actionTop, importWidth, rowHeight);
             var presetLeft = actionLeft + importWidth + ScaleMetric(6);
             _preset.SetBounds(presetLeft, actionTop, Math.Max(1, right - presetLeft), rowHeight);
-            var cursorY = ScaleMetric(SettingsTop + (compact ? 44 : 0));
+            var cursorY = ScaleMetric(_pressureMode ? 64 : SettingsTop + (compact ? 44 : 0));
             var tabIndex = 2;
             foreach (var (caption, input, value) in _rows)
             {
                 var traditional = input == _traditionalTip || input == _traditionalWidth || input == _traditionalDirection;
-                var rowVisible = !traditional || _traditionalRowsVisible;
+                var pressureRow = input is ModernSlider slider && _pressureInputs.Contains(slider);
+                var rowVisible = _pressureMode ? input == _size || pressureRow : !pressureRow && (!traditional || _traditionalRowsVisible);
                 caption.Visible = input.Visible = rowVisible;
                 if (value is not null) value.Visible = rowVisible;
-                if (traditional && !_traditionalRowsVisible) continue;
+                if (!rowVisible) continue;
                 if (input == _frequency)
                 {
                     _strokeTop = cursorY;
@@ -333,7 +390,7 @@ internal sealed class BrushTipPanel : UserControl
         SvgIcons.Draw(eventArgs.Graphics, SvgIconKind.Brush,
             new Rectangle(ScaleMetric(16), ScaleMetric(21), ScaleMetric(18), ScaleMetric(18)), Theme.PanelSecondaryText);
         InspectorModuleStyle.DrawDivider(this, eventArgs.Graphics, ScaleMetric(54));
-        InspectorModuleStyle.DrawDivider(this, eventArgs.Graphics, _strokeTop);
+        if (!_pressureMode) InspectorModuleStyle.DrawDivider(this, eventArgs.Graphics, _strokeTop);
         InspectorModuleStyle.DrawBottomDivider(this, eventArgs.Graphics);
     }
 

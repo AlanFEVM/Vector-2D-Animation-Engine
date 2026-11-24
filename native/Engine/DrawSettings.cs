@@ -16,6 +16,8 @@ internal sealed class DrawSettings
         PaintLoad: 0.35f,
         Influence: 0.4f);
 
+    public PressureBrushOptions PressureBrushOptions { get; set; } = PressureBrushOptions.Default;
+
     public event EventHandler? Changed;
 
     public ShapeKind ShapeKind { get; set; } = ShapeKind.Rectangle;

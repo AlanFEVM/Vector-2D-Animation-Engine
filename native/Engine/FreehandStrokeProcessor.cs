@@ -186,7 +186,8 @@ internal static class FreehandStrokeProcessor
         IReadOnlyList<PressureBrushSample> samples,
         float baseDiameter,
         List<PressureBrushPoint> profile,
-        List<float> travelledDistances)
+        List<float> travelledDistances,
+        PressureBrushOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(samples);
         ArgumentNullException.ThrowIfNull(profile);
@@ -225,13 +226,10 @@ internal static class FreehandStrokeProcessor
                 : travelledDistances[^1] + MathF.Sqrt(DistanceSquared(
                     VectorUnits.Quantize(samples[index - 1].Point),
                     sample.Point));
-            var targetDiameter = PressureDiameter(
-                baseDiameter,
-                sample.SpeedPixelsPerSecond,
-                sample.HeldSeconds,
-                sample.TabletPressure,
-                travelled,
-                minimumDiameter);
+            var targetDiameter = options is { } dynamics
+                ? dynamics.Diameter(baseDiameter, sample, travelled)
+                : PressureDiameter(baseDiameter, sample.SpeedPixelsPerSecond, sample.HeldSeconds,
+                    sample.TabletPressure, travelled, minimumDiameter);
             var diameter = profile.Count == 0
                 ? targetDiameter
                 : profile[^1].Diameter + (targetDiameter - profile[^1].Diameter) * PressureDiameterBlend;
@@ -416,7 +414,16 @@ internal static class FreehandStrokeProcessor
         return result;
     }
 
-    internal static PressureBrushPoint[] SmoothPressureProfile(IReadOnlyList<PressureBrushPoint> source, int smoothing)
+    internal static PressureBrushPoint[] SmoothPressureProfile(IReadOnlyList<PressureBrushPoint> source, int smoothing) =>
+        SmoothPressureProfileCore(source, smoothing, float.PositiveInfinity);
+
+    internal static PressureBrushPoint[] SmoothPressureProfileSpatial(
+        IReadOnlyList<PressureBrushPoint> source, int smoothing, float worldPerPixel) =>
+        SmoothPressureProfileCore(source, smoothing,
+            Math.Max(0.0001f, worldPerPixel) * PressureSmoothingRadius(smoothing) * 2f);
+
+    private static PressureBrushPoint[] SmoothPressureProfileCore(
+        IReadOnlyList<PressureBrushPoint> source, int smoothing, float spatialRadius)
     {
         if (source.Count <= 2) return source.ToArray();
 
@@ -426,8 +433,13 @@ internal static class FreehandStrokeProcessor
 
         var current = source.ToArray();
         var buffer = new PressureBrushPoint[current.Length];
+        var distances = float.IsFinite(spatialRadius) ? new float[current.Length] : null;
+        var neighbourDistances = distances is not null ? new float[radius * 2 + 1] : null;
         for (var pass = 0; pass < 2; pass++)
         {
+            if (distances is not null)
+                for (var index = 1; index < current.Length; index++)
+                    distances[index] = MathF.Sqrt(DistanceSquared(current[index - 1].Point, current[index].Point));
             buffer[0] = current[0];
             buffer[^1] = current[^1];
             for (var i = 1; i < current.Length - 1; i++)
@@ -444,13 +456,27 @@ internal static class FreehandStrokeProcessor
 
                 var start = Math.Max(0, i - radius);
                 var end = Math.Min(current.Length - 1, i + radius);
+                if (distances is not null && neighbourDistances is not null)
+                {
+                    // Sum outward from this sample so the same neighbourhood gives
+                    // bit-identical weights when the incremental tail's origin moves.
+                    neighbourDistances[i - start] = 0;
+                    var distance = 0f;
+                    for (var neighbour = i - 1; neighbour >= start; neighbour--)
+                        neighbourDistances[neighbour - start] = distance += distances[neighbour + 1];
+                    distance = 0;
+                    for (var neighbour = i + 1; neighbour <= end; neighbour++)
+                        neighbourDistances[neighbour - start] = distance += distances[neighbour];
+                }
                 var weightSum = 0f;
                 var pointX = 0f;
                 var pointY = 0f;
                 var diameter = 0f;
                 for (var neighbour = start; neighbour <= end; neighbour++)
                 {
-                    var weight = radius + 1 - Math.Abs(neighbour - i);
+                    var weight = (float)(radius + 1 - Math.Abs(neighbour - i));
+                    if (neighbourDistances is not null)
+                        weight *= Math.Max(0, 1 - neighbourDistances[neighbour - start] / spatialRadius);
                     weightSum += weight;
                     pointX += current[neighbour].Point.X * weight;
                     pointY += current[neighbour].Point.Y * weight;

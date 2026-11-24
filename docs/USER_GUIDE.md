@@ -1,5 +1,11 @@
 # Vector 2D Animation Engine 用户指南
 
+时间轴切到“全部”标签后，右键普通图层可选择“折叠图层组”，收起同一标签组的其他图层，保留当前图层并以“组名 ▸ 图层名”标示入口。右键选择“展开图层组”或点击该行左侧折叠箭头可恢复。折叠仅影响“全部”列表，具体标签内仍正常显示，不改变舞台可见性、内容或图层顺序；状态保留到重新绑定时间轴。
+
+In the timeline's All tab, right-click a layer and choose Collapse Layer Group to hide other rows in its tab group. The current layer remains as “group ▸ layer”. Choose Expand Layer Group or click its disclosure arrow to reopen it. This only affects the All list; individual tabs, Stage visibility, content and layer order remain unchanged. The state lasts until the timeline is rebound.
+
+开发维护 Wiki 配图时，可使用[离屏配图导出脚本](WIKI_IMAGES.md)，按指定主题、工作区背景色和控件生成图片，无需截取正在运行的编辑器窗口。
+
 二维舞台移动对象、自由变换移动及非投影实例移动时，原位保留 25% 不透明度的参考图像，并先于移动内容绘制，避免原位反馈覆盖移动对象。时间轴分组、图层、帧选区移动与分组排序对话框保留淡化的源位提示；素材树仅在移动落点有效时淡化源节点（含展开的子节点），复制拖入不淡化源素材。放下或取消后恢复正常显示。三维／参考投影仍使用原有空间拖动反馈，不套用二维快照。
 2D object moves, Free Transform translation and non-projected instance moves retain a 25%-opacity origin reference beneath the moving content. Timeline group, layer and frame-selection moves and the group-order dialog retain faded source cues. The asset tree fades the source subtree only for a valid move target, not for copy placement. Drop or cancellation restores normal display. 3D/reference projections retain their spatial feedback rather than using 2D snapshots.
 
@@ -11,6 +17,8 @@
 
 手册右上角的“机制百科”可打开本地百科预览，首页包含项目来历与定位介绍、作者与贡献信息、社区入口和搜索；启动方式见 [百科说明](encyclopedia/README.md)。具体机制正文尚未编写。
 The manual's top-right Wiki link opens the local encyclopedia preview. Its homepage contains the project origin and positioning, author and contribution information, community entry points and search. See the [preview instructions](encyclopedia/README.md) to start it. Detailed mechanism articles are not yet written.
+
+百科左侧“常用页面”分为工作区与界面、工具、素材与绘制、时间轴与动画、发布、场景问题六区；已补充工作区介绍，其余内容暂时保留目录标题。工作区介绍与中英文切换归入“工作区与界面”。常用页面、社区和作者与项目分别滚动。 / The wiki's Common Pages navigation has six sections: Workspaces and Interface, Tools, Assets and Drawing, Timeline and Animation, Publishing, and Scene Questions. Workspace introductions are available; other topics currently contain headings only. Workspace introductions and language switching belong to Workspaces and Interface. Common Pages, Community, and Author and Project scroll independently.
 
 开启“吸附”和“紧贴”后，绘制线段或拖动线段端点时，会轻吸附到水平、15°、30°、45°、60°、垂直及其镜像方向。角度偏差不超过 4° 且端点修正距离在当前屏幕吸附容差内时才生效，远离目标方向后自由绘制；拖动端点以线段另一端为基准。对象／辅助线吸附与 C 键端点连接优先，Shift 或显式角度吸附仍按角度步长约束。
 With Snap and Tight Fit enabled, line drawing and endpoint drags gently snap to horizontal, 15°, 30°, 45°, 60°, vertical and mirrored directions. Both a 4° angular limit and the current screen tolerance apply. Endpoint drags use the opposite endpoint as origin. Object/guide snapping and C endpoint connection take priority; Shift and explicit angle snapping retain the configured angle step.
@@ -48,9 +56,9 @@ After a marquee selection, the canvas presents the selection before refreshing t
 
 位图经过倾斜、镜像或自由变形后，选择命中会按相同的图像映射还原坐标，避免可见图像与可点击区域错位。
 
-位图的直线仿射倾斜、镜像及其后续移动和缩放可直接使用 Direct2D 绘制共享原图，避免每次交互重新烘焙像素；曲线包络和透视变形继续使用原有畸变绘制路径。实际帧率取决于图片数量、像素尺寸、可见范围及设备。
+位图的直线仿射倾斜、镜像及其后续移动和缩放可直接使用 Direct2D 绘制共享原图，避免每次交互重新烘焙像素。实际帧率取决于图片数量、像素尺寸、可见范围及设备。
 
-Straight affine bitmap skew, mirroring, and subsequent movement or scaling can draw the shared source directly with Direct2D, avoiding pixel baking on each interaction. Curved envelopes and perspective distortion retain the existing distortion renderer. Frame rate depends on image count, pixel dimensions, visible area, and hardware.
+Straight affine bitmap skew, mirroring, and subsequent movement or scaling can draw the shared source directly with Direct2D, avoiding pixel baking on each interaction. Frame rate depends on image count, pixel dimensions, visible area, and hardware.
 
 选中图片后可执行“打散”，将其转为保留原图纹理的可编辑填充。使用矩形框选或套索切出局部后，可单独移动或删除该区域；透明度、孔洞和原图纹理坐标随区域保留，支持撤销及保存后重新打开。打散后按原始填色参与选择：黑箭头以雪花点纹覆盖实际裁剪区域并保留孔洞，不显示整体图片选框；穿过式框选或套索沿选区边界切分，只选中框内部分。此反馈跟随“设置 > 选择与编辑”的箭头角色交换，未编辑就取消选区会恢复临时切分。倾斜、镜像等仿射变换后的图片也可局部切分；曲线或折叠包络目前仍按完整对象选择。
 
@@ -68,15 +76,19 @@ Distortion results are retained within a pixel-byte budget and evicted in least-
 
 Large curved bitmap warps bake at native precision one at a time in the background. The viewport distortion renderer remains visible until the completed native result refreshes the view. Further edits or scene changes cancel or discard stale work. Offscreen output still generates final pixels synchronously.
 
-拖动图片的扭曲锚点或方向柄时，预览直接从原始图片按当前包络生成，网格精度随屏幕像素调整，不再固定为粗略的 5×5 网格。采样网格固定在世界像素坐标，避免包络边界变化时纹理采样跳动；透明度、裁剪孔洞和图片采样设置保留。屏幕外区域不参与预览像素计算，松手后的原始精度结果仍按原流程生成。
+在支持硬件加速的二维舞台上，扭曲工具会在选中图片时准备纹理和曲线网格绘制。拖动锚点或方向柄时，GPU 使用原图纹理绘制按屏幕精度调整的网格，并保留透明度、裁剪孔洞和图片采样设置。松手后，只要扭曲工具仍开启，舞台就继续显示 GPU 结果，方便接着拖动。退出工具后恢复常规绘制；离屏输出仍按原始精度生成。需要软件合成的场景继续使用软件预览。
 
-Dragging bitmap distortion anchors or controls previews the current envelope directly from the source image, with mesh accuracy measured in screen pixels rather than a fixed 5×5 grid. A fixed world-pixel sampling lattice avoids texture phase jumps as envelope bounds change. Transparency, clipped holes and image sampling settings are preserved. Offscreen pixels are excluded from preview shading; release still produces the native-precision result.
+On a hardware-accelerated 2D Stage, Distort prepares the texture and curved mesh renderer when the image is selected. Dragging an anchor or control draws the source on a mesh refined to screen precision, preserving transparency, clipped holes, and image sampling settings. The GPU result stays on the Stage between drags while Distort is active. Leaving the tool restores normal rendering, and offscreen output still renders at native precision. Scenes that require software compositing retain the software preview.
 
 Bitmap picking applies the image mapping's inverse after skew, mirroring or free deformation, keeping the clickable region aligned with the visible image.
 
 时间轴局部刷新会限制分组栏的绘制边界，避免拖动播放头时边框污染相邻像素。状态栏帧数读数在连续拖动时保持布局稳定，字体或 DPI 改变时重新测量首选尺寸，避免文字被固定高度裁切。
 
 Timeline partial repaints clip the group bar to its own bounds so its border cannot bleed into adjacent pixels during scrubbing. The status-bar frame readout keeps its layout stable while scrubbing and remeasures its preferred size when the font or DPI changes to avoid clipping text.
+
+时间轴普通内容轨道使用连贯的曝光色带：实心短竖片标记有内容的关键帧，厚边空心短竖片标记空白曝光，两种竖片均在各自帧格内居中；段尾留出小间隔以区分相邻曝光。相邻关键帧任一端为空白时，中间色带使用正常曝光色的浅淡版本；两个有内容的关键帧之间保留正常颜色，末尾空白曝光同样显示浅淡色带。此配色仅作状态提示，不改变实际持有内容。传统补间和形状补间都显示各自颜色的右向实线箭头。两个空白关键帧之间可以创建占位补间，只显示箭头，不生成内容。在补间内部执行「插入关键帧」，左右两段各显示一个完整箭头；执行「插入空白关键帧」，原起点到截断点改为虚线箭杆，仍保留实线箭头头部。普通空白曝光不会显示虚线。色带内不再贯穿整格网线，每五帧保留稍强的边缘刻度。相机关键帧保留菱形标记。
+
+Ordinary timeline tracks display continuous exposure bands. A solid vertical tab marks a populated keyframe; a thick outlined tab marks a blank exposure. Both tabs are centered within their frame cells. A small end gap separates adjacent exposures. If either adjacent keyframe is blank, the band between them uses a faint version of the normal exposure color; two populated endpoints retain the normal color. Trailing blank exposures also use the faint band. This is a visual cue only and does not change held content. Classic and shape tweens use distinct solid right-pointing arrows. A tween between two blank keyframes is a placeholder and generates no content. Insert Keyframe splits a tween into two complete arrows; Insert Blank Keyframe leaves a dashed shaft with a solid arrowhead from the original start to the new blank key. Ordinary blank exposures do not show dashes. Grid lines stop at the band edges, with slightly stronger ticks every five frames. Camera keys retain diamond markers.
 
 大量对象的合并选择轮廓保留世界坐标，平移时复用绘制命令并在渲染时统一投影，避免旧屏幕坐标重复平移造成抗锯齿像素差异。选择颜色、线宽、轮廓简化规则及缩放结束后的精细显示保持不变。
 
@@ -313,9 +325,69 @@ Light-theme selectors no longer produce black text ghosting. Expanding Harmony r
 
 Inspector numeric fields scroll their surrounding column by default. Type, use steppers or scrub to edit. Invalid and out-of-range input shows an error without silently clamping it; Esc restores the value from the start of editing. Tab reveals the next focused field. Small wheel deltas accumulate, and the system's zero-line setting is respected. Mixed numeric values are identified before a new value is applied to the selection.
 
+### 原生扩展 / Native Extensions
+
+高草、大型蕨等双格植物根据剖面里的 `props.half` 选择上半部和下半部贴图，不需要将两张 PNG 手动改成同名文件。
+
+剖面 JSON 支持最大 256 MiB、100 万个输入方块；生成时只绘制可见方块，限制在 2 万个可见方块、128 个深度图层以内。空文件和超出容量的文件会显示具体原因与大小。
+
+水与岩浆自动匹配静态贴图；滴水石锥按 JSON 的朝向与粗细状态选择贴图。
+
+仅含规则方块的大型场景在正视图下可复用 Direct2D 像素分块，平移和缩放时不用逐格重绘。使用规则 16×16 近邻贴图的旧场景无需重新生成。方块和图层仍可编辑；修改内容、光照、贴图或重建设备后会重新生成缓存。不满足分块条件的场景仍按原方式绘制。
+
+Large scenes containing only regular blocks can reuse Direct2D pixel chunks in the front view, avoiding per-block draws while panning and zooming. Older scenes with regular 16×16 nearest-neighbor textures do not need to be reimported. Blocks and layers stay editable. Content, lighting, texture, and device changes invalidate the cache. Other scenes still use the standard renderer.
+
+平移或缩放大型场景时，密集位图图层的编辑高亮会暂时隐藏，视图停稳后恢复。作品、图层和对象选中状态不变。 / While panning or zooming large scenes, dense bitmap layer highlights are temporarily hidden and restored when the view settles. Artwork, layers, and object selection are unchanged.
+
+开发构建默认使用 MC 扩展自带的 `Textures` 目录，无需手动选贴图；点「贴图目录」旁的浏览按钮可换成自己的资源包。完整贴图库不内嵌进正式单 EXE，正式版可手动选目录，或将贴图库放到应用目录下的 `Extensions/MinecraftScene/Textures` 以自动使用。
+
+顶栏 **扩展 → MC 场景生成...** 打开右侧检查器中的 **扩展** 页，不遮挡舞台。**场景来源**、**场景布局** 和 **场景检查** 可独立折叠。选取 Ortho Camera 的剖面 JSON、本地 PNG 贴图目录和可选的方块映射 JSON。**单格尺寸** 默认 16 px，舞台的适配缩放不改变画布像素尺寸。点 **检查场景** 查看可见方块数、深度层数、画布大小、受阴影影响的方块数和缺失贴图。没有缺失的可见贴图才可 **生成场景**。生成会新增一张 2D 场景，普通方块贴图存入工程素材库；生成可整体撤销，不覆盖其他场景。
+
+**Extensions → Minecraft Scene...** opens the **Extensions** page in the right inspector without covering the Stage. The page takes an Ortho Camera section JSON, a PNG texture folder, and an optional block mapping JSON. **Check Scene** reports visible blocks, depth layers, canvas size, shaded blocks, and missing textures. When all visible textures are available, **Generate Scene** adds a new 2D scene with project-managed textures. Undo removes the import as one operation.
+
+**可编辑场景层**默认开启。新生成的场景按导出边界切成 16×16×16 格区块。时间轴 **MC 场景** 下，每 16 格深度只占一个外层图层。比如总深度 64 格就有四层，32×32 格的截面在每层平铺四个区块。素材库 **MC 元件** 按场景和深度层列出区块。几个区块在正视图上重叠时，先在外层时间轴选深度层，再双击舞台上的区块，也可直接从素材库打开。区块时间轴有 16 条内部深度轨道，导出边界外的轨道不能编辑。编辑时，重叠的其他深度地形临时让开，区块外画面淡化为参考。点左上角的 **返回场景** 或按 **Esc** 返回。旧工程中的地形保留原有结构，从原 JSON 重新生成即可使用新的区块结构。
+
+在正视图第 0 帧，点区块时间轴的图层名切换编辑深度。用 **定位** 点舞台可自动跳层，右键可列出同一位置的深度。选择 **擦除**、**铺设 / 覆盖** 或 **光照点** 后，点击可修改当前区块内可见且未锁定的一格。光照可跨区块更新。编辑支持撤销和重做，结果随工程保存。角色请放到普通场景图层。
+
+在正视图选中 **MC 场景** 的外层时间轴图层，舞台会用图层色标出这一组有方块的位置，即使它们在其他地形后面。进入区块后，只有当前深度轨道在该区块内的方块会高亮。高亮不写进作品或导出画面。
+
+点外层图层左侧的眼睛可隐藏或显示整组区块。区块内部轨道用于选择编辑深度，目前不支持逐层隐藏。
+
+New editable terrain uses 16×16×16 sections. **MC Scene Layers** shows one outer layer per 16 blocks of exported depth, and **MC Symbols** groups the tiled chunks by that layer. Select the desired outer layer before double-clicking overlapping chunks on the front-view stage, or open a chunk from the library. Its timeline has 16 depth tracks. Other terrain at the same stage position is temporarily hidden, and the rest of the stage fades. Press **Esc** or choose **Back to scene** to return. Existing terrain retains its layout until reimported.
+
+In the front view, selecting an outer MC timeline layer tints its occupied cells on the stage, even behind other terrain. Inside a chunk, only the selected depth within that chunk is highlighted. The tint is an editor overlay and is not exported.
+
+Use the eye beside an outer layer to hide or show the entire group. Inner tracks select the editing depth and do not have independent visibility.
+
+**计算场景光照** 默认开启。引擎用剖面内的立体方块和空气计算天空光、火把等常见发光方块的光，以及方块边角的接触阴影。不读取导出的亮度，也不添加阴影 PNG 或叠片。天空光从剖面顶部进入；剖面以外的遮挡、光源和游戏昼夜不参与计算。光照剖面的空间上限是 8,388,608 格（含空气）；超出时需缩小导出范围。
+
+生成前可在 **场景布局 → 光影档位** 选择 **低 / 中 / 高**。低保留原本的高对比表现，中保留更多阴影里的纹理，高（默认）给最前面的人工剖面补光，并计算近处台阶和岩壁投到后方的局部阴影。补光只改变显示，不会为洞穴或方块背后增加光源。所有档位都支持实时编辑；档位随生成的场景保存。对已有场景换档或使用新版高档效果，需要从原 JSON 重新检查并生成。
+
+**场景布局 → 夜视** 默认开启，在任一光影档位下抬高暗部亮度，保留接触阴影、天空光和火把的实时变化。想保留深黑阴影，可在生成前关闭。夜视不使用导出的亮度，也不会改动已有场景；要应用到旧场景，请用原 JSON 重新生成。
+
+正视图下，按近邻模式绘制的方块贴图在缩放后共用屏幕像素边界，避免相邻方块之间露出细线。舞台顶部的「网格」透明度只控制参考线，与方块接缝无关。
+
+重新从剖面 JSON 生成时，支持的草、蕨类及树叶会按 `biome` 群系染色。标准草方块侧面只染上方草层，保留泥土原色；没有群系的方块、雪面和已有固定颜色的樱花叶不染色。染色独立于光影档位，随工程保存，不会在贴图目录生成新文件。
+
+在 **舞台编辑** 里用 **铺设 / 覆盖** 选择 `minecraft:torch`（需要 `torch.png`），火把放下或擦掉时，周围的明暗和暖色马上重新计算。也可以选 **打光点**，在当前深度的空气或非实心方块上点击设置光强（1–15）；将光强设为 0 或右键选择 **移除打光点** 可删除。堵住开口、移除洞顶也会更新光照。编辑只重算受影响的区域，播放时复用结果。光源和光照结果支持撤销并随工程保存。关闭 **可编辑场景层** 时只生成初始光照，不能用方块工具修改。编辑会露出缺图方块时会被拒绝。旧场景不改外观，要使用新光照请用原 JSON 重新生成。
+
+**Grid layers** retains hidden blocks and uses one timeline layer per depth. In the front view at frame 0, enable **Edit on Stage**, then select a layer in the timeline, click with **Locate**, or right-click to choose a block. **Erase** and **Stamp block** edit one cell on the selected visible, unlocked block layer. **Block lighting** calculates sky light, common emissive blocks such as torches, and contact shadows from the section geometry. No exported light levels, shadow textures, or overlays are used. The top admits sky; the calculation does not model lighting or obstructions beyond the section or the game's day/night cycle. The lighting volume is limited to 8,388,608 cells, including air.
+
+Under **Scene layout → Lighting quality**, **Low** retains the original high contrast, **Medium** preserves more texture in shadows, and **High** (default) adds display-only fill on the front cut and detailed local shadows under nearer ledges. The fill does not add a light source to the cave. Edits update lighting in every grade. Regenerate from the source JSON to change the grade or use the revised High profile on an older scene.
+
+**Scene layout → Night vision** is on by default. It lifts dark tones in any quality grade without replacing contact shadows, skylight or live torch lighting. Turn it off before generating for darker shadows. Regenerate older scenes from the source JSON to apply it.
+
+In the front view, nearest-neighbor block textures share screen-pixel edges when zoomed, preventing lines between adjacent tiles. The Stage grid opacity controls only the reference grid.
+
+When regenerated from section JSON, supported grass, ferns and foliage use the exported `biome` to resolve their tint. A standard grass-block side colors only the upper grass layer; dirt, snowy faces, fixed-color cherry leaves and blocks without a biome are left unchanged. Tint is saved with the scene, works independently of lighting quality, and does not create any texture files.
+
+Stamp or erase `minecraft:torch` (requires `torch.png`) to change the surrounding brightness and warmth. **Light point** sets a source on air or a non-solid block on the current depth layer. Set its strength to 0 or right-click **Remove light point** to remove it. Only the affected area recalculates, and playback reuses the result. Sources and lighting support undo and survive save/reopen. Without **Grid layers**, the same initial lighting is generated but cannot be edited with these tools. Edits that would reveal a missing texture are blocked. To use the new lighting in an older scene, regenerate it from its original JSON.
+
+移走应用目录下的 `Extensions/MinecraftScene/minecraft-scene.v2dextension` 并重启，即可拆下此扩展；恢复文件后重启可重新启用。没有可用扩展时显示 **可用扩展...**。已保存的场景不依赖扩展文件。 / Move `Extensions/MinecraftScene/minecraft-scene.v2dextension` out of the application directory and restart to detach the extension. Restore the file and restart to enable it again. With no extensions present, the menu shows **Available Extensions...**. Saved scenes do not depend on the extension file.
+
 ### 场景画布与背景 / Scene Canvas And Background
 
-在左上角横向主菜单中选择 `File → Canvas & background… / 文件 → 画布与背景…`，或未选择对象时的文档信息面板点击 **Canvas & background… / 画布与背景…**，设置当前活动场景的画布。主菜单项目按传统横向菜单栏平铺显示，顶部文字采用较小的常规字号和柔和次级文字色，悬停／选中使用低对比中性底色，文字保持同一亮度；高对比度模式沿用系统选中色。顶部仅保留文件、编辑、视图、插入、控制和帮助六类；变换与设置合并到编辑，文本与导入合并到插入，面板和层级入口合并到视图。每个场景独立保存；基础绘制中的元件仍保持透明，画布设置不改变元件内容或编辑器外围的工作区底色。
+在左上角横向主菜单中选择 `File → Canvas & background… / 文件 → 画布与背景…`，或未选择对象时的文档信息面板点击 **Canvas & background… / 画布与背景…**，设置当前活动场景的画布。主菜单使用紧凑文字和中性悬停底色，高对比度模式沿用系统选中色。变换与设置在编辑菜单，文本与导入在插入菜单，面板和层级入口在视图菜单。每个场景独立保存；基础绘制中的元件仍保持透明，画布设置不改变元件内容或编辑器外围的工作区底色。
 
 空场景尚未设置画布时，场景与动画工作区居中显示“画布与背景”轻量引导：底色与工作区一致，无外框，文字、图标及操作入口根据工作区底色调整明暗，修改工作区颜色时同步更新。可以点击“设置画布与背景”，也可以点击“直接开始”；放入元件、创建镜头或图层、绘制实际内容或建立有效关键帧后，引导自动消失，删除或撤销内容不会反复弹回。平移、缩放和切换工具不会自动创建画布或背景。提示消失后，文档信息仍准确显示“未添加”，设置入口始终可用。
 
@@ -352,9 +424,25 @@ Dragging multiple managed images reads file metadata by directory within each pa
 
 After CPU bitmap pixels are evicted, uploaded GPU textures can still be reused after validating source metadata and import settings, avoiding repeated source reads and decoding for large image sets. Object clipping, sampling-level and source changes select the corresponding texture again. CPU and GPU memory budgets remain unchanged.
 
-成叠的普通位图仅在确认前方图片完全不透明、无对象裁剪、轴对齐且覆盖整个下方对象（含边缘余量）时省去被遮住对象的绘制；部分可见图片仍完整绘制。原位半透明提示沿用相同叠放顺序和组透明度。此优化不删除对象、不改变选择轮廓或保存内容。
+成叠的普通位图仅在确认前方图片完全不透明、无对象裁剪、轴对齐且覆盖整个下方对象（含边缘余量）时省去被遮住对象的绘制。部分可见的轴对齐图片按露出区域的包围框裁剪纹理，保留原采样级别和滤波边缘余量；区域过于复杂时完整绘制。区域纹理与整图纹理共用原有 GPU 缓存预算，超出容量的区域临时上传，避免依次淘汰整批仍需使用的纹理；区域 CPU 像素也计入原有 CPU 缓存预算。原位半透明提示沿用相同叠放顺序和组透明度。此优化不删除对象、不改变选择轮廓或保存内容。
 
-Stacked ordinary bitmaps omit a covered draw only when proven opaque, unclipped, axis-aligned images in front cover the entire object with an edge margin. Partly visible images still draw in full. Translucent origins retain the same stacking and group opacity. Objects, selection contours and saved content remain intact.
+Stacked ordinary bitmaps omit a covered draw only when proven opaque, unclipped, axis-aligned images in front cover the entire object with an edge margin. Partly visible, axis-aligned images crop textures to the bounding rectangle of exposed regions, preserving the original sampling level and filtering margins; complex region sets retain the full draw. Region and full-image textures share the existing GPU cache budget. Excess regions upload temporarily instead of evicting the entire set of textures still needed by the layer. Cropped CPU pixels share the existing CPU cache budget. Translucent origins retain the same stacking and group opacity. Objects, selection contours and saved content remain intact.
+
+拖动普通图片时，符合条件的固定原位提示缓存为透明的屏幕像素，避免每帧再次渲染整组图片。该缓存最多占用 32 MiB，并计入原有图片 GPU 缓存预算；素材、视图、画布大小或拖动会话变化时重建，结束拖动或重建设备时释放。不支持的组合继续使用原绘制路径。
+
+While dragging ordinary images, eligible frozen origins retain their transparent screen pixels instead of rendering the entire group every frame. This cache is capped at 32 MiB within the existing bitmap GPU cache budget, rebuilds when sources, view, canvas size or drag session change, and releases when the drag ends or the device resets. Unsupported combinations use the original drawing path.
+
+当前工程素材的轻量源图标识与不透明信息随素材对象保留，不因全局缓存超过 512 个记录而丢失；每帧仍校验文件元数据和导入设置，关闭或替换工程后可回收这些记录，不额外保留完整 CPU 像素。
+
+Lightweight source identities and opacity information follow live project assets instead of disappearing when the global cache exceeds 512 records. File metadata and import settings are still validated each paint. Closing or replacing a project allows these records to be collected without retaining full CPU pixel buffers.
+
+放大查看大量图片时，图片遮挡判断先限制到实际视口；图层内容高亮只提交视口外保留描边余量后的线段，保留每个对象的颜色、透明度、轮廓和叠放顺序。高亮缓存随视图变化重建，避免平移后缺边。150 FPS 仍须按具体工程、缩放、分辨率及平均/P95/最大帧耗时验证。
+
+When zooming into many images, bitmap occlusion is limited to the actual viewport. Layer highlights submit segments within a padded viewport while preserving each object's color, opacity, contours and drawing order. Highlight caches rebuild when the view changes so panning does not leave newly visible edges missing. The 150 FPS target still requires validation against the actual project, zoom, resolution and average/P95/maximum frame times.
+
+大型像素场景连续滚动缩放时，符合条件的位图图层复用逐块绘制指令。缩放停稳后按当前比例重新绘制，校正最近邻采样的像素边缘。
+
+During continuous wheel zoom in large pixel-art scenes, eligible bitmap layers reuse per-image draw commands. When zoom settles, the stage redraws at the current scale to resolve nearest-neighbor sampling at pixel edges.
 
 镜头工作区的“相机视图”和“锁定相机”在硬件可用、场景效果受支持时直接使用 Direct2D/GPU 绘制指令，避免每帧通过 GDI 录制位图、CPU 合成并整帧上传。镜头旋转、微动、视差、遮罩与场景背景沿用同一相机计算；需要软件合成的效果或设备不可用时仍走原有回退。180 FPS 是每帧约 5.56 ms 的性能验收目标，不是所有工程和硬件的保证值；应同时核对实际内容、视口、平均、P95 和最大耗时。
 
@@ -368,7 +456,7 @@ While scrubbing the playhead, the Stage, camera settings and micro-motion contin
 
 Dragging to a new timeline frame presents that Stage frame directly instead of waiting for a later idle paint. Holding the same frame does not trigger repeated painting to inflate the FPS counter. The bottom frame readout remains live in an independently painted region sized for the current timeline, avoiding per-frame status-bar layout. Horizontal playhead following repaints the frame grid, ruler and scrollbar rather than pinned layer names and tools. Validation covers bitmap scenes with camera motion/micro-motion and stationary artwork separately. The 120 FPS acceptance budget is approximately 8.33 ms for the complete frame transition; the existing strict 180 FPS check remains available. These targets are not achieved-performance guarantees for every project, input device or computer.
 
-Use **File → Canvas & background…** from the traditional horizontal top-left menu, or **Canvas & background…** in document information, to configure the active scene. Top-level menu labels use smaller regular type and subdued text, with a subtle neutral hover/selection surface and no bright text change. High-contrast mode uses system selection colours. The menu bar contains six categories: File, Edit, View, Insert, Control and Help. Edit includes transforms and settings, Insert includes text and imports, and View includes panels and hierarchy. Canvas sizes and transparent/solid/image backgrounds are scene-owned and travel with saved projects. Presets, locked dimensions, proportional image sizing, fit modes, alignment, opacity and canvas-pixel offsets do not rescale artwork or rewrite animation. Applying commits once; Cancel leaves the project unchanged. The empty-scene guide dismisses on actual work or **Start creating**, while settings remain available. Editor checkerboards, outside dimming and borders stay out of camera previews; symbol SVG exports remain transparent and do not acquire scene backgrounds. Canvas settings support undo and redo without taking shortcuts away from text editors.
+Use **File → Canvas & background…** from the top menu, or **Canvas & background…** in document information, to configure the active scene. Top-level menus use compact labels and a neutral hover surface; high-contrast mode uses system selection colours. Edit includes transforms and settings, Insert includes text and imports, and View includes panels and hierarchy. Canvas sizes and transparent/solid/image backgrounds are scene-owned and travel with saved projects. Presets, locked dimensions, proportional image sizing, fit modes, alignment, opacity and canvas-pixel offsets do not rescale artwork or rewrite animation. Applying commits once; Cancel leaves the project unchanged. The empty-scene guide dismisses on actual work or **Start creating**, while settings remain available. Editor checkerboards, outside dimming and borders stay out of camera previews; symbol SVG exports remain transparent and do not acquire scene backgrounds. Canvas settings support undo and redo without taking shortcuts away from text editors.
 
 Preset cards show their names, dimensions and aspect-ratio illustrations. Color buttons include swatches, with a checkerboard for transparency, in both square and subtly rounded interface styles. Common canvas and background choices appear first; Advanced settings starts collapsed and contains opacity, proportional image sizing, offsets, alignment, source details and outside dimming. Collapsing never resets values, and the preview and action footer stay separate from the scrolling settings.
 
@@ -452,7 +540,7 @@ Switching scene dimensions rebuilds the current composition and rebinds the appr
 - `Simple Pen`：逐段绘制二次贝塞尔曲线，使用一个控制点调整曲率。
 - `Pencil`：生成开放描边，使用 `Stroke` 材质；激活后可在右侧 `Pencil` 面板把 `Smoothing` 调整为 `0–100%`，数值越高，拖动预览和最终路径越平滑，并会在误差允许范围内使用更少的贝塞尔曲线段。绘制后切换到 `Select`，将指针移到目标曲线段即可显示该段的贝塞尔锚点与控制柄。
 - `Brush`：生成闭合填色轮廓，使用 `Fill` 材质。
-- `Pressure Brush`：使用数位笔压力；鼠标输入时根据速度与停留时间模拟压力。
+- `Pressure Brush`：使用数位笔压力；鼠标按满压力绘制，可用速度和锥度参数调节粗细。
 - `Mixing Brush`：以当前 `Fill` 颜色作为载色，沿笔迹拾取活动图层中的已有填色；可选择光学混色或颜料混色。
 - `Text`：单击舞台创建文本，双击已有文本再次编辑；`Ctrl+Enter` 提交，`Esc` 取消。
 - `Fill`：修改对象填色；点击活动图层当前 Cel 中由描边和已有填色边缘共同围成的空白区域可创建填色，其他图层的边缘不会参与边界计算。按住 `Alt` 时临时切换为吸管，可吸取对象的渐变色（含各色标位置）与 alpha 通道，松开 `Alt` 立即回到填色；吸取后仍处于填充工具，点按即可用吸取的材质继续填色。
@@ -472,6 +560,25 @@ Switching scene dimensions rebuilds the current composition and rebinds the appr
 - 拖动期间显示半透明预览，通常在松开鼠标时才正式写入工程；按 `Esc` 可取消尚未提交的操作。
 - 调整混色笔刷参数后可直接在舞台落笔；开始笔触时舞台会重新接管键盘焦点，松手提交后可立即按 `Ctrl+Z` 撤销该笔区域。
 
+### Pressure Brush 参数 / Pressure Brush options
+
+压感笔刷的工具页参考 AN 截图，按以下顺序提供参数；大小和其他参数独立于普通笔刷，工具切换后保留本次会话设置。新笔触默认连续绘制，沿用颜色／透明度、撤销和闭合 Path 存储流程。
+
+| 参数 / Option | 范围 / Range | 默认 / Default | 行为 |
+| --- | --- | --- | --- |
+| 大小 / Size | 0.1–128 pt | 10 | 笔尖直径 |
+| 稳定器 / Stabilizer | 0–100 | 0 | 拖后笔尖以抑制抖动；0 跟随指针 |
+| 曲线平滑 / Curve smoothing | 0–100 | 100 | 平滑轨迹与宽度；越高保留越少的细节 |
+| 圆度 / Roundness | 1–100 | 100 | 椭圆短轴与直径的百分比；100 为正圆 |
+| 角度 / Tip angle | 0–180° | 90 | 旋转椭圆笔尖；正圆外观不随角度变化 |
+| 锥度 / Taper | 0–100 | 0 | 控制笔触首尾渐细的距离；0 不添加锥度 |
+| 速度 / Velocity | −100–100 | 0 | 正值使快速笔触更细，负值使其更粗；0 不受速度影响 |
+| 压力 / Pressure | 0–100 | 100 | 数位笔压力对粗细的影响；0 为恒定压力，鼠标视为满压力 |
+
+Pressure Brush has independent session settings in the order shown above. Size starts at 10 pt. Stabilizer introduces a distance-based pointer lag; curve smoothing filters position and width. Roundness and angle shape an elliptical tip. Taper narrows both ends of the stroke; only the tail within the taper distance is updated as the stroke grows. Positive velocity makes faster strokes thinner and negative velocity makes them thicker. Pressure controls tablet influence; a mouse uses full pressure. Preview and commit share the same width processing. These parameter semantics are this engine's implementation, not a claim of identical AN algorithms. Preset management and the reference's stage/instance scaling toggles are not included.
+
+截图中的预设管理、随舞台缩放和元件实例缩放选项暂未加入；参数效果为本引擎的实现，不表示与 AN 内部算法完全一致。
+
 ### Mixing Brush 参数与行为
 
 - `Mode`：`Optical` 在线性光 RGB 空间混合，并以可累积覆盖率沉积，同色反复涂抹会逐步增加色彩密度；`Pigment` 持续保存 Kubelka-Munk 颜料吸收状态，纯色和同色混合保持当前 `Fill` 色值，跨越不同底色时逐点计算连续过渡色，互补色混合会更暗。
@@ -489,9 +596,9 @@ Switching scene dimensions rebuilds the current composition and rebinds the appr
 - Select 或 Free Transform 只选择实际命中的连通岛；`Shift` 可追加。移动、变形、删除或局部框选时会拆出所选岛，未选岛保持不变，操作仍可一次撤销。
 - Eraser 在启用 `Fill` 擦除时直接裁切区域网格，并把不再连接的剩余部分拆成独立区域。旧工程中的轨迹式 Mixing Brush 数据仍可读取和渲染。
 
-Brush 与 Pressure Brush 共用笔尖面板的 `Smooth`（0–100%，默认 70%），适用于软圆、传统和导入笔尖。百分比范围保持不变，内部平滑尺度扩大为原来的 3 倍：轨迹和轮廓允许更大的曲线拟合误差，压感笔刷同时扩大轨迹和宽度的局部平滑范围。较高数值在误差范围内减少可编辑贝塞尔段，而不只是防抖；0 保留更多手绘细节。连续模式沿拟合轨迹扫掠笔尖，圆形、椭圆形和形状笔尖不再依靠稀疏独立印章拼接；方形笔尖自身的真实角点仍保留。
+普通 Brush 使用笔尖面板的 `Smooth`（0–100%，默认 70%），适用于软圆、传统和导入笔尖。Pressure Brush 使用独立的“曲线平滑”（默认 100%）和圆形／椭圆形笔尖。百分比范围保持不变，内部平滑尺度扩大为原来的 3 倍：轨迹和轮廓允许更大的曲线拟合误差，压感笔刷同时扩大轨迹和宽度的局部平滑范围。较高数值在误差范围内减少可编辑贝塞尔段，而不只是防抖；0 保留更多手绘细节。连续模式沿拟合轨迹扫掠笔尖，圆形、椭圆形和形状笔尖不再依靠稀疏独立印章拼接；方形笔尖自身的真实角点仍保留。
 
-Brush and Pressure Brush share the tip panel's `Smooth` control (0–100%, default 70%) for soft round, traditional, and imported tips. The percentage range stays the same while the internal smoothing scale is tripled, allowing larger trajectory and outline fitting tolerances and widening the pressure brush's local position and width smoothing window. Higher values fit fewer editable Bezier segments within a bounded error rather than only stabilizing the pointer; zero retains more gesture detail. Continuous mode sweeps the tip along a fitted trajectory instead of joining sparse stamps. Real corners of a square tip remain intentional.
+Brush uses the tip panel's `Smooth` control (0–100%, default 70%) for soft round, traditional, and imported tips. Pressure Brush has independent curve smoothing (default 100%) and a round/elliptical tip. The percentage range stays the same while the internal smoothing scale is tripled, allowing larger trajectory and outline fitting tolerances and widening the pressure brush's local position and width smoothing window. Higher values fit fewer editable Bezier segments within a bounded error rather than only stabilizing the pointer; zero retains more gesture detail. Continuous mode sweeps the tip along a fitted trajectory instead of joining sparse stamps. Real corners of a square tip remain intentional.
 
 普通笔刷在贝塞尔拟合前也使用有界邻域平滑，减少相邻点混合难以消除的连续抖动。平滑开启时，闭合轮廓会在拟合误差允许范围内对齐接头两侧的控制柄方向，减少分段连接的小折角；真实角点、笔触端点及孔洞/岛屿检查仍保留。0% 不启用新增的邻域平滑和接头调整。
 
@@ -501,9 +608,21 @@ The ordinary brush also applies bounded neighborhood smoothing before Bezier fit
 
 Previews retain the complete trajectory and pressure without selecting a fixed sample count over the growing stroke; updates are throttled. Both renderers reuse the existing preview and editable Path/Bezier fill interfaces, including soft-layer opacity. Turning `Continuous` off keeps separate stamps with spacing controlled by `Freq`.
 
-压感笔刷持续绘画时，轨迹和宽度按相邻采样局部平滑，不再按不断变化的整笔总长度重新分配压力；已经稳定的笔迹不会随新采样来回摆动。平滑只重算笔尖附近的有界影响范围：100% 时最多 24 个采样（原来最多 8 个），并保留当前笔尖端点。较高平滑值会让可调整的笔尖尾段更长。形状笔尖的未稳定尾段会替换旧预览，而不是叠加旧宽度；松笔使用相同的压力和平滑流程，不改写既有图形或底层绘制后端。
+压感笔刷持续绘画时，轨迹和宽度按相邻采样局部平滑，不再按不断变化的整笔总长度重新分配压力；已经稳定的笔迹不会随新采样来回摆动。平滑只重算笔尖附近的有界影响范围：100% 时最多 24 个采样（原来最多 8 个），并保留当前笔尖端点。启用锥度时，首尾渐细另按笔尖尺寸和锥度比例计算，尾部未稳定范围还包含该渐细距离。较高平滑值会让可调整的笔尖尾段更长。形状笔尖的未稳定尾段会替换旧预览，而不是叠加旧宽度；松笔使用相同的压力和平滑流程，不改写既有图形或底层绘制后端。
 
-Continuous pressure strokes smooth positions and widths locally without redistributing pressure over the changing total stroke length. Completed samples stay fixed; only the tip's bounded smoothing neighborhood can change (up to 24 samples of look-ahead at 100%, previously eight). Higher smoothing values leave a longer mutable tail. Shape-tip previews replace their mutable tail instead of accumulating obsolete widths, and committed strokes use the same pressure processing. Existing artwork and render backends are unchanged.
+Continuous pressure strokes smooth positions and widths locally without redistributing pressure over the changing total stroke length. Completed samples stay fixed; only the tip's bounded smoothing neighborhood can change (up to 24 samples of look-ahead at 100%, previously eight). With taper enabled, the mutable tail additionally includes its diameter-based taper distance. Higher smoothing values leave a longer mutable tail. Shape-tip previews replace their mutable tail instead of accumulating obsolete widths, and committed strokes use the same pressure processing. Existing artwork and render backends are unchanged.
+
+压感笔刷保留鼠标或数位笔的真实输入节点，不先把相邻输入拆成每隔约 2 像素的直线点。平滑以屏幕距离限制邻域，开启时在压力节点之间使用共享切线的曲线插值。渐变笔迹保留原有轮廓预览流程。
+
+Pressure Brush retains real mouse or pen input knots rather than inserting points every two pixels along straight event chords. Smoothing uses screen-distance limits and shared-tangent interpolation. Gradient strokes retain their existing contour preview.
+
+压感笔的纯色实时笔迹使用独立增量预览：已完成段保留，活动尾段替换，Direct2D 复用已完成段几何；GDI 使用相同曲线与非零绕组规则。整笔以一次填充显示，半透明笔迹的重叠段不会重复叠加透明度。松笔时才把显示曲线合并为可编辑路径。渐变笔迹保留原有预览流程。曲线插值与轮廓重建使用屏幕距离容差；这不是对 Adobe Animate 内部算法的完整复制，实际手写效果仍须结合输入设备与缩放检查。
+
+Solid Pressure Brush ink uses an incremental preview with retained completed pieces and a replaceable tail. Direct2D reuses completed geometries; GDI draws the same curves with nonzero winding. One fill per stroke avoids repeated alpha accumulation at overlaps. Editable paths are extracted from the displayed curves on release. Gradient strokes retain their existing preview flow. Screen-space tolerances govern interpolation and contour construction; this is not a complete reproduction of Adobe Animate, and device/zoom behavior requires visual verification.
+
+松笔时补齐尚未显示的末尾输入，从显示曲线提取可编辑边界并保留颜色；输入几何未变时实时预览直接复用已有结果。对象绘制、颜色渐变、与已有填色合并及一次撤销沿用原流程。
+
+On release, pending input is completed and editable boundaries are extracted from the displayed curves while preserving color. Unchanged input reuses its live preview. Object drawing, gradients, merging with existing paint and single-step undo retain their existing workflows.
 
 Brush 和 Pressure Brush 仍保存为闭合 Path 填色。普通同色笔刷填色相交或边界距离小于 `10 vu` 时可能自动合并；未接触的岛屿之间不会自动补成填色。
 
@@ -513,12 +632,20 @@ Brush 和 Pressure Brush 仍保存为闭合 Path 填色。普通同色笔刷填�
 
 In the top toolbar, this toggle is labeled **Object Drawing**; the adjacent **Vault** button opens the asset library. They are separate controls.
 
-- 绘图工具栏的 `Object Drawing` 是模式开关，默认关闭。开启后，形状、Line、Pencil、Brush、Pressure Brush 和 Mixing Brush 每次提交生成一个独立元件实例；软边笔刷的多层轮廓整体属于同一对象，不会裁掉或合并宿主原有图形。Pen / Simple Pen 在闭合、双击、右键或结束路径时把本条路径的所有已提交曲线段组成一个对象，而不是每段一个对象。
-- 用箭头工具整体选择、移动对象，双击按现有元件编辑设置进入内部编辑；内部仍使用原有绘图和拓扑工具。一次 `Ctrl+Z` 撤销整次创建。沿用现有工程格式保存元件、实例、位置和 Cel 曝光，不改变旧工程格式；通用绘图重做及跨元件切换历史不由此开关扩展。
+- 绘图工具栏的 `Object Drawing` 是模式开关，默认关闭。开启后，形状、Line、Pencil、Brush、Pressure Brush 和 Mixing Brush 每次提交生成一个独立组，组不显示在 Vault 中；软边笔刷的多层轮廓整体属于同一组，不会裁掉或合并宿主原有图形。Pen / Simple Pen 在闭合、双击、右键或结束路径时把本条路径的所有已提交曲线段组成一个组，而不是每段一个组。
+- 用箭头工具整体选择、移动和变形组，双击按现有元件编辑设置进入内部编辑；内部仍使用原有绘图和拓扑工具，`PageUp` 返回上层。一次 `Ctrl+Z` 撤销整次创建。复制／粘贴组或复制包含组的元件时，组内内容独立复制，编辑副本不修改原组。沿用现有工程格式保存组类型、内容、位置和 Cel 曝光；通用绘图重做及跨编辑上下文的历史不由此开关扩展。
 - 支持 `Current` 和场景二维绘图层；不用于遮罩、碰撞地形、文字/填充改色、橡皮擦或已有几何编辑。`Open` 范围不承载嵌套实例：在 Open 点击此按钮会明确切回 Current 并开启对象绘制，不移动 Open 的既有内容。关闭开关仅影响之后的绘制，不转换现有对象。
 - 新对象遵循当前实例层序规则，后画的实例位于先画的实例上方；宿主原始图形与实例之间仍沿用现有组合顺序，不引入任意混排的新渲染机制。
 
-`Object Drawing` defaults to off. In Current scope or a scene's 2D drawing layer, each shape, line, pencil or brush gesture becomes one independent symbol instance; all soft layers stay together. Pen tools collect the complete path before wrapping it. Arrow selection, movement, double-click symbol editing, single-step creation undo and Save/Open reuse existing symbol behavior. Open scope switches explicitly to Current without moving its contents. Masks, collision terrain, text/fill editing and erasing are not wrapped; raw geometry and instances retain their established composition order.
+`Object Drawing` defaults to off. In Current scope or a scene's 2D drawing layer, each shape, line, pencil or brush gesture becomes one independent group hidden from the Vault; all soft layers stay together. Pen tools collect the complete path before wrapping it. Groups support selection, movement, transforms, double-click editing (following the symbol-edit preference), PageUp to return, single-step creation undo and Save/Open. Copying or pasting a group, or copying a symbol that contains groups, copies private group contents independently. Open scope switches explicitly to Current without moving its contents. Masks, collision terrain, text/fill editing and erasing are not wrapped; raw geometry and instances retain their established composition order.
+
+在舞台右键菜单或编辑菜单选择 `Group / 组`（`Ctrl+G`），可将同一未锁定绘图层顶部连续选中的绘制形状成组，不询问元件名称、不加入素材库。此入口当前不接受元件／组实例与形状混选，也不支持跨层或实例成组；它沿用现有绘制对象与实例的叠放契约。`Convert to Symbol / 转换为元件` 仍用于创建可复用的库元件。
+
+`Group` (`Ctrl+G`), available from the stage context menu and Edit menu, wraps a continuous topmost selection of drawing shapes from one unlocked drawing layer without a name dialog or a Vault entry. Instance grouping, mixed shape/instance selections and cross-layer selections are not supported by this command. `Convert to Symbol` continues to create reusable library symbols.
+
+`Break Apart / 打散`（`Ctrl+B`）将组或元件当前帧的可见内容转换为本地几何；产出的矢量不再随原组或库元件编辑而变化。为保留动画，其他帧的原实例／库引用可能保留；这不是整段动画脱离库的命令。位图打散仍复用图片素材作为纹理，不意味着删除或内嵌图片依赖。含遮罩、图层特效、滤镜或不支持内容的实例会拒绝打散并保留原内容。
+
+`Break Apart` (`Ctrl+B`) materializes the visible current-frame contents of a group or symbol as local geometry. Resulting vectors no longer follow edits to the original group or library symbol. Other frames may retain the original instance and library references to preserve animation. Bitmap fills retain their image texture assets. Unsupported masks, effects, filters or contents prevent conversion without removing the original artwork.
 
 ### 吸附与绘制设置
 
@@ -770,7 +897,13 @@ Lab 模式提供可按 0.1 步进编辑的 `L*`（0 到 100）、`a*` 和 `b*`�
 
 时间轴顶部的 TabGroup 标签采用与着色面板一致的分段切换样式：标签按文字宽度紧凑排列，图层、地形及自定义时间轴组标签使用较小字号与较矮的标签高度，全部标签保持原有字号与尺寸，文字居中，选中项使用主题实色底并贴齐下沿、底部保持平直，未选中项融入面板背景，悬停时高亮；高对比度模式保留系统描边与颜色。标签按组筛选图层列表：`Layers` 收纳普通图层，`Terrain` 收纳碰撞地形，`All` 显示全部图层。切换标签只改变时间轴中的显示，不改变舞台渲染、图层可见性、遮罩关系或动画播放。可以创建自定义组、重命名组，并通过图层右键菜单将所选图层分配到组；删除自定义组会把其中的图层移回 `Layers`，保留全部内容。分组编辑支持撤销，分组名称、归属和当前标签随工程保存。
 
-新增分组的 `+` 按钮跟随在最后一个可见分组标签后，设置齿轮固定在标签栏最右侧。点击设置按钮，或在标签右键/溢出菜单选择“图层分组排序”，可打开排序设置窗口。窗口只保留一条排序标签带：越左位于底层，越右位于上层。标签只显示名称，悬浮提示显示序号和组内图层；左右拖拽或使用 `Ctrl+左/右方向键` 调整层级。点击“确定”后同步修改“全部”列表及舞台前后遮挡顺序，组内保留原图层上下顺序；“取消”或 `Esc` 放弃窗口内的调整。内置普通图层组和地形组也可排序，`All` 仅为视图入口，不参与排序。每个时间轴最多创建 32 个自定义分组（不含两个内置组），达到上限后禁用新增；旧工程已有分组保留，不裁掉内容。
+新增分组的 `+` 按钮跟随在最后一个可见分组标签后，设置齿轮固定在标签栏最右侧。点击设置按钮，或在标签右键/溢出菜单选择“图层分组排序”，可打开排序设置窗口。窗口只保留一条排序标签带：越左位于底层，越右位于上层。排序窗口的标签显示序号、名称和图层数量，悬浮提示显示完整名称和组内图层；左右拖拽或使用 `Ctrl+左/右方向键` 调整层级。点击“确定”后同步修改“全部”列表及舞台前后遮挡顺序，组内保留原图层上下顺序；“取消”或 `Esc` 放弃窗口内的调整。内置普通图层组和地形组也可排序，`All` 仅为视图入口，不参与排序。每个时间轴最多创建 32 个自定义分组（不含两个内置组），达到上限后禁用新增；旧工程已有分组保留，不裁掉内容。
+
+排序窗口采用紧凑布局：排序带显示序号、分组名称和图层数量；也可点击“向左 / 降低”“向右 / 升高”逐级调整，边界位置自动禁用相应按钮。选中分组的名称、数量、管理操作与图层明细集中在下方；空分组显示明确提示。长名称省略显示，悬停查看完整内容。窗口内的修改仍在点击“确定”后统一应用。
+
+分组使用色标、序号、粗体名称与次级数量区分信息，右上角手柄提示可拖拽；选中项使用主题强调色。明细标题右侧集中显示“重命名、删除、颜色、重置”，其中“重置”恢复默认分组颜色，悬停按钮可查看完整说明。按钮提供悬停、按下与键盘焦点反馈，方角／圆角跟随全局外观设置。
+
+The compact group-order dialog shows each group's position, name and layer count, with a color marker and a drag grip. Use **Move left / lower** or **Move right / higher** for precise steps; unavailable directions are disabled. **Rename**, **Delete**, **Color** and **Reset** appear beside the selected group's heading; **Reset** restores the default group color. Buttons show hover, pressed and keyboard focus states and follow the application's corner preference. Changes apply together when you click **OK**.
 
 直接按住时间轴顶部的分组标签左右拖拽，也可调整分组排序。标签只显示名称，悬浮提示显示序号。拖拽标签跟随鼠标，相邻标签让位，高亮竖线标出落点，松开后同步修改“全部”列表和舞台层级；左侧分组更低，右侧分组更高。拖到标签栏边缘可翻动被折叠的标签，按 `Esc`、失去鼠标捕获或在标签栏外松开则取消，普通点击仍切换筛选。`All` 固定且不可拖动。
 
@@ -901,9 +1034,16 @@ Selecting a layer in the timeline layer list automatically outlines that layer's
 
 - 播放头：竖线表示当前帧，颜色跟随个性化中的强调色，顶部手柄与旁边的小标签使用同一强调色，标签文字自动选择可读的深色或浅色；高对比度模式下改用系统高亮色。没有帧选区时，当前编辑图层的帧格加亮显示。点击图层名称会清除原有帧选区，高亮编辑格立即跟随选中的图层；在帧网格中使用 `Ctrl`、`Shift` 仍可追加或扩展跨层帧选区。拖动帧选区越过网格左右或上下边缘时，时间轴会持续滚动，便于跨越多屏帧或大量图层；指针离边缘越远，滚动越快。拖动选区边缘的缩放手柄时按整帧对齐，指针移动一格即增减一帧。
 - 实心关键帧：该 Cel 有内容。
-- 空心关键帧：该 Cel 为空。
+- 厚边空心关键帧：该 Cel 为空；外形与实心关键帧一致，均在帧格中居中。
+- 普通内容轨道的空白曝光仅保留浅淡底带与厚边空心标记，不叠加白色底线或段尾短线。
 - 曝光：从一个关键帧保持到下一个关键帧之前的区间。
 - Cel：某个绘制图层在某个关键帧拥有的独立内容。
+
+移动已有关键帧时，原位置移除该关键帧，由前一个未移动的关键帧继续曝光，不会逐格补成空白关键帧。例如五个连续关键帧中，将后三个向右移开，中间间隔保持第二个关键帧的内容。首帧仍保留必要的空白关键帧；移动普通保持帧单元和缩放选区沿用原有行为，整次拖动只需撤销一次。
+
+Blank keyframes use the same centered silhouette as populated keys, with a thick outline and an open center. Moving existing keys removes their original keys and lets the preceding unmoved key hold through the gap instead of inserting blank keys in every vacated cell. For example, moving the last three of five consecutive keys to the right extends the second key through the gap. Frame zero retains its required blank key. Moving held frame cells and scaling keep their existing behavior; the drag remains one undo step.
+
+Blank exposures on ordinary content tracks use only the faint band and thick outlined key marker, without an additional white baseline or end cap.
 
 图层名称可上下拖动以调整叠放顺序，拖到图层列表上下边缘时视窗会自动滚动；上方图层覆盖下方图层。编辑元件时，本地绘制和嵌套元件共同遵循所属图层的顺序；同一图层中元件显示在本地绘制之上，点击及双击也优先命中可见的上层元件。该规则在元件编辑和场景组合中保持一致。
 
@@ -1180,7 +1320,7 @@ The shot preview display clock limits refresh dispatch and leaves time for UI ev
 时间轴左侧标题图标使用随工具栏背景变化的柔和线条颜色，并保留可辨识的对比度。
 左侧标题图标、图层操作（文件夹／新增／父子关系）、独显与全部之间使用上下留白的短竖分割线，组间保留间距。元件／场景名称及当前帧／末帧移至底部状态栏，位于缩放之后、模块重载提示之前，随当前时间轴上下文和帧号更新。
 
-时间轴的独显按钮使用居中的单图层，右下角带眼睛图标，全部按钮使用叠层右下角带眼睛图标，悬停显示原有操作提示。工具栏文件夹、新增、父子关系和自动关键帧采用线性图标，按钮命中区域保持原有大小。界面自绘控件统一移除虚线焦点框，键盘焦点改为短实线提示；时间轴图标保持线性轮廓，不添加内部半透明填色，按钮仅在悬停与选中时显示胶囊底色，键盘操作保持可用。时间轴操作图标的线条粗度和选中圆角底色统一对齐洋葱皮；独显／全部高亮互斥，单图层时按最近一次独显／全部操作区分；其他情况反映实际可见状态，父子关系高亮反映开关状态，新增／文件夹仅在交互时显示底色。左侧操作图标缩为统一紧凑尺寸，独显／全部按钮宽度和组间距同步收紧，保留悬停提示。顶部动画帧率标签完整显示 FPS，数值显示一位小数，采用辅助文字颜色；时间轴新增、独显及帧格控件的中文说明补齐。时间轴工具栏采用 48 逻辑像素高度，图标、输入框和文字垂直居中。中间集中显示自动关键帧、运动轨、洋葱皮与前后范围输入，整组随窗口宽度居中；图层操作保留在左侧，播放时间保留在右侧可用空间。动画开关与范围输入之间、整组两侧使用较短、柔和的细竖分割线，线与控件之间保留留白；图标之间和前后范围之间保持适度间距。
+时间轴的独显按钮使用居中的单图层，右下角带眼睛图标，全部按钮使用叠层右下角带眼睛图标，悬停显示原有操作提示。独显按钮左侧新增“仅解锁选中的图层”按钮，图标为单图层加打开的锁；点击后选中图层及其父文件夹保持解锁，其余图层全部锁定，选中状态与独显按钮一样随实际锁定状态高亮。工具栏文件夹、新增、父子关系和自动关键帧采用线性图标，按钮命中区域保持原有大小。界面自绘控件统一移除虚线焦点框，键盘焦点改为短实线提示；时间轴图标保持线性轮廓，不添加内部半透明填色，按钮仅在悬停与选中时显示胶囊底色，键盘操作保持可用。时间轴操作图标的线条粗度和选中圆角底色统一对齐洋葱皮；独显／全部高亮互斥，单图层时按最近一次独显／全部操作区分；其他情况反映实际可见状态，父子关系高亮反映开关状态，新增／文件夹仅在交互时显示底色。左侧操作图标缩为统一紧凑尺寸，独显／全部按钮宽度和组间距同步收紧，保留悬停提示。顶部动画帧率标签完整显示 FPS，数值显示一位小数，采用辅助文字颜色；时间轴新增、独显及帧格控件的中文说明补齐。时间轴工具栏采用 48 逻辑像素高度，图标、输入框和文字垂直居中。中间集中显示自动关键帧、运动轨、洋葱皮与前后范围输入，整组随窗口宽度居中；图层操作保留在左侧，播放时间保留在右侧可用空间。动画开关与范围输入之间、整组两侧使用较短、柔和的细竖分割线，线与控件之间保留留白；图标之间和前后范围之间保持适度间距。
 
 洋葱皮与运动轨使用加粗的统一矢量线稿，图标保持居中；洋葱皮双层方框逆时针旋转 45° 呈菱形，避免与复制图标混淆。运动轨不再经过位图缩放与横向压缩。两个图标紧凑排列，开启时图标背后显示中性灰色圆角方块底色，图标保持清晰的前景色；关闭时底色消失，不显示下划线或额外边框。保留原有点击区域和图标位置，顶部高度调整条不穿过图标区域。
 
@@ -1420,10 +1560,22 @@ Instance playback FPS, mode, hold frame and opacity identify mixed selections se
 
 元件入口的开放／当前滑块仅按开放／当前文字和图标确定紧凑宽度，较长元件名称以省略号显示，滑块显示软件图标，目前仅提供 UI 状态切换；切到当前约两秒后显示当前元件名称，不改变编辑范围或添加元件逻辑。
 
+2D 舞台批量移动图片时，会在当前绘制帧内复用素材查找结果和遮挡计算缓冲区；多个不相交的可见矩形使用独立裁剪，保持图片透明度、层级和移动原位反馈。每帧结束后释放素材查找索引，后续替换、删除、撤销和切换工程按最新素材绘制。实际帧率仍取决于视口、缩放、可见图片面积和显卡；缩小到全图与放大局部的性能可能不同。
+
+During bulk image movement on the 2D stage, asset lookup results and occlusion buffers are reused within each paint. Disjoint visible rectangles use individual clips while preserving alpha, stacking and origin feedback. The asset index is cleared after each paint so replacements, deletions, Undo and project switches use current assets. Frame rate depends on viewport size, zoom, visible image area and GPU; a full-artwork view can be slower than a zoomed detail view.
+
+普通 2D 图片场景缩放或平移时，未变化的世界坐标高亮遮挡结果会复用；图片位置、可见性、透明度、来源或图层状态变化后重新计算。屏幕线宽和视口裁剪仍按当前缩放更新。较大图片场景在每个绘制帧内统一查询托管目录的文件元数据，下一帧重新校验，不跨帧保留文件有效性判断。
+
+For ordinary 2D bitmap scenes, zooming and panning reuse unchanged world-space highlight occlusion. Position, visibility, opacity, source or layer changes invalidate that result; screen stroke widths and viewport clipping still follow the current zoom. Larger image scenes batch managed-file metadata checks within each paint and validate again on the next frame.
+
 ### Vault
 
 左侧工具栏的 Vault 打开项目素材库。面板标题沿用右侧检查器页脚的 8.5pt 常规字重，去除副标题文案，并配合数量徽标、图标分类导航，以及 26 逻辑像素高的紧凑素材行（比时间轴默认图层行高 5 像素）：左侧显示素材真实内容的缩略图与名称，右侧显示元件帧数、图片尺寸、SVG 类型或文件夹内当前列出的项目数；元件缩略图显示当前帧内容，图片和 SVG 显示素材原貌；空内容或不可用内容保留状态图标。失效素材显示警告状态，已分配的标签保留颜色标记。卡片具有独立的悬停、选中和键盘焦点反馈，底部显示筛选后的素材数量与拖放提示。搜索框、标签筛选与右侧标签管理入口集中在分类下方；右上角保留新建／导入和打开／放置操作。文件夹展开、Ctrl／Shift 多选、拖放、悬停预览与右键操作沿用原有行为。颜色与边角随主题及直角／微圆角偏好变化。
 The Vault panel uses a muted heading, consistent category buttons and compact themed search/tag filters. Asset rows are 26 logical pixels tall, five pixels taller than default timeline layer rows; actual-content thumbnails, names and metadata share one line. Symbols show their current-frame content, while images and SVGs show their source appearance. Empty or unavailable content retains a status icon. The tag icon manages tags for the selected asset; controls follow the theme and corner preference.
+
+图片列表缩略图在后台按当前可见行逐张生成；尚未就绪时先显示图片图标，完成后自动补齐。快速滚动会丢弃已离开视口的待处理请求。小尺寸缩略图使用独立缓存，返回已浏览区域或重新筛选时复用，不占用舞台的原图纹理缓存；更换工程或修改素材后更新。缩略图保留裁剪、翻转、透明度和采样设置。
+
+Image row thumbnails load one at a time in the background for the visible viewport. Pending rows show an image icon and update when ready; fast scrolling discards queued requests that leave the viewport. A separate small-image cache supports return scrolling and filtering without evicting stage textures. Switching projects or editing assets refreshes thumbnails, preserving crop, flip, alpha and sampling settings.
 
 元件、图片与 SVG 素材均可重命名、分配目录及标签，并参与名称／标签筛选。素材列表用 `Ctrl` 追加选择、`Shift` 选择范围，右键已选行保留多选；普通刷新保留多选、展开目录及浏览位置。列表获得焦点时 `F2` 重命名，`Delete` 删除所选。复制、删除、移动目录与设置标签支持整批操作；批量标签窗口明确用勾选结果替换所有选中素材的标签。目录删除只将其素材和子目录提升到父目录，不删除素材；删除素材会先列明实例、放置关键帧及图片背景的影响，确认后作为一次可撤销操作，移除背景仍保留画布尺寸。至少保留一个普通元件。
 
@@ -1498,6 +1650,10 @@ Converting content to a symbol preserves asset references, as does duplicating a
 
 ### 导入图片
 
+对象选中或图层内容高亮时，轮廓随对象堆叠关系裁切：上方不透明填色和已确认不透明的位图会遮挡下方轮廓。此规则也适用于矢量形状、路径、线条、文字和 SVG 的高亮框；透明内容和复合填色的孔洞保留可见反馈。遮挡只影响编辑提示，不删除或修改对象几何。
+
+Selection and layer-content highlights follow object stacking: opaque fills and proven opaque bitmaps hide outlines beneath them, including vector, path, line, text and SVG highlights. Transparent content and compound-fill holes preserve visible feedback; clipping affects editor feedback only.
+
 剪贴板图片按像素内容去重（含尺寸、颜色与透明度）：相同图片再次粘贴只新增放置对象，复用 Vault 中已有素材及其导入设置，不重复导入或创建缓存源文件。保存重开后也会检查现有素材；内容发生变化的图片会作为新素材导入。
 
 从截图工具或其他软件复制图片后，在 Basic Drawing（或场景遮罩的绘图层）按 Ctrl+V，可直接粘贴到当前选中的可编辑绘图层。图片中心对齐当前舞台视图的正中心，平移或缩放视图后仍按当前视角定位；时间轴聚焦时也支持。粘贴无需导入设置确认，保留 PNG 剪贴板内容的透明度，图片自动选中，并加入 Vault 的图片分类。Ctrl+Z 撤销此次放置，素材仍可在 Vault 中复用。保存后图片进入工程托管目录；保存前由本地图片缓存保留，支持编辑器重启。文本输入框继续使用文本粘贴；在软件内复制对象或 Cel 后，粘贴优先使用刚复制的内容，直到系统剪贴板被更新。
@@ -1508,17 +1664,23 @@ Converting content to a symbol preserves asset references, as does duplicating a
 
 在主菜单选择 `Import Image...`，或在 Vault 的 `图片` 分类中点击添加按钮，可一次多选图片导入素材库；也可把单张图片直接拖到 Basic Drawing 舞台的一个位置放下，或把一批图片拖入素材库的资产列表区域。支持 `PNG`、`JPEG`、`BMP`、`GIF`、`TIFF` 和 `WebP`。
 
-批量导入会先读取有效文件，再统一确认设置，最后写入素材库并把每张成功导入的图片直接放到当前舞台，图片会自动选中，位置默认在当前舞台视图中心。独立进度窗口分别显示读取／写入阶段的已处理数量、总数与百分比；当前行显示文件名，悬停可查看完整路径。点击 `Cancel / 取消`、按 `Esc` 或关闭进度窗口会停止后续导入，已成功导入的素材和舞台对象保留；取消设置对话框也会停止整批导入。重复路径及在预览中移除的图片计为跳过，单个文件失败不会阻止后续文件，结束后统一显示成功、跳过、失败与未处理数量及最多 5 条错误详情。工程图片素材上限仍为 4096 张，导入 3000 张前需确认剩余额度足够。
+批量导入会先读取有效文件，再统一确认设置，最后写入素材库。默认单批不超过 **50 张**时，成功导入的图片还会一起放到当前舞台视图中心并全部选中，舞台放置支持一次撤销；超过 50 张时仅入库，结束提示中会说明。可在 `Settings → Operation preferences / 设置 → 操作偏好` 调整“图片导入自动放置上限”（0–1000，0 表示始终仅入库）。数量以确认设置后保留的有效新文件计算，取消大型批次时已完成的少量图片也不会意外自动上台。独立进度窗口分别显示读取／写入阶段的数量与百分比；`Cancel / 取消`、`Esc` 或关闭窗口会停止后续导入并保留已入库素材，取消设置对话框会停止整批导入。重复路径及预览中移除的图片计为跳过，单个文件失败不会阻止后续文件。工程图片素材上限仍为 4096 张。
+
+Image imports add assets to the library. Batches of at most **50** valid new files also place and select all successful images at the current view center with one placement undo step. Larger batches remain in the library. Change the limit (0–1000; 0 means library only) in **Settings → Operation preferences**. The count is determined after import settings and preview removals; cancelling a large batch does not auto-place its partially completed imports.
+
+在库中用 `Ctrl`／`Shift` 多选图片、SVG 或元件后，可把整组选中项拖到舞台落点，也可使用右键 `Place on Stage / 放置到舞台` 或顶部使用按钮。图片与 SVG 按库中的显示顺序叠放在落点，元件建立引用实例；整个放置操作只需撤销一次，库素材及源文件保留。失效引用、跨工程拖放、循环元件引用和不可编辑的目标会拒绝放置。单项拖放保留原有预览；多项悬停只反馈可放置状态，不提前写入工程。
+
+Ctrl/Shift-select library images, SVG assets or symbols, then drag the selection onto the stage, use **Place on Stage**, or use the top action button. The complete selection is placed at the drop point (view center for commands) with one undo step; library assets and source files remain. Missing references, foreign projects, recursive symbols and unavailable editing targets are rejected. Batch hover reports drop availability without modifying the project.
 
 如果导入图片远大于当前画布，选中舞台上的位图后打开右键菜单，在 `Transform / 变换` 中选择 `Fit Bitmap to Canvas / 位图适应画布`，即可保持比例缩小到画布范围内；操作支持一次撤销。
 
 拖放约定：
 
-- 从主菜单导入或拖入素材库都会在导入素材后直接把成功导入的图片放置到舞台中心；拖入舞台会先导入素材（首次需要确认导入设置），再在落点放置一个位图对象。
+- 从主菜单导入或拖入素材库时，只有不超过自动放置上限的批次才会直接放到舞台中心；单张文件拖入舞台仍先导入素材（首次需要确认导入设置），再在落点放置一个位图对象。
 - 一次拖入多个文件时，素材库会共用第一个文件确认的导入设置，不再为每个文件重复弹出对话框。
 - 同一路径的图片（或同一路径的 SVG 链接）不会重复添加；已经导入过的文件直接复用现有素材。
 - 同一次拖入必须是同一种素材：图片、`.svg` 或 `.V2DSymbol` 各自一批。混入其它类型时整批拒绝，避免只导入选中内容的一部分。
-- 拖入舞台时先显示落点预览，预览使用与实际放置相同的解码尺寸和宽高比；预览来自临时副本，悬停期间不会修改工程，松开鼠标才写入。
+- 单项拖入舞台时先显示落点预览，预览使用与实际放置相同的解码尺寸和宽高比；悬停期间不会修改工程，松开鼠标才写入。
 
 导入窗口默认显示图片预览、文件名和像素尺寸，透明区域使用棋盘格。普通导入可直接点击 `Import / 导入`，之后在舞台上移动、缩放；编辑已有素材时按钮为 `Apply / 应用`。预览在后台加载，切换图片时显示加载提示；无法读取的预览显示明确提示，不会一直停留在加载状态。批量导入可用左右箭头切换大图，点击 `All images / 全部图片` 展开缩略图网格；首次打开时保留当前大图并显示加载数量，首屏缩略图就绪后再切换，不先展示空黑格。准备期间再次点击可取消切换。网格支持滚轮滚动，删除图片后仍可继续滚动。Ctrl 点击切换多选、Shift 点击范围选择；移除按钮仅在缩略图悬浮或获得键盘焦点时显示，使用细线叉号与主题一致的小按钮底板；点击可移除所选图片（至少保留一张），只移出此次导入，不删除源文件。删除后保留当前图片（若仍在批次中）及滚动位置，剩余缩略图补齐空位。
 
@@ -2268,6 +2430,10 @@ Triangle, polygon and star world bounds use their rotated vertices; transform bo
 任意变形工具点击选择与黑箭头使用相同的填充/描边命中单位，Shift 可追加选择。数字键和传统 Flash 内置快捷键方案均提供 V 黑箭头、A 白箭头。
 
 Free Transform uses the same fill/stroke hit selection as Black Arrow, with Shift additive selection. Both built-in shortcut profiles provide V for Black Arrow and A for White Arrow.
+
+自由变换框采用蓝白配色：方形手柄用于缩放，框外圆形手柄用于旋转，菱形手柄用于倾斜，中心圆环十字用于定位变换焦点。辅助连接线淡化，缩放点保持白底蓝边；手柄位置与点击范围不变。仅在支持倾斜的选区显示菱形手柄。
+
+The Free Transform frame uses blue outlines and white grips: squares resize, outer circles rotate, diamonds skew, and the central ring and cross mark the transform pivot. Subtle connectors keep the frame legible; handle positions and hit areas are unchanged. Diamonds appear only for selections that support skew.
 
 无修饰键 V、A 在所有快捷键方案（含旧自定义方案）中分别切换黑箭头、白箭头；文字输入时保留输入行为。
 

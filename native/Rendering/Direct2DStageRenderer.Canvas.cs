@@ -119,6 +119,48 @@ internal sealed partial class Direct2DStageRenderer
             Math.Max(1f, stage.DeviceDpi / 96f));
     }
 
+    private void DrawBlockLayerHighlight(StageControl stage)
+    {
+        var runs = stage.GetBlockLayerHighlightRuns();
+        if (_target is null || runs.Count == 0) return;
+        Span<PointF> corners = stackalloc PointF[4];
+        using var path = _factory!.CreatePathGeometry();
+        using (var sink = path.Open())
+        {
+            sink.SetFillMode(FillMode.Winding);
+            foreach (var run in runs)
+            {
+                if (!stage.TryProjectBlockBounds(run, corners)) continue;
+                sink.BeginFigure(new(corners[0].X, corners[0].Y), FigureBegin.Filled);
+                for (var i = 1; i < corners.Length; i++) sink.AddLine(new(corners[i].X, corners[i].Y));
+                sink.EndFigure(FigureEnd.Closed);
+            }
+            sink.Close();
+        }
+        _target.FillGeometry(path, BrushFor(stage.BlockLayerHighlightColor.ToArgb()));
+    }
+
+    private void DrawBlockChunkEditingMask(StageControl stage)
+    {
+        Span<PointF> corners = stackalloc PointF[4];
+        if (_target is null || !stage.TryGetBlockChunkEditingMask(corners)) return;
+        using var path = _factory!.CreatePathGeometry();
+        using (var sink = path.Open())
+        {
+            sink.SetFillMode(FillMode.Alternate);
+            sink.BeginFigure(Vector2.Zero, FigureBegin.Filled);
+            sink.AddLine(new Vector2(stage.Width, 0));
+            sink.AddLine(new Vector2(stage.Width, stage.Height));
+            sink.AddLine(new Vector2(0, stage.Height));
+            sink.EndFigure(FigureEnd.Closed);
+            sink.BeginFigure(new Vector2(corners[0].X, corners[0].Y), FigureBegin.Filled);
+            for (var i = 1; i < corners.Length; i++) sink.AddLine(new Vector2(corners[i].X, corners[i].Y));
+            sink.EndFigure(FigureEnd.Closed);
+            sink.Close();
+        }
+        _target.FillGeometry(path, BrushFor(StageControl.BlockChunkEditingVeil.ToArgb()));
+    }
+
     private static D2DRect CanvasRect(System.Drawing.RectangleF bounds) =>
         new(bounds.X, bounds.Y, bounds.Width, bounds.Height);
 }

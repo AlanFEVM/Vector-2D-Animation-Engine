@@ -46,6 +46,7 @@ internal sealed partial class MainForm
         var instances = _clipboardDrawingObjectInstances.ToArray();
         var sequence = _internalClipboardSequence;
         var createdIds = new List<string>();
+        var previousGroups = CapturePrivateGroupIds();
         var completed = false;
         try
         {
@@ -55,13 +56,15 @@ internal sealed partial class MainForm
                 var remap = new Dictionary<string, string>(StringComparer.Ordinal);
                 foreach (var sourceId in _clipboardDrawingObjectInstances.Select(item => item.DrawingObjectId).Distinct().ToArray())
                 {
+                    if (_drawingObjects.FirstOrDefault(item => item.Id == sourceId)?.IsGroup == true) continue;
                     if (!_project.TryDuplicateDrawingObject(sourceId, out var copy) || copy is null) return false;
                     remap[sourceId] = copy.Id;
                     createdIds.Add(copy.Id);
                 }
                 for (var i = 0; i < _clipboardDrawingObjectInstances.Count; i++)
                     _clipboardDrawingObjectInstances[i] = _clipboardDrawingObjectInstances[i] with
-                        { DrawingObjectId = remap[_clipboardDrawingObjectInstances[i].DrawingObjectId] };
+                        { DrawingObjectId = remap.GetValueOrDefault(_clipboardDrawingObjectInstances[i].DrawingObjectId,
+                            _clipboardDrawingObjectInstances[i].DrawingObjectId) };
             }
             if (!PasteCopiedObjectsWithOffset(step, preserveOverlap: true)) return false;
             if (createdIds.Count > 0)
@@ -70,7 +73,7 @@ internal sealed partial class MainForm
                 {
                     var entry = _sceneTimelineUndoStack.Pop();
                     _undoSequenceByEntry.Remove(entry);
-                    var replacement = entry with { CreatedDrawingObjectIds = createdIds.ToArray() };
+                    var replacement = entry with { CreatedDrawingObjectIds = entry.CreatedDrawingObjectIds.Concat(createdIds).Distinct().ToArray() };
                     _sceneTimelineUndoStack.Push(replacement);
                     RecordUndoSequence(replacement);
                 }
@@ -78,12 +81,13 @@ internal sealed partial class MainForm
                 {
                     var entry = _undoStack.Pop();
                     _undoSequenceByEntry.Remove(entry);
-                    var replacement = entry with { CreatedDrawingObjectIds = createdIds.ToArray() };
+                    var replacement = entry with { CreatedDrawingObjectIds = entry.CreatedDrawingObjectIds.Concat(createdIds).Distinct().ToArray() };
                     _undoStack.Push(replacement);
                     RecordUndoSequence(replacement);
                 }
                 RefreshDrawingObjectAssetPresentation();
             }
+            RecordCreatedPrivateGroups(previousGroups);
             completed = true;
             _duplicateSelectionKey = StageSelectionKey();
             _duplicateOrigin = StageSelectionBounds()?.Location ?? bounds.Value.Location;
@@ -260,10 +264,11 @@ internal sealed partial class MainForm
         if (keyData == (Keys.Alt | Keys.D) && _selectedObjects.Count == 0 && SelectedSceneInstances().Count > 0)
         { _duplicateSelectionKey = null; return DuplicateStageSelection(linked: true); }
         if (keyData == (Keys.Control | Keys.D)) return DuplicateStageSelection();
+        if (keyData == (Keys.Control | Keys.G)) return GroupStageSelection();
         if (keyData == (Keys.Control | Keys.Shift | Keys.V)) return PasteCopiedObjectsWithOffset(PointF.Empty, preserveOverlap: true);
         if (keyData == (Keys.Control | Keys.B))
         {
-            if (!IsDrawingWorkspaceContext || DrawingToolsBlocked() || IsSceneCompositionContext()) return false;
+            if ((!IsDrawingWorkspaceContext && !IsSceneDrawingContext()) || DrawingToolsBlocked()) return false;
             _stageContextMenuBreakApartObjects = SelectedActiveDrawingObjectIndices();
             _stageContextMenuBreakApartInstances = SelectedSceneInstances().Select(instance => instance.Id).ToArray();
             if (_stageContextMenuBreakApartObjects.Any(i => !CanBreakApartObject(i))

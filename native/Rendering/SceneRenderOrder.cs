@@ -132,6 +132,9 @@ internal sealed class SceneRenderOrderBuffer
     private long[] _radixKeys = [];
     private int[] _radixItems = [];
     private int[]? _radixCounts;
+    private RectangleF _allObjectBounds;
+    private (VectorScene? Scene, long Geometry, long Content, long Summary, long Presentation, int Frame, int Count) _completeCollectionKey;
+    private bool _hasCompleteCollection;
 
     public int VisibleCount { get; private set; }
     public int ScannedCount { get; private set; }
@@ -150,6 +153,18 @@ internal sealed class SceneRenderOrderBuffer
         EnsureLayerCapacity(scene.LayerCount);
         EnsureWorldBounds(scene, frame);
         DiagnosticBoundsMs = Stopwatch.GetElapsedTime(phaseStarted).TotalMilliseconds;
+        var collectionKey = (scene, scene.GeometryRevision, scene.ActiveContentRevision, scene.SummaryRevision,
+            scene.LayerPresentationRevision, frame, scene.ObjectCount);
+        if (_hasCompleteCollection && _completeCollectionKey == collectionKey
+            && bounds.Contains(_allObjectBounds))
+        {
+            // Every world-space object still fits. Neither membership nor the
+            // stable painter order can change just because the camera moved.
+            ScannedCount = 0;
+            DiagnosticCollectPhaseMs = DiagnosticSortPhaseMs = 0;
+            return;
+        }
+        _hasCompleteCollection = false;
         phaseStarted = Stopwatch.GetTimestamp();
         foreach (var layer in _layers) layer?.Clear();
         if (_activeKeyframes.Length < scene.LayerCount) Array.Resize(ref _activeKeyframes, scene.LayerCount);
@@ -165,6 +180,7 @@ internal sealed class SceneRenderOrderBuffer
             var singleSortStarted = Stopwatch.GetTimestamp();
             SortLayers(scene, parallel: false, workers: 1);
             DiagnosticSortPhaseMs = Stopwatch.GetElapsedTime(singleSortStarted).TotalMilliseconds;
+            RememberCompleteCollection();
             return;
         }
 
@@ -195,6 +211,7 @@ internal sealed class SceneRenderOrderBuffer
             var sequentialSortStarted = Stopwatch.GetTimestamp();
             SortLayers(scene, parallel: false, workers: 1);
             DiagnosticSortPhaseMs = Stopwatch.GetElapsedTime(sequentialSortStarted).TotalMilliseconds;
+            RememberCompleteCollection();
             return;
         }
 
@@ -224,6 +241,14 @@ internal sealed class SceneRenderOrderBuffer
         var parallelSortStarted = Stopwatch.GetTimestamp();
         SortLayers(scene, parallel: true, workers);
         DiagnosticSortPhaseMs = Stopwatch.GetElapsedTime(parallelSortStarted).TotalMilliseconds;
+        RememberCompleteCollection();
+
+        void RememberCompleteCollection()
+        {
+            if (scene.ObjectCount == 0 || !bounds.Contains(_allObjectBounds)) return;
+            _completeCollectionKey = collectionKey;
+            _hasCompleteCollection = true;
+        }
     }
 
     private void EnsureWorldBounds(VectorScene scene, int frame)
@@ -249,6 +274,7 @@ internal sealed class SceneRenderOrderBuffer
             Array.Resize(ref _worldBoundsBottom, count);
         }
 
+        _allObjectBounds = RectangleF.Empty;
         for (var index = 0; index < count; index++)
         {
             var bounds = scene.GetObjectWorldBounds(index);
@@ -256,6 +282,7 @@ internal sealed class SceneRenderOrderBuffer
             _worldBoundsTop[index] = bounds.Top;
             _worldBoundsRight[index] = bounds.Right;
             _worldBoundsBottom[index] = bounds.Bottom;
+            _allObjectBounds = index == 0 ? bounds : RectangleF.Union(_allObjectBounds, bounds);
         }
 
         _worldBoundsScene = scene;

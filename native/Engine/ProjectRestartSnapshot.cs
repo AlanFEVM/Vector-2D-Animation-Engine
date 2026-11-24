@@ -91,6 +91,7 @@ internal sealed class DrawingObjectSnapPointRestartSnapshot
 
 internal sealed class SceneRestartSnapshot
 {
+    public SceneBlockGridSnapshot? BlockGrid { get; init; }
     public RulerGuide[] RulerGuides { get; init; } = [];
     public string Id { get; init; } = "";
     public string Name { get; init; } = "Scene";

@@ -148,6 +148,7 @@ internal sealed partial class TimelineStrip : Control
         AddLayer,
         AddFolderLayer,
         Solo,
+        SoloUnlock,
         All,
         AllVisibility,
         AllLocks,
@@ -417,6 +418,9 @@ internal sealed partial class TimelineStrip : Control
     public event EventHandler? LayerColorRequested;
     public event EventHandler? LayerLockRequested;
     public event EventHandler? LayerOutlineRequested;
+
+    /// <summary>Unlock the selected layers and lock every other layer, mirroring solo visibility.</summary>
+    public event EventHandler? SoloUnlockRequested;
     public event EventHandler? AllLayerVisibilityRequested;
     public event EventHandler? AllLayerLocksRequested;
     public event EventHandler? AllLayerOutlinesRequested;
@@ -945,6 +949,11 @@ internal sealed partial class TimelineStrip : Control
         _firstVisibleTrack = 0;
         _collapsedFolderLayerIds.Clear();
         _collapsedMaskLayerIds.Clear();
+        _collapsedTabGroupTrackIds.Clear();
+        if (_sceneDefinition?.BlockGrid is { SectionDepth: 0 }
+            && _timeline.TabGroups.FirstOrDefault(group => group.Name == SceneBlockChunk.SceneLayerGroupName) is { } terrain
+            && _timeline.Tracks.FirstOrDefault(track => track.TabGroupId == terrain.Id) is { } firstDepthTrack)
+            _collapsedTabGroupTrackIds.Add(terrain.Id, firstDepthTrack.Id);
         InvalidateTimelineStructureCache();
         _activeTrackId = TrackCount > 0 ? _timeline.Tracks[Math.Max(0, GetModelActiveTrackIndex())].Id : null;
         _selectedFrameCells.Clear();
@@ -1467,13 +1476,14 @@ internal sealed partial class TimelineStrip : Control
                     PrepareLayerTrackAction(trackIndex);
                     if (IsTrackLayer(trackIndex)) LayerOutlineRequested?.Invoke(this, EventArgs.Empty);
                 }
-                else if (IsTrackCollapsible(trackIndex)
+                else if ((IsCollapsedTabGroupRow(trackIndex) || IsTrackCollapsible(trackIndex))
                     && LayerGroupDisclosureBounds(trackIndex, layout.RowTop + (VisibleTrackPosition(trackIndex) - _firstVisibleTrack) * _rowHeight).Contains(e.Location))
                 {
                     _groupDisclosureClickLocation = e.Location;
                     _groupDisclosureClickTick = Environment.TickCount64;
                     SetActiveTrack(trackIndex);
-                    ToggleTrackGroupCollapsed(trackIndex);
+                    if (IsCollapsedTabGroupRow(trackIndex)) ToggleAllTabGroupCollapsed();
+                    else ToggleTrackGroupCollapsed(trackIndex);
                 }
                 else
                 {
@@ -1891,6 +1901,7 @@ internal sealed partial class TimelineStrip : Control
         var bounds = command switch
         {
             HeaderCommand.Solo => SoloButtonBounds(layout),
+            HeaderCommand.SoloUnlock => SoloUnlockButtonBounds(layout),
             HeaderCommand.All => AllButtonBounds(layout),
             HeaderCommand.AddLayer => AddLayerButtonBounds(layout),
             HeaderCommand.AddFolderLayer => AddFolderLayerButtonBounds(layout),
@@ -1927,6 +1938,7 @@ internal sealed partial class TimelineStrip : Control
                 HeaderCommand.AddLayer => "Add layer",
                 HeaderCommand.AddFolderLayer => "Add folder layer",
                 HeaderCommand.Solo => "Show only the selected layer",
+                HeaderCommand.SoloUnlock => "Unlock only the selected layers",
                 HeaderCommand.All => "Show all layers",
                 HeaderCommand.AllVisibility => AreAllLayersVisible() ? "Hide all layers" : "Show all layers",
                 HeaderCommand.AllLocks => AreAllLayersLocked() ? "Unlock all layers" : "Lock all layers",
@@ -2136,6 +2148,7 @@ internal sealed partial class TimelineStrip : Control
                 && (AddLayerButtonBounds(layout).Contains(point)
                     || AddFolderLayerButtonBounds(layout).Contains(point)
                     || SoloButtonBounds(layout).Contains(point)
+                    || SoloUnlockButtonBounds(layout).Contains(point)
                     || AllButtonBounds(layout).Contains(point)))
             {
                 return true;
@@ -2161,6 +2174,12 @@ internal sealed partial class TimelineStrip : Control
         if (SoloButtonBounds(layout).Contains(point))
         {
             SoloActiveTrack();
+            return true;
+        }
+
+        if (SoloUnlockButtonBounds(layout).Contains(point))
+        {
+            SoloUnlockSelectedTracks();
             return true;
         }
 
@@ -2691,6 +2710,7 @@ internal sealed partial class TimelineStrip : Control
 
     private bool TryBeginFrameTransform(Point location, TimelineLayout layout)
     {
+        if (_context is SceneBlockChunkTimeline) return false;
         var sourceCells = SelectedCells();
         if (sourceCells.Count == 0) return false;
 
@@ -3364,6 +3384,7 @@ internal sealed partial class TimelineStrip : Control
 
     private void HandleFrameContextMenuOpening(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        if (_context is SceneBlockChunkTimeline) { e.Cancel = true; return; }
         var hasTrack = IsTrackEditableInCurrentPresentation(GetActiveTrackIndex());
         var commandCells = CommandCells();
         var hasFrames = commandCells.Count > 0;
@@ -3383,7 +3404,7 @@ internal sealed partial class TimelineStrip : Control
         _clearKeyframesMenuItem.Enabled = hasTrack && hasFrames;
         _classicTweenMenuItem.Enabled = canCreateClassicTween;
         _shapeTweenMenuItem.Enabled = canCreateShapeTween;
-        _removeTweenMenuItem.Enabled = ResolveSingleTweenSelection(_timeline, commandCells) is not null;
+        _removeTweenMenuItem.Enabled = ResolveSingleTweenSelection(_timeline, commandCells, includeDisplayTweens: true) is not null;
     }
 
     private bool CanCreateTween(
@@ -3407,10 +3428,14 @@ internal sealed partial class TimelineStrip : Control
                 cells.Min(cell => cell.Frame),
                 cells.Max(cell => cell.Frame),
                 out var startFrame,
-                out var endFrame))
+                out var endFrame,
+                allowBlankEndpoints: AllowsBlankTweenEndpoints(_sceneDefinition,
+                    _sceneDefinition?.DrawingScene ?? DrawingScene(), track.TargetId, kind)))
         {
             return false;
         }
+
+        if (!track.EvaluateExposure(startFrame).HasContent) return track.CanCreateEmptyTween(startFrame, endFrame);
 
         if (_sceneDefinition is not null)
         {
@@ -3443,6 +3468,16 @@ internal sealed partial class TimelineStrip : Control
                 endFrame,
                 kind,
                 out _);
+    }
+
+    internal static bool AllowsBlankTweenEndpoints(
+        SceneDefinition? scene, VectorScene? drawing, string targetId, TimelineTweenKind kind)
+    {
+        if (scene is not null && scene.FindLayer(targetId)?.Kind != SceneLayerKind.Content) return false;
+        var layer = drawing is null ? -1 : Array.IndexOf(drawing.LayerIds, targetId);
+        return layer >= 0
+            ? VectorScene.SupportsTimelineTweenLayer(drawing!.GetLayerKind(layer), kind)
+            : scene is not null && kind == TimelineTweenKind.Classic;
     }
 
     private void RequestCommand(TimelineCommand command)
@@ -3793,7 +3828,8 @@ internal sealed partial class TimelineStrip : Control
 
     internal static TimelineTweenSelection? ResolveSingleTweenSelection(
         AnimationTimeline timeline,
-        IReadOnlyList<TimelineFrameCell> cells)
+        IReadOnlyList<TimelineFrameCell> cells,
+        bool includeDisplayTweens = false)
     {
         ArgumentNullException.ThrowIfNull(timeline);
         if (cells.Count == 0) return null;
@@ -3802,6 +3838,10 @@ internal sealed partial class TimelineStrip : Control
         foreach (var cell in cells)
         {
             var tween = timeline.EvaluateTween(cell.TrackId, cell.Frame);
+            if (includeDisplayTweens && tween is null)
+            {
+                tween = timeline.FindTrack(cell.TrackId)?.EvaluateInterruptedTween(cell.Frame);
+            }
             if (tween is not { } span) return null;
             var candidate = new TimelineTweenSelection(cell.TrackId, span.StartFrame, span.EndFrame);
             if (resolved is { } current && current != candidate) return null;
@@ -4085,6 +4125,7 @@ internal sealed partial class TimelineStrip : Control
     {
         if (trackIndex < 0 || trackIndex >= TrackCount) return "Track";
         var targetId = _timeline.Tracks[trackIndex].TargetId;
+        if (_context is SceneBlockChunkTimeline chunk) return chunk.LayerName(targetId);
 
         var drawingScene = DrawingScene();
         if (drawingScene is not null)
@@ -4291,6 +4332,7 @@ internal sealed partial class TimelineStrip : Control
             _visibleTrackIndicesCache.Clear();
             _visibleTrackIndicesCache.AddRange(ordered);
         }
+        ApplyAllTabGroupCollapse();
         for (var position = 0; position < _visibleTrackIndicesCache.Count; position++)
         {
             _visibleTrackPositionsCache[_visibleTrackIndicesCache[position]] = position;
@@ -4354,10 +4396,14 @@ internal sealed partial class TimelineStrip : Control
 
     private bool ExpandAncestorsForTrack(int trackIndex)
     {
+        var expandedTabGroup = UsesAllTabGroupCollapse && trackIndex >= 0 && trackIndex < TrackCount
+            && VisibleTrackPosition(trackIndex) < 0
+            && _collapsedTabGroupTrackIds.Remove(_timeline.Tracks[trackIndex].TabGroupId);
+        if (expandedTabGroup) InvalidateTimelineStructureCache();
         var drawingScene = DrawingScene();
         var layer = GetTrackLayerIndex(trackIndex);
-        if (drawingScene is null || layer < 0) return false;
-        var changed = false;
+        if (drawingScene is null || layer < 0) return expandedTabGroup;
+        var changed = expandedTabGroup;
         var parent = drawingScene.GetLayerParentIndex(layer);
         var visited = new HashSet<int>();
         while (parent >= 0 && visited.Add(parent))
@@ -4384,6 +4430,12 @@ internal sealed partial class TimelineStrip : Control
     private bool ToggleTrackGroupCollapsedFromKeyboard(bool collapse)
     {
         var trackIndex = GetActiveTrackIndex();
+        if (IsCollapsedTabGroupRow(trackIndex))
+        {
+            if (collapse) return false;
+            ToggleAllTabGroupCollapsed();
+            return true;
+        }
         if (!IsTrackCollapsible(trackIndex)) return false;
         if (collapse == IsTrackCollapsed(trackIndex)) return false;
         ToggleTrackGroupCollapsed(trackIndex);
@@ -4673,7 +4725,24 @@ internal sealed partial class TimelineStrip : Control
         var targetId = _timeline.Tracks[trackIndex].TargetId;
         var drawingScene = DrawingScene();
         if (drawingScene is not null) return GetTrackLayerIndex(trackIndex) >= 0;
+        // Inside a block-chunk editing context the rows are depths, not scene layers,
+        // but each depth still maps to a real drawing layer that can be hidden.
+        if (_context is SceneBlockChunkTimeline) return ChunkTrackLayerIndex(trackIndex) >= 0;
         return _sceneDefinition?.FindLayer(targetId) is not null;
+    }
+
+    /// <summary>
+    /// Resolves a block-chunk depth row (mc-depth-N) to the drawing layer that owns that
+    /// depth, so visibility toggles inside a chunk affect the real scene layer.
+    /// </summary>
+    private int ChunkTrackLayerIndex(int trackIndex)
+    {
+        if (_context is not SceneBlockChunkTimeline chunk || trackIndex < 0 || trackIndex >= TrackCount)
+            return -1;
+        if (!chunk.TryGetDepth(_timeline.Tracks[trackIndex].TargetId, out var depth)) return -1;
+        var scene = chunk.Scene.DrawingScene;
+        if (scene is null || !chunk.Grid.Layers.TryGetValue(depth, out var layerId)) return -1;
+        return Array.IndexOf(scene.LayerIds, layerId);
     }
 
     private bool IsSceneLightTrack(int trackIndex)
@@ -4690,7 +4759,8 @@ internal sealed partial class TimelineStrip : Control
     }
 
     private bool IsTrackSelectableRow(int trackIndex) =>
-        IsTrackLayer(trackIndex) || IsSceneLightTrack(trackIndex) || IsSceneShotTrack(trackIndex);
+        _context is SceneBlockChunkTimeline && trackIndex >= 0 && trackIndex < TrackCount
+        || IsTrackLayer(trackIndex) || IsSceneLightTrack(trackIndex) || IsSceneShotTrack(trackIndex);
 
     private bool IsTrackExplicitlyVisible(int trackIndex)
     {
@@ -4704,6 +4774,11 @@ internal sealed partial class TimelineStrip : Control
         if (drawingScene is not null && layerIndex >= 0)
         {
             return drawingScene.LayerVisible[layerIndex];
+        }
+
+        if (_context is SceneBlockChunkTimeline chunk && ChunkTrackLayerIndex(trackIndex) is var chunkLayer && chunkLayer >= 0)
+        {
+            return chunk.Scene.DrawingScene!.LayerVisible[chunkLayer];
         }
 
         if (_drawingObjectDefinition is not null)
@@ -4740,6 +4815,13 @@ internal sealed partial class TimelineStrip : Control
         var drawingScene = DrawingScene();
         var layerIndex = drawingScene is null ? -1 : GetTrackLayerIndex(trackIndex);
         if (drawingScene is not null && layerIndex >= 0) return drawingScene.SetLayerVisible(layerIndex, visible);
+
+        if (_context is SceneBlockChunkTimeline chunk
+            && ChunkTrackLayerIndex(trackIndex) is var chunkLayer
+            && chunkLayer >= 0)
+        {
+            return chunk.Scene.DrawingScene!.SetLayerVisible(chunkLayer, visible);
+        }
 
         if (_drawingObjectDefinition is not null)
         {
@@ -4806,6 +4888,16 @@ internal sealed partial class TimelineStrip : Control
 
         Invalidate();
         LayerVisibilityChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Forwards the header's unlock-selected request. The workbench owns layer locking, undo and the
+    /// scene/drawing-specific rebuilds, so this control only reports the click.
+    /// </summary>
+    private void SoloUnlockSelectedTracks()
+    {
+        if (SelectedLayerTrackIndices().Count == 0 && string.IsNullOrWhiteSpace(_activeTrackId)) return;
+        SoloUnlockRequested?.Invoke(this, EventArgs.Empty);
     }
 
     private VectorScene? DrawingScene() => _vectorScene ?? _drawingObjectDefinition?.Scene;
@@ -5173,12 +5265,22 @@ internal sealed partial class TimelineStrip : Control
             (ToolbarHeaderHeight - height) / 2, width, height);
     }
 
-    private Rectangle AddLayerButtonBounds(TimelineLayout layout)
+    /// <summary>Unlock-selected button, placed immediately left of the solo button.</summary>
+    private Rectangle SoloUnlockButtonBounds(TimelineLayout layout)
     {
         var solo = SoloButtonBounds(layout);
+        var width = ScaleTimelineMetric(SoloButtonWidth);
+        var height = ScaleTimelineMetric(24);
+        return new Rectangle(Math.Max(4, solo.Left - width - ScaleTimelineMetric(2)),
+            (ToolbarHeaderHeight - height) / 2, width, height);
+    }
+
+    private Rectangle AddLayerButtonBounds(TimelineLayout layout)
+    {
+        var soloUnlock = SoloUnlockButtonBounds(layout);
         var width = ScaleTimelineMetric(AddLayerButtonWidth);
         var height = ScaleTimelineMetric(24);
-        return new Rectangle(Math.Max(4, solo.Left - width - ScaleTimelineMetric(12 + MotionParentToolbarWidth + 2)),
+        return new Rectangle(Math.Max(4, soloUnlock.Left - width - ScaleTimelineMetric(12 + MotionParentToolbarWidth + 2)),
             (ToolbarHeaderHeight - height) / 2, width, height);
     }
 
@@ -5207,6 +5309,7 @@ internal sealed partial class TimelineStrip : Control
         if (AddLayerButtonBounds(layout).Contains(point)) return HeaderCommand.AddLayer;
         if (AddFolderLayerButtonBounds(layout).Contains(point)) return HeaderCommand.AddFolderLayer;
         if (SoloButtonBounds(layout).Contains(point)) return HeaderCommand.Solo;
+        if (SoloUnlockButtonBounds(layout).Contains(point)) return HeaderCommand.SoloUnlock;
         if (AllButtonBounds(layout).Contains(point)) return HeaderCommand.All;
         if (point.Y >= HeaderHeight && point.Y < layout.RowTop)
         {
@@ -5412,7 +5515,7 @@ internal sealed partial class TimelineStrip : Control
     private int HeaderControlsLeft() => _shotFilterActive
         ? CameraHeaderAnchorWidth + ScaleTimelineMetric(8)
         : TimelineTitleIconBounds().Right
-            + ScaleTimelineMetric(12 + AddLayerButtonWidth + 2 + AddLayerButtonWidth + 2 + MotionParentToolbarWidth + 12 + SoloButtonWidth + 2 + AllButtonWidth + 20);
+            + ScaleTimelineMetric(12 + AddLayerButtonWidth + 2 + AddLayerButtonWidth + 2 + MotionParentToolbarWidth + 12 + SoloButtonWidth + 2 + SoloButtonWidth + 2 + SoloButtonWidth + 2 + AllButtonWidth + 20);
 
     // Keep the animation group centered independently of the draggable layer gutter.
     private int MotionTrackSlotLeft(TimelineLayout layout)
@@ -5738,7 +5841,8 @@ internal sealed partial class TimelineStrip : Control
         var allVisible = AreAllLayersVisible();
         var soloSelected = IsOnlyActiveTrackVisible() && (!allVisible || _soloVisibilityRequested);
         var selected = icon == SvgIconKind.AllLayersVisible ? allVisible && !soloSelected
-            : icon == SvgIconKind.SoloLayerVisible && soloSelected;
+            : icon == SvgIconKind.SoloLayerVisible ? soloSelected
+            : icon == SvgIconKind.SoloUnlockLayerVisible && IsOnlyActiveTrackUnlocked();
         var fill = DrawToolbarCapsule(graphics, bounds, selected, hovered);
         var iconSize = Math.Min(ScaleTimelineMetric(20), Math.Min(bounds.Width, bounds.Height));
         var iconBounds = new Rectangle(bounds.Left + (bounds.Width - iconSize) / 2,
@@ -5798,6 +5902,29 @@ internal sealed partial class TimelineStrip : Control
                 && !IsSceneShotTrack(index) && IsTrackVisible(index)) return false;
         }
         return true;
+    }
+
+    /// <summary>
+    /// True when the active layer is unlocked and every other content layer is locked, i.e. the
+    /// state the header's unlock-selected control produces. Ancestor folders of the active layer
+    /// stay unlocked as well, so folder rows are ignored here.
+    /// </summary>
+    private bool IsOnlyActiveTrackUnlocked()
+    {
+        var active = GetActiveTrackIndex();
+        if (active < 0 || active >= TrackCount || IsTrackFolder(active)
+            || IsSceneLightTrack(active) || IsSceneShotTrack(active) || IsTrackLocked(active)) return false;
+        var lockedOthers = false;
+        for (var index = 0; index < TrackCount; index++)
+        {
+            if (index == active || IsTrackFolder(index) || IsSceneLightTrack(index) || IsSceneShotTrack(index))
+                continue;
+            if (!IsTrackLocked(index)) return false;
+            lockedOthers = true;
+        }
+
+        // An already-unlocked single layer is the default state, not an unlock-selected result.
+        return lockedOthers;
     }
 
     private void DrawMasterControlCell(Graphics graphics, Rectangle bounds, HeaderCommand command)

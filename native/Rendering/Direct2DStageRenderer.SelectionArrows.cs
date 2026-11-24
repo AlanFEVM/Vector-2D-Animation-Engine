@@ -8,6 +8,11 @@ internal sealed partial class Direct2DStageRenderer
     private void DrawObjectArrowSelection(StageControl stage)
     {
         if (stage.SelectionFeedbackSuppressed) return;
+        if (stage.SelectedObjects.Count == 0)
+        {
+            if (stage.DrawingObjectSelectionVisible) DrawObjectArrowAdornments(stage);
+            return;
+        }
         stage.Scene.PrepareSelectionOutlineBatch(stage.SelectedObjects, stage.Frame);
         var outline = BrushFor(Theme.Accent.ToArgb());
         var width = stage.SelectionArrows.OutlineWidth * stage.DeviceDpi / 96f;

@@ -32,6 +32,58 @@ internal sealed partial class TimelineStrip
     };
     private readonly AnimatedContextMenuStrip _tabGroupOverflowMenu = new();
     private readonly ToolStripMenuItem _moveLayerToTabGroupMenuItem = new(UiLocalization.T("Move to tab group"));
+    private readonly ToolStripMenuItem _collapseTabGroupMenuItem = new();
+    // Presentation state belongs to this bound timeline, and only applies in All.
+    private readonly Dictionary<string, string> _collapsedTabGroupTrackIds = new(StringComparer.Ordinal);
+
+    private bool UsesAllTabGroupCollapse => !_shotFilterActive
+        && _timeline.ActiveTabGroupId == AnimationTimeline.AllTabGroupId;
+
+    private bool IsCollapsedTabGroupRow(int trackIndex) => UsesAllTabGroupCollapse
+        && trackIndex >= 0 && trackIndex < TrackCount
+        && IsTrackLayer(trackIndex)
+        && _collapsedTabGroupTrackIds.ContainsKey(_timeline.Tracks[trackIndex].TabGroupId);
+
+    private string GetPresentedTrackName(int trackIndex)
+    {
+        var name = UiLocalization.T(GetTrackName(trackIndex));
+        if (!IsCollapsedTabGroupRow(trackIndex)) return name;
+        var groupId = _timeline.Tracks[trackIndex].TabGroupId;
+        var group = TabGroupItems().FirstOrDefault(item => item.Id == groupId);
+        return $"{group.Name} ▸ {name}";
+    }
+
+    private void ToggleAllTabGroupCollapsed()
+    {
+        var trackIndex = GetActiveTrackIndex();
+        if (!UsesAllTabGroupCollapse || trackIndex < 0 || !IsTrackLayer(trackIndex)) return;
+        var track = _timeline.Tracks[trackIndex];
+        if (!_collapsedTabGroupTrackIds.Remove(track.TabGroupId))
+            _collapsedTabGroupTrackIds[track.TabGroupId] = track.Id;
+        InvalidateTimelineStructureCache();
+        RemoveCollapsedFrameSelection();
+        PruneLayerSelection();
+        SetFirstVisibleTrack(_firstVisibleTrack, invalidate: false);
+        EnsureActiveTrackVisible();
+        _knownLayerVisuals = CaptureLayerVisualSnapshots();
+        Invalidate();
+    }
+
+    private void ApplyAllTabGroupCollapse()
+    {
+        if (!UsesAllTabGroupCollapse || _collapsedTabGroupTrackIds.Count == 0) return;
+        var representatives = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var index in _visibleTrackIndicesCache)
+        {
+            var track = _timeline.Tracks[index];
+            if (!IsTrackLayer(index) || !_collapsedTabGroupTrackIds.TryGetValue(track.TabGroupId, out var anchor)) continue;
+            if (!representatives.ContainsKey(track.TabGroupId) || track.Id == anchor)
+                representatives[track.TabGroupId] = index;
+        }
+        _visibleTrackIndicesCache.RemoveAll(index => IsTrackLayer(index)
+            && representatives.TryGetValue(_timeline.Tracks[index].TabGroupId, out var representative)
+            && representative != index);
+    }
     private string? _hoveredTabGroupId;
     private string? _focusedTabGroupId;
     private string _tabGroupToolTipText = "";
@@ -100,6 +152,8 @@ internal sealed partial class TimelineStrip
         _tabGroupContextMenu.AccessibleName = "Timeline tab group actions";
         _tabGroupOverflowMenu.AccessibleName = "Timeline tab groups";
         _layerContextMenu.Items.Add(_moveLayerToTabGroupMenuItem);
+        _layerContextMenu.Items.Add(_collapseTabGroupMenuItem);
+        _collapseTabGroupMenuItem.Click += (_, _) => ToggleAllTabGroupCollapsed();
         _layerContextMenu.Opening += HandleLayerTabGroupContextMenuOpening;
         Controls.Add(_tabGroupOverflowButton);
         Controls.Add(_tabGroupAddButton);
@@ -131,6 +185,7 @@ internal sealed partial class TimelineStrip
                 AnimationTimeline.DefaultTabGroupId => UiLocalization.T("Layers"),
                 AnimationTimeline.TerrainTabGroupId => UiLocalization.T("Terrain"),
                 AnimationTimeline.ShotTabGroupId => UiLocalization.T("Shots"),
+                _ when group.Name == SceneBlockChunk.SceneLayerGroupName => UiLocalization.T(group.Name),
                 _ => group.Name
             };
             items.Add(new TabGroupItem(
@@ -866,6 +921,11 @@ internal sealed partial class TimelineStrip
 
     private void HandleLayerTabGroupContextMenuOpening(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        var collapseTrack = GetActiveTrackIndex();
+        _collapseTabGroupMenuItem.Visible = UsesAllTabGroupCollapse
+            && collapseTrack >= 0 && IsTrackLayer(collapseTrack);
+        _collapseTabGroupMenuItem.Text = UiLocalization.T(IsCollapsedTabGroupRow(collapseTrack)
+            ? "Expand Layer Group" : "Collapse Layer Group");
         if (_shotFilterActive)
         {
             e.Cancel = true;

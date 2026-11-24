@@ -9,6 +9,7 @@ This directory separates current product behavior from version-specific history.
 - [中文图文使用手册（HTML）](manual/index.html): practical workflows with real application screenshots; [portable single-file edition](manual/用户使用手册-单文件版.html).
 
 - [User Guide](USER_GUIDE.md): current source behavior, workflows, shortcuts, troubleshooting, and limitations.
+- [原生扩展与主线功能计划](NATIVE_EXTENSIONS_PLAN.md)：入口、后续文件格式和 MC 试点的实施顺序。
 - [UI Composition and Layout Contracts](UI_COMPOSITION.md): component boundaries, inspector field sizing, typography, spacing, and screenshot acceptance.
 - [Release Manager](RELEASE_MANAGER.md): source version, bilingual in-app release notes, visibility, preview, and formal packaging.
 - [Repository README](../README.md): source development, architecture overview, validation, and release packaging.

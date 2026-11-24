@@ -27,7 +27,7 @@ internal sealed partial class Direct2DStageRenderer
     private readonly record struct SelectionCommandKey(
         StageControl Stage, VectorScene Scene, long Revision, long Geometry, long Summary,
         long ActiveContent, int Frame, Size Size, float Pulse, float Rotation, ulong Layers, int ObjectAccent, int Dpi, float PatternZoom,
-        SelectionArrowSettings ArrowSettings, bool BitmapMove);
+        SelectionArrowSettings ArrowSettings, bool BitmapMove, long Occlusion);
 
     private bool TryDrawCachedSelection(StageControl stage)
     {
@@ -67,7 +67,7 @@ internal sealed partial class Direct2DStageRenderer
             stage.Frame, stage.ClientSize, pulse, stage.PlanarCanvasRotation,
             StageControl.GetReference3DWorkspaceFrameLayerRenderState(stage.Scene, stage.Frame),
             stage.UsesObjectSelectionOverlay ? Theme.Accent.ToArgb() : 0, stage.DeviceDpi,
-            stage.UsesObjectSelectionOverlay ? stage.Zoom : 0, stage.SelectionArrows, bitmapMove);
+            stage.UsesObjectSelectionOverlay ? stage.Zoom : 0, stage.SelectionArrows, bitmapMove, stage.HighlightOcclusionState);
         if (_selectionCommands is null || key != _selectionCommandKey)
         {
             ClearSelectionCommands();

@@ -165,6 +165,10 @@ internal static class DrawingObjectSymbolPackageService
                     snapshot.BitmapObjects[index] = new BitmapObjectData
                     {
                         ImageAssetId = importedImageAssets[source.ImageAssetId],
+                        ShadowCorners = source.ShadowCorners,
+                        WarmLightCorners = source.WarmLightCorners,
+                        BiomeTintArgb = source.BiomeTintArgb,
+                        BiomeTintGrassSide = source.BiomeTintGrassSide,
                         PlacedSize = source.PlacedSize,
                         IsBrokenApart = source.IsBrokenApart,
                         VisibleContours = source.VisibleContours
@@ -845,7 +849,8 @@ internal static class DrawingObjectSymbolPackageService
                 IsCollisionTerrain = track.IsCollisionTerrain,
                 Duration = track.Duration,
                 Keyframes = track.Keyframes.ToArray(),
-                Tweens = track.Tweens.ToArray()
+                Tweens = track.Tweens.ToArray(),
+                InterruptedTweens = track.InterruptedTweens.ToArray()
             }).ToArray(),
             TabGroups = timeline.TabGroups.ToArray(),
             ActiveTabGroupId = timeline.ActiveTabGroupId,

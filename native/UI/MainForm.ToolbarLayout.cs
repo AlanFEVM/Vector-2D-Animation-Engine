@@ -9,7 +9,8 @@ internal sealed partial class MainForm
         var scale = tools.DeviceDpi / 96f;
         var gap = Math.Max(2, (int)Math.Round(4 * scale));
         _stageMetrics.Height = (int)Math.Round(34 * scale);
-        var drawingRowVisible = _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing || IsSymbolEditing;
+        var drawingRowVisible = _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing
+            || IsSymbolEditing || ActiveBlockChunkBreadcrumb is not null;
         var tabRight = drawingRowVisible
             ? _drawingObjectTabs.Controls.Cast<Control>().Where(control => control.Visible)
                 .Select(control => body.PointToClient(control.PointToScreen(new Point(control.Width, 0))).X + control.Margin.Right)

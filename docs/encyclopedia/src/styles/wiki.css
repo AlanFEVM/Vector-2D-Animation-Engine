@@ -80,7 +80,7 @@ a:hover { text-decoration: underline; }
 .wiki-section-images { float: right; display: grid; width: min(30%, 19rem); gap: 16px; margin: 14px 0 16px 20px; }
 .wiki-section-images figure { margin: 0; padding: 4px; border: 1px solid #c4c9cd; background: #f8f9fa; }
 .sl-markdown-content .wiki-section-images { margin-top: 14px; }
-.sl-markdown-content .sl-heading-wrapper:has(> h4:is(#画布, #缩放与平移, #网格标尺与辅助线, #操作光标, #舞台右键菜单)) { clear: both; }
+.sl-markdown-content .sl-heading-wrapper:has(> h4:is(#画布, #缩放与平移, #网格标尺与辅助线, #操作光标, #舞台右键菜单, #自动切换与手动切换, #不可用状态与滚动)) { clear: both; }
 .wiki-canvas-images, .wiki-menu-images { clear: right; }
 .wiki-section-images img { display: block; width: 100%; height: auto; }
 .wiki-section-images figcaption { padding: 4px 2px 1px; font-size: 14px; line-height: 1.5; }
@@ -91,6 +91,7 @@ a:hover { text-decoration: underline; }
 .sl-markdown-content img[src^='/images/cursors/'] { display: inline-block; width: 48px; height: 48px; object-fit: contain; vertical-align: middle; }
 .wiki-section-images:has(img[src='/images/main-menu-and-project-name.png']) { width: min(45%, 32rem); }
 .wiki-timeline-images { width: min(42%, 26rem); }
+.wiki-inspector-images { width: min(32%, 21rem); }
 @media (max-width: 65rem) {
   .wiki-workspace-overview { grid-template-columns: minmax(0, 1fr) minmax(0, 16rem); gap: 20px; }
 }
@@ -103,6 +104,7 @@ a:hover { text-decoration: underline; }
   .wiki-controls-images { width: min(100%, 36rem); }
   .wiki-section-images:has(img[src='/images/main-menu-and-project-name.png']) { width: min(100%, 32rem); }
   .wiki-timeline-images { width: 100%; }
+  .wiki-inspector-images { width: min(100%, 21rem); }
   .sl-markdown-content table :is(th, td):first-child { white-space: normal; min-width: 7rem; }
 }
 .wiki-page-tools { display: flex; gap: 0; align-items: center; font-size: 13px; border-bottom: 1px solid #a8b3bc; min-height: 42px; margin-bottom: 14px; }

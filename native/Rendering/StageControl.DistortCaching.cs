@@ -1,4 +1,4 @@
-﻿using System.Drawing.Drawing2D;
+﻿﻿using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 
@@ -67,7 +67,7 @@ internal sealed partial class StageControl
         if (scene.ShapeKind[index] != ShapeKind.Bitmap || pass != SceneRenderPass.Fill) return false;
         if (IsObjectHiddenForRendering(scene, index)) return true;
         if (!scene.TryGetBitmapObjectData(index, out var data)
-            || !TryDecodeBitmapImage(data.ImageAssetId, out var source)) return false;
+            || !TryDecodeBitmapImage(data, out var source)) return false;
         var density = WorldLengthToScreen(1);
         var view = VisibleWorldBounds();
         var sampling = BitmapImageSampling(data.ImageAssetId);
@@ -124,7 +124,7 @@ internal sealed partial class StageControl
         // Only actively edited envelopes use the established lightweight preview.
         if (ReferenceEquals(scene, _distortPreviewScene) && _distortPreviewOverrides.ContainsKey(objectIndex)) return false;
         if (!scene.TryGetBitmapObjectData(objectIndex, out var data)
-            || !TryDecodeBitmapImage(data.ImageAssetId, out var source)) return false;
+            || !TryDecodeBitmapImage(data, out var source)) return false;
         var sampling = BitmapImageSampling(data.ImageAssetId);
         var key = (scene, objectIndex);
         var state = new DistortResultState(GetDistortObjectGeometryState(scene, objectIndex, distortions), source.Key, sampling);
@@ -251,7 +251,7 @@ internal sealed partial class StageControl
         if (current && scene.TryGetObjectDistortionsView(index, out var distortions)
             && GetDistortObjectGeometryState(scene, index, distortions) == work.State.Geometry
             && scene.TryGetBitmapObjectData(index, out var data)
-            && TryDecodeBitmapImage(data.ImageAssetId, out var source) && source.Key == work.State.Image
+            && TryDecodeBitmapImage(data, out var source) && source.Key == work.State.Image
             && BitmapImageSampling(data.ImageAssetId) == work.State.Sampling)
         {
             StoreDistortResult(work.Key, work.State, result);

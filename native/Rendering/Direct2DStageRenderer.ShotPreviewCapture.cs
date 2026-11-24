@@ -32,7 +32,7 @@ internal sealed partial class Direct2DStageRenderer
     {
         bitmap = null;
         if (_disabled || _shotPreviewCaptureFailed || _target is not ID2D1DeviceContext context
-            || RequiresSoftwareLayerCompositing(stage) || RequiresSoftwareDistortion(stage)) return false;
+            || RequiresSoftwareLayerCompositing(stage) || RequiresSoftwareDistortion(stage, allowGpuBitmaps: false)) return false;
         using var previousTarget = context.Target;
         var previousTransform = context.Transform;
         var previousOptics = stage.Reference3DGpuOpticsEnabled;

@@ -109,7 +109,7 @@ internal sealed partial class MainForm : Form
         _additiveSelection = false;
         _pendingClickSelection = DrawingElementHit.None;
         BeginFreehandStroke(screen, _startWorld.Value, pressure);
-        _stage.SetBrushTipCursor(screen, _brushShape, ActiveStrokeUnits(), eraser: false);
+        _stage.SetBrushTipCursor(screen, ActiveBrushShape(), ActiveStrokeUnits(), eraser: false);
     }
 
     private void AppendTabletPressureSamples(
@@ -129,7 +129,7 @@ internal sealed partial class MainForm : Form
 
             if (!float.IsFinite(_tabletPressureLastValue)) continue;
             _lastMouse = sample.Location;
-            _stage.SetBrushTipCursor(sample.Location, _brushShape, ActiveStrokeUnits(), eraser: false);
+            _stage.SetBrushTipCursor(sample.Location, ActiveBrushShape(), ActiveStrokeUnits(), eraser: false);
             AppendFreehandSample(
                 sample.Location,
                 tabletPressure: _tabletPressureLastValue,
@@ -208,6 +208,10 @@ internal sealed partial class MainForm : Form
             // every other click is consumed so scene instances cannot be selected or edited.
             return;
         }
+
+        var extensionHandled = false;
+        if (!canvasNavigation) HandleNativeExtensionStageClick(e, ref extensionHandled);
+        if (extensionHandled) return;
 
         if (IsLassoTool(_tool) && BeginLassoPointer(e)) return;
 

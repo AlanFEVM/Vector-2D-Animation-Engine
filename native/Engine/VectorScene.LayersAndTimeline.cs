@@ -1655,7 +1655,8 @@ internal sealed partial class VectorScene
                     IsCollisionTerrain = previous.IsCollisionTerrain,
                     Duration = track.Duration,
                     Keyframes = track.Keyframes,
-                    Tweens = track.Tweens
+                    Tweens = track.Tweens,
+                    InterruptedTweens = track.InterruptedTweens
                 };
             })
             .ToArray();

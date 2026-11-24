@@ -25,6 +25,7 @@ internal sealed partial class MainForm
             NavigationPreviewEnabled = dialog.NavigationPreviewEnabled,
             Experimental3DEnabled = dialog.Experimental3DEnabled,
             FreeTransformShiftProportionalEnabled = dialog.FreeTransformShiftProportionalEnabled,
+            ImageImportAutoPlaceLimit = dialog.ImageImportAutoPlaceLimit,
             ToolbarPosition = dialog.SelectedToolbarPosition,
             WindowCornerStyle = dialog.SelectedWindowCornerStyle
         };

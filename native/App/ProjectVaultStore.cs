@@ -468,6 +468,7 @@ internal static class ProjectVaultStore
                 Dimension = entry.Dimension,
                 Camera = entry.Camera,
                 Canvas = timeline.Canvas,
+                BlockGrid = timeline.BlockGrid,
                 RulerGuides = RulerGuideValidation.Copy(timeline.RulerGuides),
                 CanvasWelcomeDismissed = timeline.CanvasWelcomeDismissed,
                 Lights = timeline.Lights,
@@ -3063,6 +3064,7 @@ internal static class ProjectVaultStore
 
     private sealed class SceneTimelineDocument
     {
+        public SceneBlockGridSnapshot? BlockGrid { get; init; }
         public RulerGuide[] RulerGuides { get; init; } = [];
         public int FormatVersion { get; init; }
         public string SceneId { get; init; } = "";
@@ -3082,6 +3084,7 @@ internal static class ProjectVaultStore
             FormatVersion = ProjectVaultStore.TimelineFormatVersion,
             SceneId = scene.Id,
             Canvas = scene.Canvas,
+            BlockGrid = scene.BlockGrid,
             RulerGuides = RulerGuideValidation.Copy(scene.RulerGuides),
             CanvasWelcomeDismissed = scene.CanvasWelcomeDismissed,
             Layers = scene.Layers,

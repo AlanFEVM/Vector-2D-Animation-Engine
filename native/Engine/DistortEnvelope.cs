@@ -1050,13 +1050,7 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
     private int CountInsertedAnchors()
     {
         if (!IsValid) return 0;
-        var count = 0;
-        foreach (var side in Enum.GetValues<DistortSide>())
-        {
-            var anchors = Side(side);
-            for (var index = 1; index < anchors.Length - 1; index++) count++;
-        }
-        return count;
+        return (_top!.Length - 2) + (_right!.Length - 2) + (_bottom!.Length - 2) + (_left!.Length - 2);
     }
 
     private static void MoveAnchorById(MutableSides sides, Guid anchorId, PointF delta)
@@ -1151,7 +1145,7 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
         return low;
     }
 
-    private static bool TryGetSourceCoordinates(
+    internal static bool TryGetSourceCoordinates(
         TransformOverlayFrame source,
         PointF point,
         out float u,
@@ -1176,6 +1170,7 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
             Add(Scale(EvaluateBoundaryPoint(_top!, u), 1f - v), Scale(EvaluateBoundaryPoint(_bottom!, u), v)),
             Add(Scale(EvaluateBoundaryPoint(_left!, v), 1f - u), Scale(EvaluateBoundaryPoint(_right!, v), u))),
         Bilinear(_top![0].Anchor, _top[^1].Anchor, _bottom![0].Anchor, _bottom[^1].Anchor, u, v));
+
 
     private CoonsSample MapCoordinates(float u, float v)
     {
@@ -1664,7 +1659,16 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
     {
         if (ReferenceEquals(left, right)) return true;
         if (left is null || right is null || left.Length != right.Length) return false;
-        return left.AsSpan().SequenceEqual(right);
+        // The first pointer update is often the first comparison of different
+        // anchor arrays. Compare their fields directly on that input path.
+        for (var i = 0; i < left.Length; i++)
+        {
+            ref readonly var a = ref left[i];
+            ref readonly var b = ref right[i];
+            if (a.Id != b.Id || !a.SourceT.Equals(b.SourceT) || !a.Anchor.Equals(b.Anchor)
+                || !a.IncomingControl.Equals(b.IncomingControl) || !a.OutgoingControl.Equals(b.OutgoingControl)) return false;
+        }
+        return true;
     }
 
     private static void AddAnchorsToHash(ref HashCode hash, DistortBezierAnchor[]? anchors)

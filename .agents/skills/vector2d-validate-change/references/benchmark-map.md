@@ -11,6 +11,7 @@
 | `Benchmark.PanelUsability.cs` | `Timeline`, `Render` | numeric drafts, resource folder/tag round trips, batch history, canvas preservation, scene identity and cross-scene undo/redo ordering |
 | `Benchmark.BezierGeometry.cs` | `Freehand` | Bezier geometry/editing |
 | `Benchmark.BitmapTransforms.cs` | `Render` | bitmap affine transforms and free-transform pointer interaction |
+| `Benchmark.BitmapGpuWarp.cs` | `Render` | hardware 2D warp preview, premultiplied pixels and clip holes, 150 FPS average and P95 budget at 1080p |
 | `Benchmark.BrushSuite.cs` | `Pressure`, `Freehand`, `Render` | brush/pressure/eraser shared checks |
 | `Benchmark.CameraNavigation.cs` | `Render` | reference camera keyboard and middle-button navigation; queued key-up waits for actual timer settlement within a bounded deadline, then verifies the camera remains stopped |
 | `Benchmark.CameraTransitions.cs` | `Render` | reference camera transitions |
@@ -27,11 +28,11 @@
 | `Benchmark.ObjectDrawing.cs` | `Freehand` | independent symbol-backed drawing gestures, shape/brush/Pen commits, stacking, single-step undo, scope gating, Auto Key and Save/Open |
 | `Benchmark.HierarchyFocus.cs` | `Render` | hierarchy selection routing and camera focus |
 | `Benchmark.ImageAssets.cs` | `Timeline`, `Render` | image asset persistence, crop/import dialogs, previews and bitmap rendering |
-| `Benchmark.ImageDrop.cs` | `Timeline` | clipboard image paste, file classification, import progress and Stage drop preview |
+| `Benchmark.ImageDrop.cs`, `Benchmark.LibraryStagePlacement.cs` | `Timeline` | clipboard image paste, file classification, import progress, batch auto-place threshold, library multi-selection placement/drop and single-step undo |
 | `Benchmark.InstanceSkewPreview.cs` | `Freehand` | instance skew preview and transform behavior |
 | `Benchmark.MotionTrack.cs` | `Timeline`, `Render` | motion track lifecycle, editing, availability and scene interaction |
 | `Benchmark.SelectionPerformance.cs` | `Render`, focused `SelectionPerf` | large and overlapping artwork selection, marquee and interaction budgets; focused entry runs the large-selection frame-rate regression |
-| `Benchmark.SelectionArrows.cs` | `Freehand`, `Render` | selection-arrow cursors, arc editing, marquee hover lifetime, move-only selection, origin/occlusion feedback and fill overwrite; pointer-derived marquee bounds and exact premultiplied reference pixels |
+| `Benchmark.SelectionArrows.cs`, `Benchmark.HighlightOcclusion.cs` | `Freehand`, `Render` | selection-arrow cursors, arc editing, marquee hover lifetime, move-only selection, origin/occlusion feedback and fill overwrite; highlight stacking across vector/text/SVG/bitmap targets, opaque/transparent coverage, GDI and Direct2D pixels; pointer-derived marquee bounds and exact premultiplied reference pixels |
 | `Benchmark.MarqueeCurvePerformance.cs` | `Freehand`, `Render` | indexed versus exhaustive curve matching, dense partial brush marquee latency, exact split coverage/holes/materials, UI feedback and undo |
 | `Benchmark.TimelineParenting.cs` | `Timeline` | motion parenting, transforms, pointer routing and detach commands |
 | `Benchmark.ImportedSvgConcurrency.cs`, `Benchmark.ProjectiveSvgClipping.cs` | `Render` | concurrent SVG cache use and bounded perspective texture rendering |

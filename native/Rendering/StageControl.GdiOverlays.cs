@@ -135,6 +135,27 @@ internal sealed partial class StageControl : Control
 
     private void DrawSelectionOutline(Graphics g, int i, bool primary)
     {
+        DrawOccludedSelection(g, i, () => DrawSelectionOutlineCore(g, i, primary));
+    }
+
+    private void DrawOccludedSelection(Graphics graphics, int objectIndex, Action draw)
+    {
+        var contours = GetHighlightOcclusionContours(objectIndex);
+        if (contours.Length == 0) { draw(); return; }
+        var state = graphics.Save();
+        try
+        {
+            using var path = new GraphicsPath(FillMode.Alternate);
+            foreach (var contour in contours)
+                if (contour.Length >= 3) path.AddPolygon(contour.Select(WorldToScreen).ToArray());
+            graphics.SetClip(path, CombineMode.Exclude);
+            draw();
+        }
+        finally { graphics.Restore(state); }
+    }
+
+    private void DrawSelectionOutlineCore(Graphics g, int i, bool primary)
+    {
         var shape = Scene.ShapeKind.Length > i ? Scene.ShapeKind[i] : ShapeKind.Rectangle;
 
         if (Scene.TryGetBitmapObjectData(i, out var bitmap) && bitmap.IsBrokenApart)
@@ -270,6 +291,11 @@ internal sealed partial class StageControl : Control
     }
 
     private void DrawElementSelectionOutline(Graphics g, DrawingElementHit hit, bool primary)
+    {
+        DrawOccludedSelection(g, hit.Key.ObjectIndex, () => DrawElementSelectionOutlineCore(g, hit, primary));
+    }
+
+    private void DrawElementSelectionOutlineCore(Graphics g, DrawingElementHit hit, bool primary)
     {
         var objectIndex = hit.Key.ObjectIndex;
         var shape = Scene.ShapeKind[objectIndex];
@@ -650,6 +676,7 @@ internal sealed partial class StageControl : Control
 
     private void DrawFreehandPreview(Graphics g)
     {
+        if (DrawPressureInkPreview(g)) return;
         if (!FreehandPreviewVisible || FreehandPreviewPoints.Count == 0) return;
         if (PressurePreviewLayers.Count > 0)
         {
@@ -1068,8 +1095,38 @@ internal sealed partial class StageControl : Control
 
     private static bool Finite(PointF point) => float.IsFinite(point.X) && float.IsFinite(point.Y);
 
+    private void DrawBlockLayerHighlight(Graphics g)
+    {
+        var runs = GetBlockLayerHighlightRuns();
+        if (runs.Count == 0) return;
+        using var path = new GraphicsPath(FillMode.Winding);
+        var corners = new PointF[4];
+        foreach (var run in runs)
+            if (TryProjectBlockBounds(run, corners)) path.AddPolygon(corners);
+        using var tint = new SolidBrush(BlockLayerHighlightColor);
+        g.FillPath(tint, path);
+    }
+
+    private void DrawBlockChunkEditingMask(Graphics g)
+    {
+        Span<PointF> corners = stackalloc PointF[4];
+        if (!TryGetBlockChunkEditingMask(corners)) return;
+        using var path = new GraphicsPath(FillMode.Alternate);
+        path.AddRectangle(ClientRectangle);
+        path.AddPolygon(corners.ToArray());
+        using var veil = new SolidBrush(BlockChunkEditingVeil);
+        g.FillPath(veil, path);
+    }
+
     private void DrawMarquee(Graphics g)
     {
+        Span<PointF> chunk = stackalloc PointF[4];
+        if (TryGetBlockChunkOutline(chunk))
+        {
+            var pen = BlockChunkEditing ? _drawingObjectSelectionPen : _marqueePen;
+            for (var i = 0; i < chunk.Length; i++)
+                g.DrawLine(pen, chunk[i], chunk[(i + 1) % chunk.Length]);
+        }
         DrawLassoPreview(g);
         if (!MarqueeVisible || MarqueeOverlayActive) return;
         var rect = Rectangle.FromLTRB(
@@ -1428,46 +1485,52 @@ internal sealed partial class StageControl : Control
         if (!TransformBoundsVisible) return;
         var geometry = GetTransformOverlayScreenGeometry();
         var corners = new[] { geometry.TopLeft, geometry.TopRight, geometry.BottomRight, geometry.BottomLeft };
-        using var boundsPen = new Pen(Color.FromArgb(235, 112, 204, 255), 1) { DashStyle = DashStyle.Dash };
-        using var rotationPen = new Pen(Color.FromArgb(235, 112, 204, 255), 1);
-        using var focusPen = new Pen(Color.FromArgb(245, 104, 255, 188), 1.5f);
-        using var focusBrush = new SolidBrush(Color.FromArgb(220, 30, 82, 69));
+        using var boundsPen = new Pen(Color.FromArgb(255, 62, 157, 224), 1);
+        using var keylinePen = new Pen(Color.FromArgb(255, 250, 253, 255), 2.5f);
+        using var rotationPen = new Pen(Color.FromArgb(115, 62, 157, 224), 1);
+        using var surface = new SolidBrush(Color.FromArgb(255, 250, 253, 255));
+        g.DrawPolygon(keylinePen, corners);
         g.DrawPolygon(boundsPen, corners);
-        foreach (var (_, point, _) in geometry.ResizeHandles) DrawHandle(g, point, _handleBrush, 8);
         foreach (var (_, point, corner) in geometry.RotationHandles)
         {
             g.DrawLine(rotationPen, corner, point);
-            g.FillEllipse(_bezierHandleBrush, point.X - 4, point.Y - 4, 8, 8);
-            g.DrawEllipse(_handleBorderPen, point.X - 4, point.Y - 4, 8, 8);
+            g.FillEllipse(surface, point.X - 3, point.Y - 3, 6, 6);
+            g.DrawEllipse(boundsPen, point.X - 3, point.Y - 3, 6, 6);
         }
         foreach (var (_, point, edge) in geometry.SkewHandles)
         {
             g.DrawLine(rotationPen, edge, point);
             var diamond = new[]
             {
-                new PointF(point.X, point.Y - 5),
-                new PointF(point.X + 5, point.Y),
-                new PointF(point.X, point.Y + 5),
-                new PointF(point.X - 5, point.Y)
+                new PointF(point.X, point.Y - 4),
+                new PointF(point.X + 4, point.Y),
+                new PointF(point.X, point.Y + 4),
+                new PointF(point.X - 4, point.Y)
             };
-            g.FillPolygon(_bezierHandleBrush, diamond);
-            g.DrawPolygon(_handleBorderPen, diamond);
+            g.FillPolygon(surface, diamond);
+            g.DrawPolygon(boundsPen, diamond);
+        }
+
+        foreach (var (_, point, _) in geometry.ResizeHandles)
+        {
+            g.FillRectangle(surface, point.X - 3.5f, point.Y - 3.5f, 7, 7);
+            g.DrawRectangle(boundsPen, point.X - 3.5f, point.Y - 3.5f, 7, 7);
         }
 
         if (IsTransformFocusVisible(geometry))
         {
             var focus = TransformOverlayPointToScreen(_transformFocus);
-            g.FillEllipse(focusBrush, focus.X - 6, focus.Y - 6, 12, 12);
-            g.DrawEllipse(focusPen, focus.X - 6, focus.Y - 6, 12, 12);
-            g.DrawLine(focusPen, focus.X - 9, focus.Y, focus.X + 9, focus.Y);
-            g.DrawLine(focusPen, focus.X, focus.Y - 9, focus.X, focus.Y + 9);
+            g.FillEllipse(surface, focus.X - 4, focus.Y - 4, 8, 8);
+            g.DrawEllipse(boundsPen, focus.X - 4, focus.Y - 4, 8, 8);
+            g.DrawLine(boundsPen, focus.X - 6, focus.Y, focus.X + 6, focus.Y);
+            g.DrawLine(boundsPen, focus.X, focus.Y - 6, focus.X, focus.Y + 6);
         }
     }
 
     private void DrawDistortOverlay(Graphics g)
     {
         if (!DistortBoundsVisible) return;
-        var geometry = GetDistortOverlayScreenGeometry();
+        var geometry = GetDistortOverlayScreenGuides();
         using var boundary = new Pen(Color.FromArgb(245, 104, 255, 188), 1.4f) { DashStyle = DashStyle.Dash };
         using var grid = new Pen(Color.FromArgb(120, 104, 255, 188), 1f);
         using var guide = new Pen(Color.FromArgb(165, 112, 204, 255), 1f) { DashStyle = DashStyle.Dot };

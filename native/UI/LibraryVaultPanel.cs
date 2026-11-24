@@ -150,10 +150,15 @@ internal sealed partial class LibraryVaultPanel : UserControl
         ExternalSvgAssetDefinition? ExternalSvgAsset = null,
         bool ExternalSvgMissing = false,
         ImageAssetDefinition? ImageAsset = null,
-        bool ImageAssetMissing = false) : ITreeNodeTrailingColorSource, ITreeNodeLeadingIconSource
+        bool ImageAssetMissing = false,
+        SceneDefinition? BlockScene = null,
+        SceneBlockChunk? BlockChunk = null,
+        int? BlockChunkSlab = null) : ITreeNodeTrailingColorSource, ITreeNodeLeadingIconSource
     {
         public IReadOnlyList<Color> TrailingColors { get; set; } = [];
-        public SvgIconKind LeadingIcon => ExternalSvgAsset is not null
+        public SvgIconKind LeadingIcon => BlockScene is not null
+            ? BlockChunk.HasValue ? SvgIconKind.InspectorScene : SvgIconKind.AssetFolder
+            : ExternalSvgAsset is not null
             ? ExternalSvgMissing ? SvgIconKind.Warning : SvgIconKind.AssetSvg
             : ImageAsset is not null
                 ? ImageAssetMissing ? SvgIconKind.Warning : SvgIconKind.AssetImage
@@ -174,6 +179,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
     }
 
     public event EventHandler<DrawingObjectOpenRequestedEventArgs>? DrawingObjectOpenRequested;
+    internal event Action<SceneDefinition, SceneBlockChunk>? BlockChunkOpenRequested;
     public event EventHandler<DrawingObjectAssetRequestedEventArgs>? DrawingObjectRenameRequested;
     public event EventHandler<DrawingObjectAssetRequestedEventArgs>? DrawingObjectDuplicateRequested;
     public event EventHandler<DrawingObjectAssetRequestedEventArgs>? DrawingObjectDeleteRequested;
@@ -369,6 +375,8 @@ internal sealed partial class LibraryVaultPanel : UserControl
             _toolTip.Dispose();
             _preview?.Dispose();
             ClearAssetThumbnails();
+            _imageThumbnailCancellation.Cancel();
+            _imageThumbnailCancellation.Dispose();
         }
 
         base.Dispose(disposing);
@@ -531,6 +539,8 @@ internal sealed partial class LibraryVaultPanel : UserControl
     {
         _projectObjectMenu.ShowItemToolTips = true;
         var newFolder = new ToolStripMenuItem("New Folder");
+        var placeOnStage = new ToolStripMenuItem("Place on Stage");
+        placeOnStage.Click += (_, _) => PlaceSelectedStageAssets();
         newFolder.Click += (_, _) => RequestNewAssetFolder();
         var folderSeparator = new ToolStripSeparator();
         var rename = new ToolStripMenuItem("Rename");
@@ -567,6 +577,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
             folderSeparator,
             rename,
             duplicate,
+            placeOnStage,
             exportSvg,
             exportSymbol,
             setTags,
@@ -589,6 +600,8 @@ internal sealed partial class LibraryVaultPanel : UserControl
             var rows = _multiSelectedNodes.Select(node => node.Tag).OfType<VaultRow>().ToArray();
             if (rows.Length == 0 && selected is not null) rows = [selected];
             var multiple = rows.Length > 1;
+            placeOnStage.Visible = multiple || drawingObjectSelected;
+            placeOnStage.Enabled = SelectedStageAssets() is { Count: > 0 };
             var allAssets = rows.Length > 0 && rows.All(row => row.Folder is null && row.DrawingObject?.IsOpenCanvas != true);
             var allSymbols = rows.Length > 0 && rows.All(row => row.DrawingObject is { IsOpenCanvas: false });
             var svgCompatible = rows.Length > 0 && rows.All(row => row.ExternalSvgAsset is not null || row.DrawingObject is { IsOpenCanvas: false });
@@ -614,7 +627,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
             delete.Visible = multiple || drawingObjectSelected || folderSelected;
             var selectedSymbolCount = rows.Count(row => row.DrawingObject is { IsOpenCanvas: false });
             delete.Enabled = rows.Length > 0 && !rows.Any(row => row.DrawingObject?.IsOpenCanvas == true)
-                && (_project?.DrawingObjects.Count(item => !item.IsOpenCanvas) ?? 0) - selectedSymbolCount >= 1;
+                && (_project?.DrawingObjects.Count(item => item.IsLibrarySymbol) ?? 0) - selectedSymbolCount >= 1;
             UpdateExternalSvgContextMenu(selected);
             UpdateImageContextMenu(selected);
             if (multiple)
@@ -695,6 +708,11 @@ internal sealed partial class LibraryVaultPanel : UserControl
         _projectObjects.MouseUp += ProjectTreeSelectionMouseUp;
         _projectObjects.NodeMouseDoubleClick += (_, e) =>
         {
+            if (e.Node.Tag is VaultRow { BlockScene: not null, BlockChunk: null })
+            {
+                if (!Theme.IsTreeExpandGlyphHit(_projectObjects, e.Node, e.Location)) e.Node.Toggle();
+                return;
+            }
             if (e.Node.Tag is VaultRow { Folder: not null })
             {
                 if (Theme.IsTreeExpandGlyphHit(_projectObjects, e.Node, e.Location)) return;
@@ -872,6 +890,14 @@ internal sealed partial class LibraryVaultPanel : UserControl
             SetMultiSelection([node]);
             _treeSelectionAnchor = node;
             ProjectTreeSelectionChanged();
+        }
+        if (_multiSelectedNodes.Count > 1 && row.Folder is null)
+        {
+            if (SelectedStageAssets() is not { Count: > 1 } batch) return;
+            var batchData = new DataObject();
+            batchData.SetData(typeof(VaultStageDragData), batch);
+            _projectObjects.DoDragDrop(batchData, DragDropEffects.Copy);
+            return;
         }
         if (row.ExternalSvgAsset is { } externalSvgAsset)
         {
@@ -1217,8 +1243,19 @@ internal sealed partial class LibraryVaultPanel : UserControl
 
     private void OpenSelectedVaultItem()
     {
+        if (_activeSource == VaultSource.Project && _multiSelectedNodes.Count > 1)
+        {
+            PlaceSelectedStageAssets();
+            return;
+        }
         var row = SelectedVaultRow();
         if (row is null) return;
+
+        if (row.BlockScene is { } scene && row.BlockChunk is { } chunk)
+        {
+            BlockChunkOpenRequested?.Invoke(scene, chunk);
+            return;
+        }
 
         if (row.ExternalSvgAsset is not null)
         {
@@ -1302,12 +1339,13 @@ internal sealed partial class LibraryVaultPanel : UserControl
 
     private void RebuildProjectObjectRows(ProjectRowsFingerprint fingerprint)
     {
-        ClearAssetThumbnails();
+        ClearAssetThumbnails(clearImages: false);
         var selectedKeys = _multiSelectedNodes.Select(NodeIdentity).ToHashSet(StringComparer.Ordinal);
         var topKey = _projectObjects.TopNode is { } top ? NodeIdentity(top) : "";
         var expandedFolderIds = EnumerateProjectNodes()
-            .Where(node => node.IsExpanded && node.Tag is VaultRow { Folder: not null })
-            .Select(node => ((VaultRow)node.Tag!).Folder!.Id)
+            .Where(node => node.IsExpanded && node.Tag is VaultRow { Folder: not null }
+                or VaultRow { BlockScene: not null, BlockChunk: null })
+            .Select(NodeIdentity)
             .ToHashSet(StringComparer.Ordinal);
         SuspendLayout();
         _projectObjects.BeginUpdate();
@@ -1334,6 +1372,8 @@ internal sealed partial class LibraryVaultPanel : UserControl
                 {
                     AddProjectFolderBranches("", _projectObjects.Nodes, expandedFolderIds);
                     AddProjectDrawingObjectNodes("", _projectObjects.Nodes, includeAll: false);
+                    if (_activeAssetCategory == AssetCategory.BasicSymbols)
+                        AddBlockChunkNodes(expandedFolderIds);
                 }
             }
 
@@ -1428,6 +1468,15 @@ internal sealed partial class LibraryVaultPanel : UserControl
         if (_project is null) return default;
         var hash = new HashCode();
         hash.Add(UiLocalization.CurrentLanguage);
+        foreach (var scene in _project.Scenes)
+        {
+            if (scene.BlockGrid is not { } grid) continue;
+            hash.Add(scene.Id, StringComparer.Ordinal);
+            hash.Add(scene.Name, StringComparer.Ordinal);
+            hash.Add(grid.Columns);
+            hash.Add(grid.Rows);
+            hash.Add(grid.SectionDepth);
+        }
         foreach (var drawingObject in _project.DrawingObjects)
         {
             hash.Add(drawingObject.Id, StringComparer.Ordinal);
@@ -1672,7 +1721,8 @@ internal sealed partial class LibraryVaultPanel : UserControl
     }
 
     private static string NodeIdentity(TreeNode node) => node.Tag is VaultRow row
-        ? row.DrawingObject?.Id ?? row.ImageAsset?.Id ?? row.ExternalSvgAsset?.Id ?? row.Folder?.Id ?? ""
+        ? row.DrawingObject?.Id ?? row.ImageAsset?.Id ?? row.ExternalSvgAsset?.Id ?? row.Folder?.Id
+            ?? (row.BlockScene is { } scene ? $"mc:{scene.Id}:{row.BlockChunkSlab}:{row.BlockChunk}" : "")
         : "";
 
     private void ApplyProjectTreeClickSelection(TreeNode? node, Keys modifiers)
@@ -1809,7 +1859,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
         var projectSelected = row is { DrawingObject: not null, IsProjectObject: true };
         var externalSvgAvailable = ExternalSvgRowCanBeUsed(row);
         var imageAvailable = ImageRowCanBeUsed(row);
-        SetActionState(_openButton, visible: true, enabled: projectSelected || externalSvgAvailable || imageAvailable);
+        SetActionState(_openButton, visible: true, enabled: projectSelected || externalSvgAvailable || imageAvailable || row?.BlockChunk is not null);
         UpdateAssetTagActions(projectSelected || row?.ImageAsset is not null || row?.ExternalSvgAsset is not null);
     }
 

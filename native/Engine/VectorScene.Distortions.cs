@@ -9,6 +9,16 @@ internal sealed partial class VectorScene
 {
     internal bool HasObjectDistortions => _objectDistortions.Count > 0;
 
+    internal bool HasNonBitmapDistortions
+    {
+        get
+        {
+            foreach (var index in _objectDistortions.Keys)
+                if (ShapeKind[index] != VectorAnimationEngine.ShapeKind.Bitmap) return true;
+            return false;
+        }
+    }
+
     internal bool RequiresSoftwareDistortion
     {
         get
@@ -103,19 +113,35 @@ internal sealed partial class VectorScene
         }
 
         var changed = false;
+        var trackBitmapExtents = _deferredAppendKeyframes is null;
+        var changedLargestExtent = false;
+        var largestNewExtent = 128f;
         foreach (var (objectIndex, normalized) in normalizedUpdates)
         {
             var objectChanged = !_objectDistortions.TryGetValue(objectIndex, out var previous)
                 ? normalized.Length > 0
                 : !DistortionsEqual(previous, normalized);
             if (!objectChanged) continue;
+            trackBitmapExtents &= ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Bitmap;
+            if (trackBitmapExtents && !changedLargestExtent && MaxHalfExtent > 128f)
+                changedLargestExtent = ObjectHalfExtent(objectIndex) >= MaxHalfExtent;
             if (normalized.Length == 0) _objectDistortions.Remove(objectIndex);
             else _objectDistortions[objectIndex] = normalized;
+            if (trackBitmapExtents) largestNewExtent = Math.Max(largestNewExtent, ObjectHalfExtent(objectIndex));
             changed = true;
         }
 
         if (!changed || _deferredAppendKeyframes is not null) return changed;
-        RebuildGeometryIndex();
+        if (trackBitmapExtents)
+        {
+            // Warping a bitmap changes its bounds but not the packed center
+            // used to assign its spatial cell. Only rescan if the largest
+            // extent may have shrunk; always invalidate revision-based queries.
+            if (changedLargestExtent && largestNewExtent < MaxHalfExtent) RefreshGeometryExtents();
+            else MaxHalfExtent = Math.Max(MaxHalfExtent, largestNewExtent);
+            GeometryRevision++;
+        }
+        else RebuildGeometryIndex();
         InvalidateDeferredTopologyQueries();
         return true;
     }
@@ -543,7 +569,7 @@ internal sealed partial class VectorScene
             // carry more, so every write path collapses them here rather than rejecting the file.
             var distortion = distortions[index];
             var collapsed = distortion.Envelope.NormalizeInsertedAnchors();
-            normalized[index] = ReferenceEquals(collapsed, distortion.Envelope) || collapsed == distortion.Envelope
+            normalized[index] = collapsed == distortion.Envelope
                 ? distortion.DeepClone()
                 : new DistortWarp(distortion.Source, collapsed);
         }
@@ -562,7 +588,13 @@ internal sealed partial class VectorScene
     private static DistortWarp[] CloneDistortions(IReadOnlyList<DistortWarp> distortions)
         => distortions.Select(distortion => distortion.DeepClone()).ToArray();
 
-    private static bool DistortionsEqual(IReadOnlyList<DistortWarp> left, IReadOnlyList<DistortWarp> right)
-        => left.Count == right.Count && left.SequenceEqual(right);
+    internal static bool DistortionsEqual(IReadOnlyList<DistortWarp> left, IReadOnlyList<DistortWarp> right)
+    {
+        if (ReferenceEquals(left, right)) return true;
+        if (left.Count != right.Count) return false;
+        for (var i = 0; i < left.Count; i++)
+            if (left[i] != right[i]) return false;
+        return true;
+    }
 
 }

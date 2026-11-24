@@ -687,9 +687,11 @@ internal sealed partial class MainForm : Form
         return true;
     }
 
-    private bool ConvertSelectedDrawingObjectsToSymbol()
+    private bool ConvertSelectedDrawingObjectsToSymbol() => ConvertSelectedDrawingObjectsToContainer(asGroup: false);
+
+    private bool ConvertSelectedDrawingObjectsToContainer(bool asGroup)
     {
-        if (!IsSceneBuildingContext() && IsOpenDrawingScope) return AddOpenCanvasSelectionToSymbol();
+        if (!asGroup && !IsSceneBuildingContext() && IsOpenDrawingScope) return AddOpenCanvasSelectionToSymbol();
         EnsureSceneDrawingSurface();
         if (!IsDrawingWorkspaceContext && !IsSceneDrawingContext()
             || DrawingToolsBlocked()
@@ -714,7 +716,8 @@ internal sealed partial class MainForm : Form
         }
 
         var wasProjectDirty = _projectDirty;
-        if (!TryAskNewSymbolName(out var name)) return false;
+        var name = UiLocalization.T("Group");
+        if (!asGroup && !TryAskNewSymbolName(out name)) return false;
         var sceneLayers = sceneContainer?.CreateLayerSnapshot();
         var sceneSnapshot = CreateCanvasMutationSnapshot(initialTargets, layers);
         var instanceSnapshot = container?.CreateInstanceSnapshot() ?? sceneContainer!.CreateInstanceSnapshot();
@@ -724,7 +727,7 @@ internal sealed partial class MainForm : Form
                 targets,
                 _frame,
                 out var symbol,
-                out var instance)
+                out var instance, asGroup: asGroup)
             || symbol is null
             || instance is null)
         {
@@ -736,7 +739,7 @@ internal sealed partial class MainForm : Form
         }
 
         _project.TryRenameDrawingObject(symbol.Id, name);
-        instance.Name = $"{name} Instance {container?.Instances.Count ?? sceneContainer!.Instances.Count:000}";
+        instance.Name = asGroup ? name : $"{name} Instance {container?.Instances.Count ?? sceneContainer!.Instances.Count:000}";
         if (sceneContainer is not null)
             PushSceneTimelineUndo(sceneContainer, sceneSnapshot.Timeline!, sceneLayers, instanceSnapshot,
                 createdDrawingObjectId: symbol.Id);
@@ -844,7 +847,7 @@ internal sealed partial class MainForm : Form
         var now = Stopwatch.GetTimestamp();
         if (Stopwatch.GetElapsedTime(_lastNavigationStatusUpdate, now).TotalMilliseconds < 100) return;
         _lastNavigationStatusUpdate = now;
-        UpdateStatusBar();
+        SetToolStripText(_zoomStatus, $"Zoom {_stage.ActiveViewZoom * 100:0}%");
     }
 
     private void ClearCanvasNavigationFeedback()
@@ -1787,7 +1790,7 @@ internal sealed partial class MainForm : Form
         _transformFocus = null;
         _selectedObjects.Clear();
         _selectedElements.Clear();
-        _selectedObject = _scene.IsObjectSelectable(objectIndex, _frame) ? objectIndex : -1;
+        _selectedObject = _scene.IsObjectSelectable(objectIndex, _frame) && !IsSceneBlockFace(objectIndex) ? objectIndex : -1;
         if (_selectedObject >= 0) ClearSceneOpticsLightSelection();
         _selectedElement = DrawingElementHit.None;
         if (_selectedObject >= 0) _selectedObjects.Add(_selectedObject);
@@ -1800,7 +1803,7 @@ internal sealed partial class MainForm : Form
         _transformFocus = null;
         if (!hit.IsValid
             || (uint)hit.Key.ObjectIndex >= _scene.ObjectCount
-            || !_scene.IsObjectSelectable(hit.Key.ObjectIndex, _frame))
+            || !_scene.IsObjectSelectable(hit.Key.ObjectIndex, _frame) || IsSceneBlockFace(hit.Key.ObjectIndex))
         {
             ClearSelection(deferPresentation);
             return;
@@ -1885,6 +1888,7 @@ internal sealed partial class MainForm : Form
         {
             if ((uint)index >= _scene.ObjectCount
                 || !allowInactiveObjects && !_scene.IsObjectSelectable(index, _frame)
+                || IsSceneBlockFace(index)
                 || !seen.Add(index))
             {
                 continue;
@@ -1970,6 +1974,7 @@ internal sealed partial class MainForm : Form
             if (!hit.IsValid
                 || (uint)hit.Key.ObjectIndex >= _scene.ObjectCount
                 || !_scene.IsObjectSelectable(hit.Key.ObjectIndex, _frame)
+                || IsSceneBlockFace(hit.Key.ObjectIndex)
                 || !seenKeys.Add(hit.Key))
             {
                 continue;
@@ -1997,6 +2002,9 @@ internal sealed partial class MainForm : Form
         return (uint)objectIndex < _scene.ObjectCount
             && _scene.ShapeKind[objectIndex] == ShapeKind.ImportedSvg;
     }
+
+    private bool IsSceneBlockFace(int index) => IsSceneCompositionContext() && ActiveScene()?.BlockGrid is not null
+        && _scene.TryGetBitmapObjectData(index, out var bitmap) && bitmap.BlockGridKey.HasValue;
 
     private bool IsWholeObjectOnlyObject(int objectIndex)
     {
@@ -2295,6 +2303,9 @@ internal sealed partial class MainForm : Form
             return;
         }
         FinishPointerInteractionForFrameChange();
+        _stageContextMenuBreakApartObjects = SelectedActiveDrawingObjectIndices();
+        _stageContextMenuBreakApartInstances = SelectedSceneInstances().Select(instance => instance.Id).ToArray();
+        if (_stageContextMenuBreakApartInstances.Length > 0 && _stageContextMenuBreakApartObjects.Length > 0) return;
         if (_stageContextMenuBreakApartInstances.Length > 0) BreakApartNestedInstances();
         else if (_stageContextMenuBreakApartObjects.Length > 0) BreakApartDrawingObjects();
     }

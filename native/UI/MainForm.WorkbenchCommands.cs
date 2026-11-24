@@ -600,7 +600,8 @@ internal sealed partial class MainForm : Form
     {
         if (!IsBrushTool(_tool) && _tool != ToolMode.Eraser) return;
         var sizePoints = _brushTipPanel.SizePoints;
-        if (IsBrushTool(_tool)) _brushStrokeWidthPoints = sizePoints;
+        if (_tool == ToolMode.PressureBrush) _pressureBrushSizePoints = sizePoints;
+        else if (IsBrushTool(_tool)) _brushStrokeWidthPoints = sizePoints;
         else _eraserStrokeWidthPoints = sizePoints;
         _materialEditor.SetMaterial(_materialEditor.Fill, _materialEditor.Stroke, sizePoints, _materialEditor.Opacity);
         RefreshInteractionCursorAtPointer();
@@ -608,10 +609,11 @@ internal sealed partial class MainForm : Form
 
     private float ActiveBrushTipSizePoints() => _tool == ToolMode.Eraser
         ? _eraserStrokeWidthPoints
-        : _brushStrokeWidthPoints;
+        : _tool == ToolMode.PressureBrush ? _pressureBrushSizePoints : _brushStrokeWidthPoints;
 
     private void SyncBrushTipSettings()
     {
+        _brushTipPanel.SetPressureMode(_tool == ToolMode.PressureBrush, _drawSettings.PressureBrushOptions);
         _brushTipPanel.SetBrushStrokeSettings(
             _drawSettings.BrushFrequency,
             _drawSettings.BrushContinuous,
@@ -623,6 +625,7 @@ internal sealed partial class MainForm : Form
     {
         float? width = tool switch
         {
+            ToolMode.PressureBrush => _pressureBrushSizePoints,
             ToolMode.Pencil => _pencilStrokeWidthPoints,
             ToolMode.Eraser => _eraserStrokeWidthPoints,
             _ when IsStandardStrokeTool(tool) => _standardStrokeWidthPoints,
@@ -884,7 +887,7 @@ internal sealed partial class MainForm : Form
         {
             _stage.ClearFillToolCursor();
             ClearFillHoverPreview();
-            _stage.SetBrushTipCursor(screen, _brushShape, ActiveStrokeUnits(), _tool == ToolMode.Eraser);
+            _stage.SetBrushTipCursor(screen, ActiveBrushShape(), ActiveStrokeUnits(), _tool == ToolMode.Eraser);
             _stage.Cursor = Cursors.Cross;
             return;
         }
@@ -1210,6 +1213,12 @@ internal sealed partial class MainForm : Form
         _workspaceTabs.RulerMenuRequested += (sender, _) => { if (sender is Control anchor) _stage.ShowRulerMenu(anchor); };
         _stage.RulerGuidesChanged += (_, _) => SetProjectDirty(true);
         _workspaceTabs.WorldGridTypeChanged += (_, _) => _stage.WorldGridType = _workspaceTabs.WorldGridType;
+        _brushTipPanel.PressureOptionsChanged += (_, _) =>
+        {
+            _drawSettings.PressureBrushOptions = _brushTipPanel.PressureOptions.Clamped();
+            _drawSettings.NotifyChanged();
+            RefreshInteractionCursorAtPointer();
+        };
         _brushTipPanel.ImportRequested += (_, _) => ImportBrushTip();
         _brushTipPanel.SoftRoundRequested += (_, _) => RestoreDefaultBrushTip();
         _brushTipPanel.TraditionalBrushRequested += (_, _) => SelectTraditionalBrushTip();
@@ -1257,6 +1266,12 @@ internal sealed partial class MainForm : Form
         };
         _timeline.ActiveLayerChanged += (_, _) =>
         {
+            if (_timeline.Context is SceneBlockChunkTimeline)
+            {
+                RefreshNativeExtensionInspector();
+                RefreshStageLayerContentHighlight();
+                return;
+            }
             if (!CommitTextEdit()) return;
             var cameraSelected = IsSceneBuildingContext()
                 && SynchronizeSceneShotSelectionFromTimeline();
@@ -1318,6 +1333,7 @@ internal sealed partial class MainForm : Form
         _timeline.LayerRenameRequested += (_, _) => RenameTimelineLayer();
         _timeline.LayerColorRequested += (_, _) => ChooseTimelineLayerColor();
         _timeline.LayerLockRequested += (_, _) => ToggleTimelineLayerLock();
+        _timeline.SoloUnlockRequested += (_, _) => SoloUnlockSelectedTimelineLayers();
         _timeline.LayerOutlineRequested += (_, _) => ToggleTimelineLayerOutline();
         _timeline.AllLayerVisibilityRequested += (_, _) => ToggleAllTimelineLayerVisibility();
         _timeline.AllLayerLocksRequested += (_, _) => ToggleAllTimelineLayerLocks();
@@ -1342,6 +1358,7 @@ internal sealed partial class MainForm : Form
         _sceneEditorPanel.SceneInstanceSelected += (_, e) => SelectInstanceFromScenePanel(e.InstanceId);
         _sceneEditorPanel.DrawingObjectOpenRequested += (_, e) => OpenDrawingObjectEditor(e.DrawingObjectId);
         _libraryVaultPanel.DrawingObjectOpenRequested += (_, e) => OpenDrawingObjectEditor(e.DrawingObjectId);
+        _libraryVaultPanel.BlockChunkOpenRequested += OpenVaultBlockChunk;
         _libraryVaultPanel.DrawingObjectRenameRequested += (_, e) => RenameDrawingObject(e.DrawingObjectId);
         _libraryVaultPanel.DrawingObjectDuplicateRequested += (_, e) => DuplicateDrawingObject(e.DrawingObjectId);
         _libraryVaultPanel.DrawingObjectDeleteRequested += (_, e) => DeleteDrawingObject(e.DrawingObjectId);
@@ -1374,6 +1391,7 @@ internal sealed partial class MainForm : Form
         _libraryVaultPanel.LibraryAssetMoveRequested += (_, e) => MoveLibraryAssetFromPanel(e.AssetId, e.TargetFolderId);
         _libraryVaultPanel.AssetBatchActionRequested += (_, e) => HandleVaultBatchAction(e);
         _libraryVaultPanel.SetImageAssetAvailabilityProvider(asset => ResolveImageAssetPath(asset) is not null);
+        _libraryVaultPanel.SetImageAssetThumbnailPathProvider(ResolveImageAssetPath);
         _libraryVaultPanel.SetImageAssetPreviewProvider(asset =>
         {
             var path = ResolveImageAssetPath(asset);
@@ -1482,6 +1500,7 @@ internal sealed partial class MainForm : Form
                 if (e.StrokeWidthChanged)
                 {
                     if (_tool == ToolMode.Pencil) _pencilStrokeWidthPoints = e.StrokeWidth;
+                    else if (_tool == ToolMode.PressureBrush) _pressureBrushSizePoints = e.StrokeWidth;
                     else if (IsBrushTool(_tool)) _brushStrokeWidthPoints = e.StrokeWidth;
                     else if (_tool == ToolMode.Eraser) _eraserStrokeWidthPoints = e.StrokeWidth;
                     else if (IsStandardStrokeTool(_tool)) _standardStrokeWidthPoints = e.StrokeWidth;
@@ -2036,6 +2055,7 @@ internal sealed partial class MainForm : Form
     private void AssignProjectDocument(VectorProject project, string manifestPath, bool dirty)
     {
         ArgumentNullException.ThrowIfNull(project);
+        CloseNativeExtensionChunk(restoreTimeline: false);
         if (IsSymbolEditing)
         {
             ClearSymbolEditingSession();
@@ -2772,6 +2792,7 @@ internal sealed partial class MainForm : Form
             return true;
         }
         var focusedEditor = ContainsFocusedEditor(this);
+        if (!focusedEditor && keyData == Keys.Escape && CloseNativeExtensionChunk(restoreTimeline: true)) return true;
         var interactiveControlFocused = ContainsFocusedInteractiveControl(this);
         var commandButtonFocused = ContainsFocusedButton(this);
         if (_stageNumericMode != '\0')

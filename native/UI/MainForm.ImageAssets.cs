@@ -1,4 +1,4 @@
-namespace VectorAnimationEngine;
+﻿namespace VectorAnimationEngine;
 
 internal sealed partial class MainForm
 {
@@ -235,17 +235,16 @@ internal sealed partial class MainForm
         };
         progress.ShowDialog(this);
         if (result is null) return;
-        // A file import is also a stage action: keep the asset in the project library
-        // and immediately create one editable placement for every imported file.
-        foreach (var assetId in result.ImportedAssetIds)
-        {
-            PlaceImageAsset(assetId);
-        }
+        var autoPlaced = CompleteImageBatchPlacement(result.ImportedAssetIds, result.PlacementCandidateCount);
         var summary = string.Format(
             UiLocalization.T("Imported: {0}\nSkipped: {1}\nFailed: {2}\nNot processed: {3}"),
             result.Imported, result.Skipped, result.Failed,
             fileNames.Count - result.Imported - result.Skipped - result.Failed);
         if (result.Cancelled) summary = UiLocalization.T("Image import cancelled.") + "\n\n" + summary;
+        if (result.Imported > 0 && !autoPlaced)
+            summary += "\n\n" + string.Format(UiLocalization.T(
+                "Images were added to the library only (auto-place limit: {0}). Select assets in the library and drag them onto the stage to place them."),
+                _applicationSettings.ImageImportAutoPlaceLimit);
         if (result.Errors.Count > 0) summary += "\n\n" + string.Join("\n", result.Errors);
         ModernMessageDialog.Show(this, summary, UiLocalization.T("Images"), MessageBoxButtons.OK,
             result.Failed > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
@@ -255,7 +254,7 @@ internal sealed partial class MainForm
 
     private sealed record ImageImportBatchResult(
         int Imported, int Skipped, int Failed, bool Cancelled, IReadOnlyList<string> Errors,
-        IReadOnlyList<string> ImportedAssetIds);
+        IReadOnlyList<string> ImportedAssetIds, int PlacementCandidateCount);
 
     private async Task<ImageImportBatchResult> ImportImageAssetsBatchAsync(
         IReadOnlyList<string> fileNames,
@@ -269,6 +268,7 @@ internal sealed partial class MainForm
         var cancelled = false;
         var errors = new List<string>();
         var importedAssetIds = new List<string>();
+        var placementCandidateCount = 0;
         var existingPaths = new HashSet<string>(_project.ImageAssets.SelectMany(asset => new[] { asset.OriginalSourcePath, asset.SourcePath }),
             StringComparer.OrdinalIgnoreCase);
         var prepared = new Dictionary<string, (ImageFileProbe Probe, string Sha256, ImageFilterMode SuggestedFilter)>(StringComparer.OrdinalIgnoreCase);
@@ -345,6 +345,7 @@ internal sealed partial class MainForm
                         automaticDisplay = chosen.AutomaticDisplay;
                         var remainingSet = new HashSet<string>(chosen.RemainingFiles, StringComparer.OrdinalIgnoreCase);
                         remaining = pending.Where(remainingSet.Contains).ToList();
+                        placementCandidateCount = remaining.Count;
                         skipped += pending.Count - remaining.Count;
                     }
                 }
@@ -398,7 +399,7 @@ internal sealed partial class MainForm
         {
             _libraryVaultPanel.EndProjectObjectUpdate();
         }
-        return new ImageImportBatchResult(imported, skipped, failed, cancelled, errors, importedAssetIds);
+        return new ImageImportBatchResult(imported, skipped, failed, cancelled, errors, importedAssetIds, placementCandidateCount);
     }
 
     private static (ImageFileProbe Probe, string Sha256, ImageFilterMode SuggestedFilter) PrepareImageImport(string fullPath)
@@ -889,9 +890,20 @@ internal sealed partial class MainForm
         return false;
     }
 
-    private ImageAssetDefinition? FindImageAsset(string assetId) =>
-        _project.ImageAssets.FirstOrDefault(asset =>
-            string.Equals(asset.Id, assetId, StringComparison.Ordinal));
+    private ImageAssetDefinition? FindImageAsset(string assetId) => FindImageAsset(assetId, _stage);
+
+    private ImageAssetDefinition? FindImageAsset(string assetId, StageControl stage)
+    {
+        // Source, opacity and sampling are queried several times per object. Build
+        // the ID index once per paint instead of rescanning the whole library.
+        // The stage clears it after paint so replace/delete/undo/rebind stay live.
+        if (stage.PaintBitmapAssets is not { } assets)
+            return _project.ImageAssets.FirstOrDefault(asset =>
+                string.Equals(asset.Id, assetId, StringComparison.Ordinal));
+        if (assets.Count == 0)
+            foreach (var asset in _project.ImageAssets) assets[asset.Id] = asset;
+        return assets.GetValueOrDefault(assetId);
+    }
 
     /// <summary>
     /// Resolves an image asset id to decoded pixels for the stage renderers. The renderers
@@ -903,14 +915,13 @@ internal sealed partial class MainForm
 
     private BitmapImageRaster? ResolveBitmapImageRasterForStage(string imageAssetId, StageControl stage)
     {
-        var asset = FindImageAsset(imageAssetId);
+        var asset = FindImageAsset(imageAssetId, stage);
         if (asset is null) return null;
         var path = ResolveImageAssetPath(asset, stage, out var source);
         if (path is null) return null;
         try
         {
-            return source is null ? BitmapImageRasterizer.Decode(path, asset.ImportSettings)
-                : BitmapImageRasterizer.Decode(source, asset.ImportSettings);
+            return BitmapImageRasterizer.Decode(source ?? new FileInfo(path), asset.ImportSettings, asset);
         }
         catch (Exception exception) when (exception is InvalidDataException or OutOfMemoryException or ArgumentException)
         {
@@ -934,13 +945,17 @@ internal sealed partial class MainForm
         stage.BitmapImageResolver = imageAssetId => ResolveBitmapImageRasterForStage(imageAssetId, stage);
         stage.BitmapImageKeyResolver = imageAssetId =>
         {
-            var asset = FindImageAsset(imageAssetId);
+            var asset = FindImageAsset(imageAssetId, stage);
             if (asset is null) return null;
             var path = ResolveImageAssetPath(asset, stage, out var source);
             return path is not null && BitmapImageRasterizer.TryGetSourceKey(source ?? new FileInfo(path),
-                asset.ImportSettings, out var key) ? key : null;
+                asset.ImportSettings, out var key, asset) ? key : null;
         };
-        stage.BitmapImageSamplingProvider = ResolveBitmapImageSampling;
+        stage.BitmapImageOpacityProvider = (imageAssetId, key) =>
+            BitmapImageRasterizer.IsKnownOpaqueSource(key, FindImageAsset(imageAssetId, stage));
+        stage.BitmapImageSamplingProvider = imageAssetId =>
+            FindImageAsset(imageAssetId, stage)?.ImportSettings.FilterMode == ImageFilterMode.Point
+                ? BitmapSampling.Point : BitmapSampling.Linear;
     }
 
     /// <summary>

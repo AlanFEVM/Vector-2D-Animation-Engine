@@ -197,7 +197,7 @@ internal sealed partial class VectorScene
         return matched is null ? Array.Empty<int>() : matched.ToArray();
     }
 
-    private bool IsOpaqueSelectionFill(int objectIndex)
+    internal bool IsOpaqueSelectionFill(int objectIndex)
     {
         var layer = (int)ObjectLayer[objectIndex];
         if (ShapeKind[objectIndex] is VectorAnimationEngine.ShapeKind.ImportedSvg or VectorAnimationEngine.ShapeKind.Bitmap
@@ -218,7 +218,7 @@ internal sealed partial class VectorScene
         return true;
     }
 
-    private PointF[][] SelectionOccluderContours(int objectIndex) =>
+    internal PointF[][] SelectionOccluderContours(int objectIndex) =>
         TryGetObjectDistortions(objectIndex, out _)
             ? GetDistortedObjectBoundaryContours(objectIndex)
             : FillWorldContours(objectIndex);

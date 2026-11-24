@@ -217,6 +217,19 @@ internal sealed partial class Direct2DStageRenderer
 
     private void DrawSelectionOutline(StageControl stage, int i, bool primary)
     {
+        DrawOccludedSelection(stage, i, () => DrawSelectionOutlineCore(stage, i, primary));
+    }
+
+    private void DrawOccludedSelection(StageControl stage, int objectIndex, Action draw)
+    {
+        var contours = stage.GetHighlightOcclusionContours(objectIndex);
+        if (contours.Length == 0) { draw(); return; }
+        using var mask = SelectionMoveMask(stage, contours, outside: true);
+        DrawSelectionMoveOpacity(1, mask, draw);
+    }
+
+    private void DrawSelectionOutlineCore(StageControl stage, int i, bool primary)
+    {
         var shape = stage.Scene.ShapeKind.Length > i ? stage.Scene.ShapeKind[i] : ShapeKind.Rectangle;
         if (stage.Scene.TryGetBitmapObjectData(i, out var bitmap) && bitmap.IsBrokenApart)
         {
@@ -323,6 +336,11 @@ internal sealed partial class Direct2DStageRenderer
     }
 
     private void DrawElementSelectionOutline(StageControl stage, DrawingElementHit hit, bool primary)
+    {
+        DrawOccludedSelection(stage, hit.Key.ObjectIndex, () => DrawElementSelectionOutlineCore(stage, hit, primary));
+    }
+
+    private void DrawElementSelectionOutlineCore(StageControl stage, DrawingElementHit hit, bool primary)
     {
         var objectIndex = hit.Key.ObjectIndex;
         var shape = stage.Scene.ShapeKind[objectIndex];
@@ -623,59 +641,69 @@ internal sealed partial class Direct2DStageRenderer
         var topRight = ToVector(geometry.TopRight);
         var bottomRight = ToVector(geometry.BottomRight);
         var bottomLeft = ToVector(geometry.BottomLeft);
-        var accent = BrushFor(GdiColor.FromArgb(235, 112, 204, 255).ToArgb());
+        var accent = BrushFor(GdiColor.FromArgb(255, 62, 157, 224).ToArgb());
+        var surface = BrushFor(GdiColor.FromArgb(255, 250, 253, 255).ToArgb());
+        var guide = BrushFor(GdiColor.FromArgb(115, 62, 157, 224).ToArgb());
+        // A pale keyline keeps the compact blue frame readable over dark artwork.
+        _target!.DrawLine(topLeft, topRight, surface, 2.5f);
+        _target.DrawLine(topRight, bottomRight, surface, 2.5f);
+        _target.DrawLine(bottomRight, bottomLeft, surface, 2.5f);
+        _target.DrawLine(bottomLeft, topLeft, surface, 2.5f);
         _target!.DrawLine(topLeft, topRight, accent, 1);
         _target.DrawLine(topRight, bottomRight, accent, 1);
         _target.DrawLine(bottomRight, bottomLeft, accent, 1);
         _target.DrawLine(bottomLeft, topLeft, accent, 1);
-        var handleBrush = BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb());
-        foreach (var (_, point, _) in geometry.ResizeHandles) DrawHandle(ToVector(point), handleBrush, 8);
-        var rotationBrush = BrushFor(GdiColor.FromArgb(255, 112, 204, 255).ToArgb());
-        var handleBorder = BrushFor(GdiColor.FromArgb(255, 16, 18, 22).ToArgb());
         foreach (var (_, point, anchor) in geometry.RotationHandles)
         {
             var handle = ToVector(point);
             var corner = ToVector(anchor);
-            _target.DrawLine(corner, handle, accent, 1);
-            _target.FillEllipse(new Ellipse(handle, 4, 4), rotationBrush);
-            _target.DrawEllipse(new Ellipse(handle, 4, 4), handleBorder, 1);
+            _target.DrawLine(corner, handle, guide, 1);
+            _target.FillEllipse(new Ellipse(handle, 3, 3), surface);
+            _target.DrawEllipse(new Ellipse(handle, 3, 3), accent, 1);
         }
 
         foreach (var (_, point, anchor) in geometry.SkewHandles)
         {
             var handle = ToVector(point);
             var edge = ToVector(anchor);
-            _target.DrawLine(edge, handle, accent, 1);
+            _target.DrawLine(edge, handle, guide, 1);
             using var diamond = _factory!.CreatePathGeometry();
             using (var sink = diamond.Open())
             {
-                sink.BeginFigure(new Vector2(handle.X, handle.Y - 5), FigureBegin.Filled);
-                sink.AddLine(new Vector2(handle.X + 5, handle.Y));
-                sink.AddLine(new Vector2(handle.X, handle.Y + 5));
-                sink.AddLine(new Vector2(handle.X - 5, handle.Y));
+                sink.BeginFigure(new Vector2(handle.X, handle.Y - 4), FigureBegin.Filled);
+                sink.AddLine(new Vector2(handle.X + 4, handle.Y));
+                sink.AddLine(new Vector2(handle.X, handle.Y + 4));
+                sink.AddLine(new Vector2(handle.X - 4, handle.Y));
                 sink.EndFigure(FigureEnd.Closed);
                 sink.Close();
             }
 
-            _target.FillGeometry(diamond, rotationBrush);
-            _target.DrawGeometry(diamond, handleBorder, 1);
+            _target.FillGeometry(diamond, surface);
+            _target.DrawGeometry(diamond, accent, 1);
+        }
+
+        // Paint resize grips last so connector ends never cross their white centers.
+        foreach (var (_, point, _) in geometry.ResizeHandles)
+        {
+            var rect = Rect(point.X - 3.5f, point.Y - 3.5f, 7, 7);
+            _target.FillRectangle(in rect, surface);
+            _target.DrawRectangle(in rect, accent, 1);
         }
 
         if (stage.IsTransformFocusVisible(geometry))
         {
             var focus = ToVector(stage.TransformOverlayPointToScreen(stage.TransformFocus));
-            var focusLine = BrushFor(GdiColor.FromArgb(245, 104, 255, 188).ToArgb());
-            _target.FillEllipse(new Ellipse(focus, 6, 6), BrushFor(GdiColor.FromArgb(220, 30, 82, 69).ToArgb()));
-            _target.DrawEllipse(new Ellipse(focus, 6, 6), focusLine, 1.5f);
-            _target.DrawLine(new Vector2(focus.X - 9, focus.Y), new Vector2(focus.X + 9, focus.Y), focusLine, 1.5f);
-            _target.DrawLine(new Vector2(focus.X, focus.Y - 9), new Vector2(focus.X, focus.Y + 9), focusLine, 1.5f);
+            _target.FillEllipse(new Ellipse(focus, 4, 4), surface);
+            _target.DrawEllipse(new Ellipse(focus, 4, 4), accent, 1);
+            _target.DrawLine(new Vector2(focus.X - 6, focus.Y), new Vector2(focus.X + 6, focus.Y), accent, 1);
+            _target.DrawLine(new Vector2(focus.X, focus.Y - 6), new Vector2(focus.X, focus.Y + 6), accent, 1);
         }
     }
 
     private void DrawDistortOverlay(StageControl stage)
     {
         if (!stage.DistortBoundsVisible) return;
-        var geometry = stage.GetDistortOverlayScreenGeometry();
+        var geometry = stage.GetDistortOverlayScreenGuides();
         var boundary = BrushFor(GdiColor.FromArgb(245, 104, 255, 188).ToArgb());
         var grid = BrushFor(GdiColor.FromArgb(120, 104, 255, 188).ToArgb());
         var guide = BrushFor(GdiColor.FromArgb(165, 112, 204, 255).ToArgb());

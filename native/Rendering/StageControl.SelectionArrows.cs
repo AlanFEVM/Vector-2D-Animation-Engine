@@ -12,7 +12,7 @@ internal sealed partial class StageControl
     internal static BitmapImageRaster ObjectSelectionPattern { get; } = CreateObjectSelectionPattern();
     private readonly Dictionary<DrawingElementKey, ObjectArrowSelectionRegion> _objectArrowFillContours = new();
     private readonly Dictionary<int, DrawingElementHit[]> _objectArrowParts = new();
-    private (VectorScene Scene, long Geometry, long Summary, long Content, long Selection, int Frame, ulong Layers) _objectArrowFillKey;
+    private (VectorScene Scene, long Geometry, long Summary, long Content, long Selection, int Frame, ulong Layers, long Occlusion) _objectArrowFillKey;
     private ObjectArrowStippleMask? _objectArrowStippleMask;
     private float _objectArrowStippleMaskZoom;
 
@@ -59,7 +59,7 @@ internal sealed partial class StageControl
     private void PrepareObjectArrowSelection()
     {
         var key = (Scene, Scene.GeometryRevision, Scene.SummaryRevision, Scene.ActiveContentRevision,
-            SelectionRenderRevision, Frame, GetReference3DWorkspaceFrameLayerRenderState(Scene, Frame));
+            SelectionRenderRevision, Frame, GetReference3DWorkspaceFrameLayerRenderState(Scene, Frame), HighlightOcclusionState);
         if (_objectArrowFillKey != key || HasDistortPreview)
         {
             _objectArrowFillContours.Clear();
@@ -97,7 +97,7 @@ internal sealed partial class StageControl
         var contours = hit is { } part ? GetSelectedFillPartContours(part)
             .Select(contour => contour.Select(point => MapObjectPointForRendering(Scene, objectIndex, point)).ToArray()).ToArray()
             : GetObjectBoundaryContoursForRendering(Scene, objectIndex);
-        var visible = Scene.GetVisibleSelectionFillContours(objectIndex, Frame, contours);
+        var visible = ClipHighlightFill(objectIndex, Scene.GetVisibleSelectionFillContours(objectIndex, Frame, contours));
         var region = new ObjectArrowSelectionRegion(objectIndex, visible, ObjectArrowPatternOrigin(contours));
         _objectArrowFillContours[key] = region;
         return region;
@@ -152,11 +152,12 @@ internal sealed partial class StageControl
         }).ToArray();
 
     private ObjectArrowSelectionRegion ObjectArrowStrokeRegion(int objectIndex, PointF[][] contours, bool closed) =>
-        new(objectIndex, Scene.GetVisiblePathSelectionPolylines(objectIndex, Frame, contours, closed),
+        new(objectIndex, ClipHighlightPolylines(objectIndex, Scene.GetVisiblePathSelectionPolylines(objectIndex, Frame, contours, closed), false),
             ObjectArrowPatternOrigin(contours));
 
     internal ObjectArrowStippleMask GetObjectArrowStippleMask()
     {
+        if (SelectedObjects.Count == 0) return new([], PointF.Empty);
         PrepareObjectArrowSelection();
         if (_objectArrowStippleMask is { } cached && _objectArrowStippleMaskZoom == Zoom) return cached;
         const int precision = 4;
@@ -214,7 +215,7 @@ internal sealed partial class StageControl
         if (TryGetTranslatedBitmapMoveOutline(objectIndex, out var translated)) return translated;
         var contours = GetObjectBoundaryContoursForRendering(Scene, objectIndex);
         var shape = Scene.ShapeKind[objectIndex];
-        return Scene.GetVisiblePathSelectionPolylines(objectIndex, Frame, contours,
+        return ClipHighlightPolylines(objectIndex, contours,
             closed: shape is not (ShapeKind.Line or ShapeKind.Freeform));
     }
 
@@ -255,7 +256,7 @@ internal sealed partial class StageControl
 
     private void DrawObjectArrowSelection(Graphics graphics)
     {
-        if (SelectionFeedbackSuppressed) return;
+        if (SelectionFeedbackSuppressed || (SelectedObjects.Count == 0 && !DrawingObjectSelectionVisible)) return;
         var previousMode = graphics.SmoothingMode;
         var previousInterpolation = graphics.InterpolationMode;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;

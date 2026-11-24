@@ -4,6 +4,7 @@ internal static partial class Benchmark
 {
     private static void RunObjectDrawingRegression()
     {
+        RunDrawingGroupOwnershipRegression();
         using var form = new MainForm
         {
             ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
@@ -27,6 +28,7 @@ internal static partial class Benchmark
         var timeline = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
         timeline.AutoKeyframeEnabled = false;
         var baselineSymbols = project.DrawingObjects.Count;
+        var baselineLibrarySymbols = project.DrawingObjects.Count(item => item.IsLibrarySymbol);
         var older = drawing.AddObject(0, PointF.Empty, new SizeF(2000, 2000), 0, 0,
             Color.Teal, Color.Transparent, 16, ShapeKind.Rectangle);
         var olderBounds = drawing.GetObjectWorldBounds(older);
@@ -44,9 +46,13 @@ internal static partial class Benchmark
                     && drawing.Argb[older] == olderColor && stage.SelectedObjects.Count == 0,
                     $"Object Drawing {tool} merged, cut, or changed the pre-existing raw drawing.");
                 var symbol = project.DrawingObjects.Single(item => item.Id == host.Instances[0].DrawingObjectId);
-                AssertTimeline(symbol.Scene.ObjectCount == 1
+                AssertTimeline(symbol.IsGroup && !symbol.IsLibrarySymbol
+                    && project.DrawingObjects.Count(item => item.IsLibrarySymbol) == baselineLibrarySymbols
+                    && !(bool)RequireMethod(typeof(LibraryVaultPanel), "DrawingObjectMatchesActiveCategory")
+                        .Invoke(RequireField(typeof(MainForm), "_libraryVaultPanel").GetValue(form), [symbol])!
+                    && symbol.Scene.ObjectCount == 1
                     && symbol.Scene.ShapeKind[0] == (tool == ToolMode.Line ? ShapeKind.Line : settings.ShapeKind),
-                    $"Object Drawing {tool} lost the editable shape inside its symbol.");
+                    $"Object Drawing {tool} lost its private group or exposed it in the library.");
                 AssertTimeline(undo.Invoke(form, null) is true && host.Instances.Count == 0
                     && project.DrawingObjects.Count == baselineSymbols && drawing.ObjectCount == 1,
                     $"One undo failed to remove the complete {tool} object and preserve older content.");
@@ -76,7 +82,10 @@ internal static partial class Benchmark
                     && drawing.ObjectCount == 1 && drawing.GetObjectWorldBounds(older) == olderBounds,
                     $"{tool} did not commit exactly one independent object or damaged older geometry.");
                 var symbol = project.DrawingObjects.Single(item => item.Id == host.Instances[0].DrawingObjectId);
-                AssertTimeline(symbol.Scene.ObjectCount == (tool is ToolMode.Brush or ToolMode.PressureBrush ? 3 : 1),
+                // The pressure brush has its own tip and must not inherit the ordinary soft tip.
+                AssertTimeline(symbol.Scene.ObjectCount == (tool == ToolMode.Brush ? 3 : 1)
+                    && (tool is not (ToolMode.Brush or ToolMode.PressureBrush)
+                        || symbol.Scene.ShapeKind.Take(symbol.Scene.ObjectCount).All(kind => kind == ShapeKind.Path)),
                     $"{tool} lost its editable content or split soft layers into multiple instances.");
                 AssertTimeline(undo.Invoke(form, null) is true && host.Instances.Count == 0
                     && project.DrawingObjects.Count == baselineSymbols && drawing.ObjectCount == 1,
@@ -123,7 +132,8 @@ internal static partial class Benchmark
                 var restoredHost = restored.DrawingObjects.Single(item => item.Id == host.Id);
                 AssertTimeline(restoredHost.Scene.ObjectCount == 1 && restoredHost.Instances.Count == 2
                     && restoredHost.Instances.Select(instance => instance.Id).SequenceEqual(host.Instances.Select(instance => instance.Id))
-                    && restored.DrawingObjects.Single(item => item.Id == second.DrawingObjectId).Scene.ObjectCount == 1
+                    && restored.DrawingObjects.Single(item => item.Id == second.DrawingObjectId) is { IsGroup: true, IsLibrarySymbol: false } restoredGroup
+                    && restoredGroup.Scene.ObjectCount == 1
                     && restoredHost.Instances[0].EvaluateState(0) == second.EvaluateState(0),
                     "Object Drawing Save/Open changed instance identity, order, placement, or editable contents.");
             }
@@ -158,6 +168,46 @@ internal static partial class Benchmark
         {
             RequireField(typeof(MainForm), "_projectDirty").SetValue(form, false);
         }
+    }
+
+    private static void RunDrawingGroupOwnershipRegression()
+    {
+        var project = new VectorProject();
+        var host = project.DrawingObjects[0];
+        host.Scene.CreateEmpty(1, 1);
+        var index = host.Scene.AddObject(0, PointF.Empty, new SizeF(300, 200), 0, 0,
+            Color.Coral, Color.Transparent, 8, ShapeKind.Rectangle);
+        AssertTimeline(project.TryConvertDrawingObjectsToSymbol(host.Id, [index], 0,
+                out var group, out var placement, asGroup: true)
+            && group is { IsGroup: true, IsLibrarySymbol: false } && placement is not null,
+            "Grouping failed to create private editable contents.");
+        var source = group!;
+        AssertTimeline(project.TryAddDrawingObjectInstance(host.Id, source.Id, new PointF(500, 0), out var pasted)
+            && pasted is not null && pasted.DrawingObjectId != source.Id,
+            "Pasting a group retained the source group definition.");
+        var copy = project.DrawingObjects.Single(item => item.Id == pasted!.DrawingObjectId);
+        var originalColor = source.Scene.Argb[0];
+        copy.Scene.Argb[0] = Color.Navy.ToArgb();
+        AssertTimeline(source.Scene.Argb[0] == originalColor && copy.IsGroup,
+            "Editing a copied group changed the original group.");
+        AssertTimeline(project.TryDuplicateDrawingObject(host.Id, out var hostCopy) && hostCopy is not null,
+            "A symbol containing private groups could not be duplicated.");
+        AssertTimeline(hostCopy!.Instances.All(member => host.Instances.All(original => original.DrawingObjectId != member.DrawingObjectId)),
+            "Duplicating a symbol shared its nested group contents.");
+
+        var detached = new VectorScene();
+        SceneCompositionBuilder.BuildDrawingObjectInstanceForBreakApart(detached, host, placement,
+            project.DrawingObjects, 0);
+        var destination = new VectorScene();
+        destination.CreateEmpty(1, 1);
+        var produced = destination.AppendFlattenedSceneToLayer(detached, 0, 0);
+        source.Scene.Argb[0] = Color.Gold.ToArgb();
+        AssertTimeline(produced.Length == 1 && destination.Argb[produced[0]] == originalColor,
+            "Breaking a group apart retained a live reference to its contents.");
+        AssertTimeline(project.TryRemoveDrawingObject(hostCopy.Id, out _)
+            && !project.TryRemoveDrawingObject(host.Id, out _),
+            "Private groups incorrectly counted as library symbols when deleting the final symbol.");
+        Console.WriteLine("drawing_group_ownership=ok,copy=independent,nested_copy=independent,break_apart=detached");
     }
 
     private static void RunObjectDrawingPenRegression(

@@ -44,6 +44,7 @@ internal sealed record SceneLayerSnapshotItem(
 
 internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDefinition, IEditableSnapPointOwner
 {
+    internal SceneBlockGrid? BlockGrid { get; set; }
     internal const int MaximumLights = 256;
     internal List<RulerGuide> RulerGuides { get; } = [];
 

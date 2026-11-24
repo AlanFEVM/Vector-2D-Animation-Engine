@@ -32,11 +32,11 @@ internal sealed partial class VectorScene
             LayerStart = new int[LayerCount];
             LayerEnd = Enumerable.Repeat(-1, LayerCount).ToArray();
         }
-        var metadataChanged = changed
+        var visibilityChanged = changed || !LayerVisible.SequenceEqual(layers.Select(layer => layer.Visible));
+        var metadataChanged = visibilityChanged
             || !LayerNames.SequenceEqual(layers.Select(layer => layer.Name))
             || !LayerKinds.SequenceEqual(layers.Select(layer => layer.Kind == SceneLayerKind.Mask
                 ? DrawingLayerKind.Mask : DrawingLayerKind.Drawing))
-            || !LayerVisible.SequenceEqual(layers.Select(layer => layer.Visible))
             || !LayerBlendModes.SequenceEqual(layers.Select(layer => layer.BlendMode))
             || !LayerOutline.SequenceEqual(layers.Select(layer => layer.Outline))
             || !LayerColorArgb.SequenceEqual(layers.Select(layer => layer.ColorArgb));
@@ -47,6 +47,7 @@ internal sealed partial class VectorScene
             ? DrawingLayerKind.Mask : DrawingLayerKind.Drawing).ToArray();
         LayerMaskIds = Enumerable.Repeat("", LayerCount).ToArray();
         LayerVisible = layers.Select(layer => layer.Visible).ToArray();
+        if (visibilityChanged) InvalidateQueryActiveKeyframes();
         LayerBlendModes = layers.Select(layer => layer.BlendMode).ToArray();
         LayerColorArgb = layers.Select(layer => layer.ColorArgb).ToArray();
         LayerOutline = layers.Select(layer => layer.Outline).ToArray();

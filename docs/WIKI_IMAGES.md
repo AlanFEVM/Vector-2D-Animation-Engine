@@ -19,6 +19,12 @@ pwsh -NoProfile -STA -File scripts/export-wiki-images.ps1 -Theme Charcoal -Works
 
 右键菜单分别导出无选区和选中示例图形两种状态，通过实际菜单打开流程更新命令。画布引导图直接导出真实引导控件；顶部控制区按控件实时边界裁切，将网格、吸附、视图按钮三排紧凑排列，不使用固定屏幕坐标。
 
+属性面板可导出工具页和对象页示例，包含右侧分类与子页导航。两张图使用相同窗口尺寸，通过实际选择和工具激活流程切换，不修改用户正在编辑的工程。命令行同时指定两张图片时使用：
+
+```powershell
+pwsh -NoProfile -STA -Command "& ./scripts/export-wiki-images.ps1 -Image @('properties-panel', 'properties-object')"
+```
+
 `-CornerStyle` 支持 `Square`、`SubtleRounded`；`-SimpleSelectionHighlight` 默认启用，可传入 `$false` 关闭。画布弹窗导出复用实际内容控件并使用独立离屏宿主，不触发弹窗的后台图片加载，当前示例固定使用纯色背景。
 
 每次输出到 `artifacts/wiki-export/<本次编号>/`，附带 `manifest.json`，记录引擎哈希、主题、背景色、实际 DPI、图片尺寸、绘制方式和 PNG 哈希。图片通过尺寸及非空像素检查后，`-UpdateWiki` 才按固定文件名逐张替换 `docs/encyclopedia/public/images/`。默认只生成预览，不替换 Wiki。像素抽样只能发现明显空图，不能代替人工检查文字、裁剪和控件状态。

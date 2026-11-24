@@ -336,7 +336,8 @@ internal sealed class VectorSceneSnapshot
                     + StringBytes(track.TargetId)
                     + StringBytes(track.TabGroupId)
                     + ArrayBytes(track.Keyframes.Length, 8)
-                    + ArrayBytes(track.Tweens?.Length ?? 0, 12);
+                    + ArrayBytes(track.Tweens?.Length ?? 0, 12)
+                    + ArrayBytes(track.InterruptedTweens?.Length ?? 0, 12);
             }
         }
 

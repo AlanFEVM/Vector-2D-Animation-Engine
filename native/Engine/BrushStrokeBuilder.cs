@@ -5,7 +5,7 @@ using System.Runtime.CompilerServices;
 
 namespace VectorAnimationEngine;
 
-internal static class BrushStrokeBuilder
+internal static partial class BrushStrokeBuilder
 {
     internal const int TrajectoryFitSpan = 128;
     private const int FitSpanLimit = TrajectoryFitSpan;
@@ -52,7 +52,8 @@ internal static class BrushStrokeBuilder
         int smoothing,
         float worldPerPixel,
         int frequency = 8,
-        bool continuous = true)
+        bool continuous = true,
+        PressureBrushOptions? options = null)
     {
         Validate(scene, samples, diameter, shape);
         var cleaned = new PressureBrushSample[samples.Count];
@@ -68,8 +69,58 @@ internal static class BrushStrokeBuilder
             };
         }
         var profile = new List<PressureBrushPoint>(cleaned.Length);
-        FreehandStrokeProcessor.UpdatePressurePreviewProfile(cleaned, diameter, profile, new List<float>(cleaned.Length));
+        FreehandStrokeProcessor.UpdatePressurePreviewProfile(cleaned, diameter, profile, new List<float>(cleaned.Length), options);
+        if (options is { } dynamics)
+        {
+            var processed = ProcessPressureTrajectory(profile, smoothing);
+            dynamics.ApplyEndTaper(processed, diameter);
+            return AddPressureProfile(scene, layer, processed, color, shape, smoothing, worldPerPixel,
+                frequency, continuous, trajectoryPrepared: true);
+        }
         return AddPressureProfile(scene, layer, profile, color, shape, smoothing, worldPerPixel, frequency, continuous);
+    }
+
+    // Commit the exact editable contours already shown by the stroke preview. Copy local
+    // curves and their hit-test contours together, without resampling or fitting them again.
+    internal static int[] AddPreparedBrushStroke(VectorScene scene, int layer, VectorScene prepared)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
+        ArgumentNullException.ThrowIfNull(prepared);
+        if (ReferenceEquals(scene, prepared)) throw new ArgumentException("The brush preview must be a separate scene.");
+        var sources = Enumerable.Range(0, prepared.ObjectCount)
+            .Where(index => prepared.ShapeKind[index] == ShapeKind.Path)
+            .OrderBy(index => prepared.ObjectOrder[index])
+            .ThenBy(index => prepared.ObjectSubOrder[index])
+            .ToArray();
+        if (sources.Length == 0) return [];
+        var added = new List<int>(sources.Length);
+        scene.BeginDeferredAppend(sources.Length, [layer]);
+        try
+        {
+            foreach (var source in sources)
+            {
+                if (!prepared.TryGetPathLocalContours(source, out var sampled))
+                    throw new InvalidOperationException("The brush preview has no stored contour.");
+                var points = sampled.Select(contour => contour.ToArray()).ToArray();
+                var center = new PointF(prepared.X[source], prepared.Y[source]);
+                var size = new SizeF(prepared.Width[source], prepared.Height[source]);
+                var color = Color.FromArgb(prepared.Argb[source]);
+                var objectIndex = prepared.TryGetPathBezierLocalContours(source, out var curves)
+                    ? scene.AppendPathBezierObjectLocalContours(layer, center, size, prepared.Angle[source],
+                        points, curves.Select(contour => contour.ToArray()).ToArray(),
+                        0, color, Color.Transparent, prepared.AtomCount[source])
+                    : scene.AppendPathObjectLocalContours(layer, center, size, prepared.Angle[source],
+                        points, 0, color, Color.Transparent, prepared.AtomCount[source]);
+                if (objectIndex < 0) throw new InvalidOperationException("The brush preview could not be committed.");
+                added.Add(objectIndex);
+            }
+        }
+        finally
+        {
+            scene.EndDeferredAppend();
+            if (added.Count > 0) scene.CompleteDeferredBuild();
+        }
+        return added.ToArray();
     }
 
     internal static int[] AddPressureProfile(
@@ -225,6 +276,11 @@ internal static class BrushStrokeBuilder
         var regions = layerRegions.SelectMany(regionsForLayer => regionsForLayer).ToList();
         if (regions.Count == 0) return [];
 
+        return AppendRegions(scene, layer, regions);
+    }
+
+    private static int[] AppendRegions(VectorScene scene, int layer, IReadOnlyList<Region> regions)
+    {
         var added = new List<int>(regions.Count);
         scene.BeginDeferredAppend(regions.Count, [layer]);
         try

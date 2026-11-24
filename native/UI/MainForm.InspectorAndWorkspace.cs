@@ -17,6 +17,7 @@ internal sealed partial class MainForm : Form
             if (_inspectorPresentation?.Tween != presentation.Tween || _inspectorTransition is { IsPreparing: true })
                 RefreshTweenCurveInspector();
             UpdateInspectorContents(refreshLineEndpointStyles);
+            RefreshNativeExtensionInspector();
             _inspectorPresentation = ResolveInspectorPresentation(_inspectorCategory);
             if (transitionStarted) CompleteInspectorTransition();
         }
@@ -798,7 +799,7 @@ internal sealed partial class MainForm : Form
         var points = _tool switch
         {
             ToolMode.Brush => _brushStrokeWidthPoints,
-            ToolMode.PressureBrush => _brushStrokeWidthPoints,
+            ToolMode.PressureBrush => _pressureBrushSizePoints,
             ToolMode.MixingBrush => _brushStrokeWidthPoints,
             ToolMode.Eraser => _eraserStrokeWidthPoints,
             _ when IsStandardStrokeTool(_tool) => _standardStrokeWidthPoints,
@@ -947,6 +948,7 @@ internal sealed partial class MainForm : Form
         if (openShots) view = WorkspaceView.SceneEditor;
         if (view == WorkspaceView.Animation) view = WorkspaceView.SceneEditor;
         if (!CommitTextEdit()) return;
+        CloseNativeExtensionChunk(restoreTimeline: false);
         if (IsSymbolEditing && (view != WorkspaceView.SceneEditor || openShots)) ClearSymbolEditingSession();
         if (view != _workspaceTabs.SelectedView)
         {
