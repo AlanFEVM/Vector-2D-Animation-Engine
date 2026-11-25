@@ -1728,6 +1728,7 @@ internal sealed partial class StageControl : Control
     public void BindScene(VectorScene scene)
     {
         ClearHoveredLineElement();
+        CancelSmoothZoom();
         CompleteReferenceCameraTransition(invalidate: false);
         ClearSelectionDragPreviewCore(invalidate: false);
         ClearSelectionFillDragFront(invalidate: false);
@@ -2240,6 +2241,7 @@ internal sealed partial class StageControl : Control
     internal void RestoreViewState(StageViewState state)
     {
         CancelReferenceCameraTransitionForStateReplacement();
+        CancelSmoothZoom();
         _pendingVisibleWorldWidth = null;
         EndZoomLodPreview(invalidate: false);
         CameraX = Math.Clamp(state.CameraX, -5_000_000, 5_000_000);
@@ -2280,11 +2282,12 @@ internal sealed partial class StageControl : Control
             return;
         }
         if (Width <= 0 || Height <= 0) return;
+        CancelSmoothZoom();
         _pendingVisibleWorldWidth = null;
         EndZoomLodPreview(invalidate: false);
         CameraX = 0;
         CameraY = 0;
-        Zoom = (float)Math.Clamp(Math.Min(Width / VectorUnits.ToPixels(Scene.StageWidth), Height / VectorUnits.ToPixels(Scene.StageHeight)) * 0.9, 0.02, 64);
+        Zoom = (float)Math.Clamp(Math.Min(Width / VectorUnits.ToPixels(Scene.StageWidth), Height / VectorUnits.ToPixels(Scene.StageHeight)) * 0.9, MinimumZoom, MaximumZoom);
         RefreshBrushTipCursorScale();
         Invalidate();
         RaiseViewChanged();
@@ -2304,10 +2307,11 @@ internal sealed partial class StageControl : Control
         }
 
         _pendingVisibleWorldWidth = null;
+        CancelSmoothZoom();
         EndZoomLodPreview(invalidate: false);
         CameraX = 0;
         CameraY = 0;
-        Zoom = (float)Math.Clamp(Width / Math.Max(1, VectorUnits.ToPixels(vectorUnits)), 0.02, 64);
+        Zoom = (float)Math.Clamp(Width / Math.Max(1, VectorUnits.ToPixels(vectorUnits)), MinimumZoom, MaximumZoom);
         RefreshBrushTipCursorScale();
         Invalidate();
         if (raiseViewChanged) RaiseViewChanged();
@@ -2347,10 +2351,21 @@ internal sealed partial class StageControl : Control
         RaiseViewChanged();
     }
 
+    /// <summary>
+    /// 立即缩放一步。程序化缩放（工具栏、快捷键、状态恢复、回归夹具）必须保持即时语义；
+    /// 滚轮输入走 <see cref="ZoomAtSmooth"/>。
+    /// </summary>
     public void ZoomAt(Point screen, float factor, bool interactivePreview = false)
     {
-        CompleteReferenceCameraTransitionForDirectInput();
+        CancelSmoothZoom();
         if (!float.IsFinite(factor) || factor <= 0) return;
+        ApplyZoomAt(screen, (float)((double)Zoom * factor), interactivePreview);
+    }
+
+    private void ApplyZoomAt(Point screen, float requestedZoom, bool interactivePreview)
+    {
+        CompleteReferenceCameraTransitionForDirectInput();
+        if (!float.IsFinite(requestedZoom) || requestedZoom <= 0) return;
         var unrotated = UnrotateCanvasScreenPoint(screen);
         var offsetX = (double)unrotated.X - Width * 0.5;
         var offsetY = (double)unrotated.Y - Height * 0.5;
@@ -2359,7 +2374,7 @@ internal sealed partial class StageControl : Control
         // 表现为缩放时画面轻微漂移。
         var anchorX = (double)CameraX + offsetX / Zoom * VectorUnits.UnitsPerPixel;
         var anchorY = (double)CameraY + offsetY / Zoom * VectorUnits.UnitsPerPixel;
-        var newZoom = (float)Math.Clamp((double)Zoom * factor, 0.02, 64);
+        var newZoom = (float)Math.Clamp((double)requestedZoom, MinimumZoom, MaximumZoom);
         if (newZoom == Zoom)
         {
             // 已到缩放上下限：视图本就不变，只延长正在进行的缩放预览，避免多跑一整帧。
@@ -4069,6 +4084,7 @@ internal sealed partial class StageControl : Control
     protected override void OnHandleDestroyed(EventArgs e)
     {
         StopSceneRefreshScheduling();
+        CancelSmoothZoom();
         CompleteReferenceCameraTransition(invalidate: false);
         CompleteSpatialTransformGizmoMotion(invalidate: false);
         ResetFrameSchedulerState();
@@ -4098,6 +4114,7 @@ internal sealed partial class StageControl : Control
         {
             StopSceneRefreshScheduling();
             _disposingResources = true;
+            CancelSmoothZoom();
             ClearSelectionMoveFeedbackCore();
             DisposeFillSystemCursor();
             DisposeSelectionArrowCursors();

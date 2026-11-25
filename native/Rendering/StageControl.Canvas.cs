@@ -161,6 +161,7 @@ internal sealed partial class StageControl
     {
         if (Width <= 0 || Height <= 0 || CanvasPresentation is null) return;
         _pendingVisibleWorldWidth = null;
+        CancelSmoothZoom();
         EndZoomLodPreview(invalidate: false);
         CameraX = 0;
         CameraY = 0;

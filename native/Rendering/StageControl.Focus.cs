@@ -62,6 +62,7 @@ internal sealed partial class StageControl
 
         CompleteReferenceCameraTransitionForDirectInput();
         _pendingVisibleWorldWidth = null;
+        CancelSmoothZoom();
         EndZoomLodPreview(invalidate: false);
         CameraX = centerX;
         CameraY = centerY;

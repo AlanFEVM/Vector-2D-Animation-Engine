@@ -7659,6 +7659,7 @@ internal static partial class Benchmark
         RunCanvasNavigationPreparationRegression();
         RunDenseToolNavigationRegression();
         RunDenseToolWheelNavigationRegression();
+        RunSmoothWheelZoomRegression();
         RunSelectedBoundaryPanCacheRegression();
         RunLargeSelectionFrameRateRegression();
         RunLineEditingPointerRegression();
@@ -8211,6 +8212,90 @@ internal static partial class Benchmark
             Console.WriteLine($"dense_tool_wheel=ok,objects=8000,tools=26,input_avg_ms={timings.Average():F3},input_p95_ms={timings[(int)(timings.Count * 0.95)]:F3},input_max_ms={timings[^1]:F3},idle_restore=ok,reverse=ok,partial_delta=ok");
         }
         finally { end.Invoke(form, [false]); }
+    }
+
+    /// <summary>
+    /// 滚轮缩放必须是「离散输入 + 平滑逼近」：单格滚轮先推进一小部分，再由独立帧循环收敛到精确目标，
+    /// 期间光标下的世界坐标锚点保持不动；程序化缩放仍保持即时语义。
+    /// </summary>
+    private static void RunSmoothWheelZoomRegression()
+    {
+        using var form = new MainForm
+        {
+            Size = new Size(1280, 800), ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual, Location = new Point(-30_000, -30_000)
+        };
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        scene.CreateEmpty();
+        scene.CompleteDeferredBuild();
+        form.Show();
+        Application.DoEvents();
+        stage.BindScene(scene);
+        stage.SetVisibleWorldWidth(4000);
+        var anchor = new Point(stage.Width / 2 + 60, stage.Height / 2 - 40);
+        var wheel = RequireMethod(typeof(Control), "OnMouseWheel");
+        var before = stage.Zoom;
+        var anchorWorld = stage.ScreenToWorld(anchor);
+        var presentedFrames = 0;
+        EventHandler countFrame = (_, _) => presentedFrames++;
+        void Scroll(int delta) =>
+            wheel.Invoke(stage, [new MouseEventArgs(MouseButtons.None, 0, anchor.X, anchor.Y, delta)]);
+        void Settle()
+        {
+            var deadline = Stopwatch.GetTimestamp() + (long)(3 * Stopwatch.Frequency);
+            while (stage.SmoothZoomActive && Stopwatch.GetTimestamp() < deadline)
+            {
+                Application.DoEvents();
+                Thread.Sleep(1);
+            }
+        }
+
+        stage.FrameRendered += countFrame;
+        try
+        {
+            Scroll(120);
+            var stepTarget = Math.Clamp(
+                before * StageControl.WheelZoomStepBase, StageControl.MinimumZoom, StageControl.MaximumZoom);
+            AssertTimeline(stage.SmoothZoomActive, "Wheel zoom did not start a smooth zoom session.");
+            AssertTimeline(stage.Zoom > before && stage.Zoom < stepTarget - 0.0001f,
+                "Wheel zoom applied the whole wheel step at once instead of interpolating it.");
+            AssertTimeline(PointsWithin(anchorWorld, stage.ScreenToWorld(anchor), 0.05f),
+                "Smooth wheel zoom moved the world point under the cursor.");
+            Settle();
+            AssertTimeline(!stage.SmoothZoomActive, "Smooth wheel zoom never settled.");
+            AssertTimeline(Math.Abs(stage.Zoom - stepTarget) < 0.001f,
+                "Smooth wheel zoom did not converge on the exact wheel step target.");
+            AssertTimeline(presentedFrames >= 4,
+                "Smooth wheel zoom presented too few interpolated frames to look continuous.");
+            AssertTimeline(PointsWithin(anchorWorld, stage.ScreenToWorld(anchor), 0.05f),
+                "Settled wheel zoom moved the world point under the cursor.");
+
+            // 反向滚轮必须精确回到起始缩放：平滑层不能引入累积漂移。
+            Scroll(-120);
+            Settle();
+            AssertTimeline(Math.Abs(stage.Zoom - before) < 0.001f,
+                "Reverse smooth wheel zoom drifted away from the starting zoom.");
+
+            // 部分刻度累积：两次 60 与一次 120 必须落在同一个目标上。
+            Scroll(60);
+            Scroll(60);
+            Settle();
+            var composed = stage.Zoom;
+            stage.SetVisibleWorldWidth(4000);
+            Scroll(120);
+            Settle();
+            AssertTimeline(Math.Abs(stage.Zoom - composed) < 0.001f,
+                "Partial wheel deltas did not compose into the same smooth zoom target.");
+
+            // 程序化缩放（工具栏、快捷键、状态恢复）保持即时语义并结束平滑会话。
+            Scroll(120);
+            stage.ZoomAt(anchor, 1.5f, interactivePreview: true);
+            AssertTimeline(!stage.SmoothZoomActive, "Programmatic zoom left a smooth wheel session running.");
+            Console.WriteLine(FormattableString.Invariant(
+                $"smooth_wheel_zoom=frames={presentedFrames},step={StageControl.WheelZoomStepBase:0.###}"));
+        }
+        finally { stage.FrameRendered -= countFrame; }
     }
 
     private static void RunDenseSelectionPanRenderRegressionCore()

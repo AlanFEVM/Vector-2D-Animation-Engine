@@ -573,6 +573,7 @@ internal sealed partial class StageControl
         Experimental3DEnabled = state.Experimental3DEnabled;
         Scene = scene;
         _frame = Math.Max(0, frame);
+        CancelSmoothZoom();
         CameraX = Math.Clamp(state.View.CameraX, -5_000_000f, 5_000_000f);
         CameraY = Math.Clamp(state.View.CameraY, -5_000_000f, 5_000_000f);
         Zoom = Math.Clamp(state.View.Zoom, 0.02f, 64f);

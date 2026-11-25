@@ -837,7 +837,8 @@ internal sealed partial class MainForm : Form
                 _stage.ZoomReferenceCamera(MathF.Pow(1f / StageControl.ReferenceWheelDollyBase, e.Delta / 120f));
             else _stage.DollyReferenceCamera(e.Delta);
         }
-        else _stage.ZoomAt(e.Location, MathF.Pow(1.12f, e.Delta / 120f), interactivePreview: true);
+        // 滚轮是离散输入：交给平滑层累积目标并按帧率逼近，避免每个刻度一次可见跳变。
+        else _stage.ZoomAtSmooth(e.Location, MathF.Pow(StageControl.WheelZoomStepBase, e.Delta / 120f));
         UpdateNavigationStatusThrottled();
     }
 
